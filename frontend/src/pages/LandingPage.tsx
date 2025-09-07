@@ -23,7 +23,7 @@ const LandingPage: React.FC = () => {
         {/* Hover Buttons */}
         <div className="flex gap-6 mt-6 relative z-20">
           {/* ✅ Get Started -> /get-started */}
-          <Link to="/get-started">
+          <Link to="/Dashboard">
             <HoverBorderGradient
               as="button"
               containerClassName="rounded-full"

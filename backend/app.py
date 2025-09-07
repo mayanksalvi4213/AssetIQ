@@ -295,7 +295,7 @@ def ocr_pdf():
         print(f"File size: {len(file_content)} bytes")
         
         # Convert PDF pages to images
-        images = convert_from_bytes(file_content, poppler_path=r"C:\poppler\Library\bin")
+        images = convert_from_bytes(file_content, poppler_path=r"C:\poppler-25.07.0\Library\bin")
         print(f"Converted to {len(images)} pages")
 
         # Extract text from all pages
