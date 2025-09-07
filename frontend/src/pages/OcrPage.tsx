@@ -30,10 +30,7 @@ const OcrPage: React.FC = () => {
   };
 
   const handleScan = async () => {
-    if (!file) {
-      alert("Please upload a PDF before scanning!");
-      return;
-    }
+    if (!file) return;
     const formData = new FormData();
     formData.append("file", file);
 
@@ -42,12 +39,19 @@ const OcrPage: React.FC = () => {
         method: "POST",
         body: formData,
       });
-      if (!response.ok) throw new Error("Failed to scan file");
+      if (!response.ok) {
+        let msg = "Failed to scan file";
+        try {
+          const err = await response.json();
+          if (err?.error) msg = err.error;
+        } catch {}
+        throw new Error(msg);
+      }
       const data = await response.json();
       setOcrResult(data.raw_text);
     } catch (error) {
       console.error("Error during scan:", error);
-      alert("Error scanning file");
+      alert((error as Error).message || "Error scanning file");
     }
   };
 
@@ -134,7 +138,7 @@ const OcrPage: React.FC = () => {
       <div className="w-full max-w-4xl mb-6 relative z-20">
         <div
           className="border border-dashed rounded-lg p-6 border-gray-300 shadow-md"
-          style={{ backgroundColor: "#f3f4f6", color: "#111827" }} // Grey upload box
+          style={{ backgroundColor: "#f3f4f6", color: "#111827" }}
         >
           {!file ? (
             <div>
@@ -148,9 +152,7 @@ const OcrPage: React.FC = () => {
                 </div>
                 <div>
                   <p className="text-gray-900 font-medium">{file.name}</p>
-                  <p className="text-gray-600 text-sm">
-                    {(file.size / 1024 / 1024).toFixed(2)} MB
-                  </p>
+                  <p className="text-gray-600 text-sm">{(file.size / 1024 / 1024).toFixed(2)} MB</p>
                 </div>
               </div>
               <HoverBorderGradient
