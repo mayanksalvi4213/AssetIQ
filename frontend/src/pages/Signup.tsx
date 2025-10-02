@@ -1,3 +1,4 @@
+"use client";
 import React, { useMemo, useState } from "react";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
@@ -16,16 +17,13 @@ const LAB_OPTIONS = [
   "Mechanical Lab",
 ];
 
-// ✅ password validation function
-const validatePassword = (password: string) => {
-  return {
-    length: password.length >= 8,
-    uppercase: /[A-Z]/.test(password),
-    lowercase: /[a-z]/.test(password),
-    number: /[0-9]/.test(password),
-    special: /[!@#$%^&*(),.?":{}|<>]/.test(password),
-  };
-};
+const validatePassword = (password: string) => ({
+  length: password.length >= 8,
+  uppercase: /[A-Z]/.test(password),
+  lowercase: /[a-z]/.test(password),
+  number: /[0-9]/.test(password),
+  special: /[!@#$%^&*(),.?":{}|<>]/.test(password),
+});
 
 export default function Signup() {
   const [firstName, setFirstName] = useState("");
@@ -38,12 +36,11 @@ export default function Signup() {
   const [showPasswordValidation, setShowPasswordValidation] = useState(false);
 
   const requiresLabSelection = useMemo(() => role === "Lab Incharge", [role]);
-
   const passwordValidations = validatePassword(password);
   const isPasswordValid = Object.values(passwordValidations).every(Boolean);
   const passwordsMatch = password === confirmPassword && confirmPassword.length > 0;
 
-  const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
+  const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
 
     if (!isPasswordValid) {
@@ -55,17 +52,35 @@ export default function Signup() {
       return;
     }
 
+    // ✅ Correct payload for backend
     const payload = {
       firstName,
       lastName,
       email,
       password,
       role,
-      accessScope:
-        role === "Lab Incharge" ? { type: "single", lab } : { type: "all" },
+      accessScope: role === "Lab Incharge" ? { lab } : {},
     };
-    console.log("Signup submit", payload);
-    // TODO: integrate API when available
+
+    try {
+      const response = await fetch("http://127.0.0.1:5000/signup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      const data = await response.json();
+
+      if (response.ok) {
+        alert("Signup successful! Please login.");
+        window.location.href = "/login";
+      } else {
+        alert(data.error || "Signup failed!");
+      }
+    } catch (error) {
+      console.error("Error during signup:", error);
+      alert("Something went wrong. Check console.");
+    }
   };
 
   return (
@@ -80,13 +95,10 @@ export default function Signup() {
           <motion.span
             className="inline-block bg-clip-text text-transparent"
             style={{
-              backgroundImage:
-                "linear-gradient(90deg, #22d3ee, #7b61ff, #ffc414)",
+              backgroundImage: "linear-gradient(90deg, #22d3ee, #7b61ff, #ffc414)",
               backgroundSize: "200% 100%",
             }}
-            animate={{
-              backgroundPosition: ["0% 0%", "100% 0%", "0% 0%"],
-            }}
+            animate={{ backgroundPosition: ["0% 0%", "100% 0%", "0% 0%"] }}
             transition={{ duration: 6, repeat: Infinity }}
           >
             Create your account
@@ -97,11 +109,10 @@ export default function Signup() {
           <BackgroundGradient containerClassName="w-full" className="rounded-2xl">
             <div className="shadow-input w-full rounded-2xl bg-neutral-900/70 backdrop-blur-md border border-white/15 p-5 md:p-8">
               <form className="space-y-4" onSubmit={handleSubmit}>
+                {/* Name fields */}
                 <div className="flex flex-col space-y-4 md:flex-row md:space-y-0 md:space-x-2">
                   <LabelInputContainer>
-                    <Label htmlFor="firstname" className="text-white">
-                      First name
-                    </Label>
+                    <Label htmlFor="firstname" className="text-white">First name</Label>
                     <Input
                       id="firstname"
                       placeholder="John"
@@ -112,9 +123,7 @@ export default function Signup() {
                     />
                   </LabelInputContainer>
                   <LabelInputContainer>
-                    <Label htmlFor="lastname" className="text-white">
-                      Last name
-                    </Label>
+                    <Label htmlFor="lastname" className="text-white">Last name</Label>
                     <Input
                       id="lastname"
                       placeholder="Doe"
@@ -126,10 +135,9 @@ export default function Signup() {
                   </LabelInputContainer>
                 </div>
 
+                {/* Email */}
                 <LabelInputContainer>
-                  <Label htmlFor="email" className="text-white">
-                    Email Address (use institutional email)
-                  </Label>
+                  <Label htmlFor="email" className="text-white">Email Address</Label>
                   <Input
                     id="email"
                     placeholder="you@example.com"
@@ -140,10 +148,9 @@ export default function Signup() {
                   />
                 </LabelInputContainer>
 
+                {/* Password */}
                 <LabelInputContainer>
-                  <Label htmlFor="password" className="text-white">
-                    Password
-                  </Label>
+                  <Label htmlFor="password" className="text-white">Password</Label>
                   <Input
                     id="password"
                     placeholder="••••••••"
@@ -154,8 +161,6 @@ export default function Signup() {
                     onBlur={() => setShowPasswordValidation(false)}
                     className="bg-gray-900/50 border-gray-700 focus:border-blue-500 focus:ring-blue-500 text-white placeholder-gray-400"
                   />
-
-                  {/* ✅ Conditional password validation feedback */}
                   {showPasswordValidation && (
                     <motion.ul
                       initial={{ opacity: 0, height: 0 }}
@@ -164,79 +169,36 @@ export default function Signup() {
                       transition={{ duration: 0.2 }}
                       className="text-xs mt-2 space-y-1"
                     >
-                      <li
-                        className={
-                          passwordValidations.length ? "text-green-400" : "text-red-400"
-                        }
-                      >
-                        • At least 8 characters
-                      </li>
-                      <li
-                        className={
-                          passwordValidations.uppercase ? "text-green-400" : "text-red-400"
-                        }
-                      >
-                        • One uppercase letter
-                      </li>
-                      <li
-                        className={
-                          passwordValidations.lowercase ? "text-green-400" : "text-red-400"
-                        }
-                      >
-                        • One lowercase letter
-                      </li>
-                      <li
-                        className={
-                          passwordValidations.number ? "text-green-400" : "text-red-400"
-                        }
-                      >
-                        • One number
-                      </li>
-                      <li
-                        className={
-                          passwordValidations.special ? "text-green-400" : "text-red-400"
-                        }
-                      >
-                        • One special character
-                      </li>
+                      <li className={passwordValidations.length ? "text-green-400" : "text-red-400"}>• At least 8 characters</li>
+                      <li className={passwordValidations.uppercase ? "text-green-400" : "text-red-400"}>• One uppercase letter</li>
+                      <li className={passwordValidations.lowercase ? "text-green-400" : "text-red-400"}>• One lowercase letter</li>
+                      <li className={passwordValidations.number ? "text-green-400" : "text-red-400"}>• One number</li>
+                      <li className={passwordValidations.special ? "text-green-400" : "text-red-400"}>• One special character</li>
                     </motion.ul>
                   )}
                 </LabelInputContainer>
 
-                {/* ✅ Retype password */}
+                {/* Confirm Password */}
                 <LabelInputContainer>
-                  <Label htmlFor="confirmPassword" className="text-white">
-                    Retype Password
-                  </Label>
+                  <Label htmlFor="confirmPassword" className="text-white">Retype Password</Label>
                   <Input
                     id="confirmPassword"
                     placeholder="••••••••"
                     type="password"
                     value={confirmPassword}
                     onChange={(e) => setConfirmPassword(e.target.value)}
-                    className={`bg-gray-900/50 border ${
-                      passwordsMatch || confirmPassword === ""
-                        ? "border-gray-700 focus:border-blue-500"
-                        : "border-red-500 focus:border-red-500"
-                    } focus:ring-blue-500 text-white placeholder-gray-400`}
+                    className={`bg-gray-900/50 border ${passwordsMatch || confirmPassword === "" ? "border-gray-700 focus:border-blue-500" : "border-red-500 focus:border-red-500"} focus:ring-blue-500 text-white placeholder-gray-400`}
                   />
                   {confirmPassword && (
-                    <p
-                      className={`text-xs mt-1 ${
-                        passwordsMatch ? "text-green-400" : "text-red-400"
-                      }`}
-                    >
-                      {passwordsMatch
-                        ? "✅ Passwords match"
-                        : "❌ Passwords do not match"}
+                    <p className={`text-xs mt-1 ${passwordsMatch ? "text-green-400" : "text-red-400"}`}>
+                      {passwordsMatch ? "✅ Passwords match" : "❌ Passwords do not match"}
                     </p>
                   )}
                 </LabelInputContainer>
 
+                {/* Role */}
                 <LabelInputContainer>
-                  <Label htmlFor="role" className="text-white">
-                    Role
-                  </Label>
+                  <Label htmlFor="role" className="text-white">Role</Label>
                   <select
                     id="role"
                     className="h-10 w-full rounded-md border border-gray-700 bg-gray-900/50 px-3 text-sm text-white placeholder-gray-400 focus:border-blue-500 focus:ring-blue-500"
@@ -248,45 +210,35 @@ export default function Signup() {
                     }}
                     required
                   >
-                    <option value="" disabled>
-                      Select role
-                    </option>
+                    <option value="" disabled>Select role</option>
                     <option value="HOD">HOD</option>
                     <option value="Lab Assistant">Lab Assistant</option>
                     <option value="Lab Incharge">Lab Incharge</option>
                   </select>
                 </LabelInputContainer>
 
+                {/* Lab selection */}
                 {requiresLabSelection && (
                   <LabelInputContainer>
-                    <Label htmlFor="lab" className="text-white">
-                      Assigned Lab
-                    </Label>
+                    <Label htmlFor="lab" className="text-white">Assigned Lab</Label>
                     <select
                       id="lab"
                       className="h-10 w-full rounded-md border border-gray-700 bg-gray-900/50 px-3 text-sm text-white placeholder-gray-400 focus:border-blue-500 focus:ring-blue-500"
                       value={lab}
                       onChange={(e) => setLab(e.target.value)}
-                      required={requiresLabSelection}
+                      required
                     >
-                      <option value="" disabled>
-                        Select lab
-                      </option>
+                      <option value="" disabled>Select lab</option>
                       {LAB_OPTIONS.map((name) => (
-                        <option key={name} value={name}>
-                          {name}
-                        </option>
+                        <option key={name} value={name}>{name}</option>
                       ))}
                     </select>
                   </LabelInputContainer>
                 )}
 
+                {/* Submit button */}
                 <button
-                  className={`group/btn relative block h-10 w-full rounded-md font-medium text-white shadow-[0px_1px_0px_0px_#ffffff20_inset,0px_-1px_0px_0px_#ffffff20_inset] border transition-all duration-200 ${
-                    isPasswordValid && passwordsMatch
-                      ? "bg-gradient-to-br from-gray-800 to-gray-900 border-gray-700 hover:from-gray-700 hover:to-gray-800"
-                      : "bg-gray-700 cursor-not-allowed opacity-60"
-                  }`}
+                  className={`group/btn relative block h-10 w-full rounded-md font-medium text-white shadow-[0px_1px_0px_0px_#ffffff20_inset,0px_-1px_0px_0px_#ffffff20_inset] border transition-all duration-200 ${isPasswordValid && passwordsMatch ? "bg-gradient-to-br from-gray-800 to-gray-900 border-gray-700 hover:from-gray-700 hover:to-gray-800" : "bg-gray-700 cursor-not-allowed opacity-60"}`}
                   type="submit"
                   disabled={!isPasswordValid || !passwordsMatch}
                 >
@@ -296,10 +248,7 @@ export default function Signup() {
                 <div className="text-center">
                   <p className="text-gray-400 text-sm">
                     Already have an account?{" "}
-                    <a
-                      href="/login"
-                      className="text-blue-400 hover:text-blue-300 transition-colors duration-200 font-medium"
-                    >
+                    <a href="/login" className="text-blue-400 hover:text-blue-300 transition-colors duration-200 font-medium">
                       Login
                     </a>
                   </p>
@@ -313,16 +262,6 @@ export default function Signup() {
   );
 }
 
-const LabelInputContainer = ({
-  children,
-  className,
-}: {
-  children: React.ReactNode;
-  className?: string;
-}) => {
-  return (
-    <div className={cn("flex w-full flex-col space-y-2", className)}>
-      {children}
-    </div>
-  );
-};
+const LabelInputContainer = ({ children, className }: { children: React.ReactNode; className?: string }) => (
+  <div className={cn("flex w-full flex-col space-y-2", className)}>{children}</div>
+);

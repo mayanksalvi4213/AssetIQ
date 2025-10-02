@@ -1,20 +1,47 @@
 "use client";
 import React from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { BackgroundGradient } from "@/components/ui/background-gradient";
 
 export function LoginForm() {
-  const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
+  const navigate = useNavigate();
+
+  const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    console.log("Login submitted");
+
+    const form = e.target as HTMLFormElement;
+    const email = (form.querySelector("#email") as HTMLInputElement).value;
+    const password = (form.querySelector("#password") as HTMLInputElement).value;
+
+    try {
+      const response = await fetch("http://127.0.0.1:5000/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password }),
+      });
+
+      const data = await response.json();
+
+      if (response.ok) {
+        console.log("Login successful!", data);
+        localStorage.setItem("token", data.token);
+        alert("Login successful!");
+        navigate("/dashboard"); // redirect to dashboard
+      } else {
+        alert(data.error || "Login failed!");
+      }
+    } catch (error) {
+      console.error("Error logging in:", error);
+      alert("Something went wrong. Check console.");
+    }
   };
 
   return (
     <div className="relative min-h-screen flex items-center justify-center bg-black text-white px-4 overflow-hidden">
-      {/* White Dot Background */}
+      {/* Background dots */}
       <div
         className={cn(
           "absolute inset-0 -z-20",
@@ -22,23 +49,17 @@ export function LoginForm() {
           "[background-image:radial-gradient(white_1px,transparent_1px)]"
         )}
       />
-
-      {/* Subtle radial fade */}
       <div className="pointer-events-none absolute inset-0 -z-10 bg-gradient-to-b from-black/40 via-black/70 to-black" />
 
       {/* Login Card */}
       <BackgroundGradient containerClassName="w-full max-w-md" className="rounded-3xl">
         <div className="shadow-input w-full rounded-3xl bg-neutral-900/70 backdrop-blur-md border border-white/15 p-6 md:p-10">
           <h2 className="text-2xl font-bold">Welcome Back</h2>
-          <p className="mt-2 text-sm text-gray-300">
-            Please log in to your account
-          </p>
+          <p className="mt-2 text-sm text-gray-300">Please log in to your account</p>
 
           <form onSubmit={handleSubmit} className="mt-6">
             <LabelInputContainer className="mb-4">
-              <Label htmlFor="email" className="text-white">
-                Email Address
-              </Label>
+              <Label htmlFor="email" className="text-white">Email Address</Label>
               <Input
                 id="email"
                 type="email"
@@ -49,9 +70,7 @@ export function LoginForm() {
             </LabelInputContainer>
 
             <LabelInputContainer className="mb-2">
-              <Label htmlFor="password" className="text-white">
-                Password
-              </Label>
+              <Label htmlFor="password" className="text-white">Password</Label>
               <Input
                 id="password"
                 type="password"
@@ -62,10 +81,7 @@ export function LoginForm() {
             </LabelInputContainer>
 
             <div className="flex justify-end mb-6">
-              <Link
-                to="/forgot"
-                className="text-sm text-blue-400 hover:underline hover:text-blue-300"
-              >
+              <Link to="/forgot" className="text-sm text-blue-400 hover:underline hover:text-blue-300">
                 Forgot password?
               </Link>
             </div>
@@ -80,10 +96,7 @@ export function LoginForm() {
 
             <p className="mt-6 text-center text-sm text-gray-400">
               Don&apos;t have an account?{" "}
-              <Link
-                to="/signup"
-                className="font-medium text-blue-400 hover:underline hover:text-blue-300"
-              >
+              <Link to="/signup" className="font-medium text-blue-400 hover:underline hover:text-blue-300">
                 Create one
               </Link>
             </p>
@@ -101,10 +114,6 @@ const BottomGradient = () => (
   </>
 );
 
-const LabelInputContainer = ({
-  children,
-  className,
-}: {
-  children: React.ReactNode;
-  className?: string;
-}) => <div className={cn("flex w-full flex-col space-y-2", className)}>{children}</div>;
+const LabelInputContainer = ({ children, className }: { children: React.ReactNode; className?: string }) => (
+  <div className={cn("flex w-full flex-col space-y-2", className)}>{children}</div>
+);
