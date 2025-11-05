@@ -11,6 +11,7 @@ import LabConfiguration from "./pages/Labconfiguration.tsx";
 import LabFloorPlan from "./pages/Labplan.tsx";
 import AllAssets from "./pages/AllAssets.tsx";
 import Reports from "./pages/Reports.tsx";
+import Issues from "./pages/Issues.tsx";
 
 const App: React.FC = () => {
   return (
@@ -27,6 +28,7 @@ const App: React.FC = () => {
         <Route path="/lab-plan" element={<LabFloorPlan />} />
         <Route path="/assets" element={<AllAssets />} />
         <Route path="/reports" element={<Reports />} />
+        <Route path="/dashboard/issues" element={<Issues />} />
         {/* <Route path="/register" element={<RegisterPage />} /> */}
       </Routes>
     </Router>

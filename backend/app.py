@@ -224,8 +224,15 @@ def enhanced_ocr_scan():
             return jsonify({"error": "No file uploaded"}), 400
             
         file = request.files["file"]
-        if not file.filename.lower().endswith(".pdf"):
-            return jsonify({"error": "Only PDF files are supported"}), 400
+        filename_lower = file.filename.lower()
+        allowed_extensions = ('.pdf', '.png', '.jpg', '.jpeg')
+        
+        if not filename_lower.endswith(allowed_extensions):
+            return jsonify({"error": "Only PDF, PNG, JPG, and JPEG files are supported"}), 400
+        
+        # Get custom asset ID prefix if provided
+        asset_id_prefix = request.form.get("asset_id_prefix", "").strip()
+        print(f"Custom asset ID prefix: '{asset_id_prefix}'")
         
         # Get current user (optional for demo)
         try:
@@ -237,31 +244,51 @@ def enhanced_ocr_scan():
         # Read file content
         file_content = file.read()
         
+        # Determine file type
+        is_image = filename_lower.endswith(('.png', '.jpg', '.jpeg'))
+        is_pdf = filename_lower.endswith('.pdf')
+        
         # STEP 1: Extract text using LLM Whisperer API (with fallback to OCR)
-        print("Extracting text with LLM Whisperer...")
         raw_text = None
-        try:
-            raw_text = extract_text_with_llm_whisperer(file_content, LLM_WHISPERER_API_KEY)
-            print(f"Successfully extracted {len(raw_text)} characters with LLM Whisperer")
-        except Exception as api_error:
-            print(f"LLM Whisperer failed: {str(api_error)}")
-            print("Falling back to traditional OCR...")
-            
-            # Fallback to traditional OCR
+        
+        if is_image:
+            # For images, use OCR directly
+            print("Processing image file with OCR...")
             try:
-                images = convert_from_bytes(file_content, poppler_path=r"C:\poppler\Library\bin")
-                raw_text = ""
-                for i, image in enumerate(images):
-                    text = pytesseract.image_to_string(image, lang="eng")
-                    raw_text += f"\n--- Page {i+1} ---\n{text}"
-                print(f"Successfully extracted {len(raw_text)} characters with fallback OCR")
+                image = Image.open(request.files["file"].stream)
+                raw_text = pytesseract.image_to_string(image, lang="eng")
+                print(f"Successfully extracted {len(raw_text)} characters from image")
             except Exception as ocr_error:
                 return jsonify({
-                    "error": f"Both LLM Whisperer and OCR failed",
-                    "llm_whisperer_error": str(api_error),
+                    "error": f"Failed to extract text from image",
                     "ocr_error": str(ocr_error),
-                    "details": "Could not extract text from PDF using any method"
+                    "details": "Could not extract text from image file"
                 }), 500
+        else:
+            # For PDFs, use LLM Whisperer with OCR fallback
+            print("Extracting text with LLM Whisperer...")
+            try:
+                raw_text = extract_text_with_llm_whisperer(file_content, LLM_WHISPERER_API_KEY)
+                print(f"Successfully extracted {len(raw_text)} characters with LLM Whisperer")
+            except Exception as api_error:
+                print(f"LLM Whisperer failed: {str(api_error)}")
+                print("Falling back to traditional OCR...")
+                
+                # Fallback to traditional OCR for PDF
+                try:
+                    images = convert_from_bytes(file_content, poppler_path=r"C:\poppler\Library\bin")
+                    raw_text = ""
+                    for i, image in enumerate(images):
+                        text = pytesseract.image_to_string(image, lang="eng")
+                        raw_text += f"\n--- Page {i+1} ---\n{text}"
+                    print(f"Successfully extracted {len(raw_text)} characters with fallback OCR")
+                except Exception as ocr_error:
+                    return jsonify({
+                        "error": f"Both LLM Whisperer and OCR failed",
+                        "llm_whisperer_error": str(api_error),
+                        "ocr_error": str(ocr_error),
+                        "details": "Could not extract text from PDF using any method"
+                    }), 500
         
         if not raw_text or len(raw_text.strip()) == 0:
             return jsonify({"error": "No text could be extracted from the PDF"}), 400
@@ -333,7 +360,7 @@ def enhanced_ocr_scan():
         
         # Create asset records - one for each individual unit
         created_assets = []
-        asset_counter = 0
+        asset_counter = 1  # Start from 1 for sequential numbering
         
         for extracted_asset in bill_info.assets:
             # Get serial numbers (batch numbers) for this item
@@ -348,12 +375,18 @@ def enhanced_ocr_scan():
             for unit_idx in range(quantity):
                 try:
                     # Generate unique asset ID for each unit
-                    try:
-                        from models.bill import Asset
-                        asset_id = Asset.get_next_asset_id(extracted_asset.category)
-                    except:
-                        asset_id = f"{extracted_asset.category[:3].upper()}{datetime.now().strftime('%Y%m%d%H%M%S')}{asset_counter}"
-                        asset_counter += 1
+                    if asset_id_prefix:
+                        # Use custom prefix with sequential numbering
+                        asset_id = f"{asset_id_prefix}{asset_counter}"
+                    else:
+                        # Use default asset ID generation
+                        try:
+                            from models.bill import Asset
+                            asset_id = Asset.get_next_asset_id(extracted_asset.category)
+                        except:
+                            asset_id = f"{extracted_asset.category[:3].upper()}{datetime.now().strftime('%Y%m%d%H%M%S')}{asset_counter}"
+                    
+                    asset_counter += 1
                     
                     # Get the specific serial number for this unit (if available)
                     unit_serial_number = serial_numbers[unit_idx] if unit_idx < len(serial_numbers) else ''
@@ -387,6 +420,7 @@ def enhanced_ocr_scan():
                         'unit_price': extracted_asset.unit_price,
                         'total_price': extracted_asset.unit_price,  # Price for 1 unit
                         'warranty_period': extracted_asset.warranty_period,
+                        'device_type': extracted_asset.device_type,  # Auto-detected device type
                         'qr_code_data': qr_code_image,
                         'status': 'active'
                     }
@@ -412,7 +446,8 @@ def enhanced_ocr_scan():
                         "brand": getattr(asset, 'brand', extracted_asset.brand),
                         "model": getattr(asset, 'model', extracted_asset.model),
                         "serial_number": unit_serial_number,
-                        "warranty_period": getattr(asset, 'warranty_period', extracted_asset.warranty_period)
+                        "warranty_period": getattr(asset, 'warranty_period', extracted_asset.warranty_period),
+                        "device_type": getattr(asset, 'device_type', extracted_asset.device_type)  # Include auto-detected device type
                     })
                     
                     print(f"Created asset {unit_idx + 1}/{quantity}: {asset_id} - {extracted_asset.name} (S/N: {unit_serial_number})")

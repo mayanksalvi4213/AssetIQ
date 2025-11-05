@@ -55,15 +55,15 @@ export default function AllAssets() {
 
           <MenuItem setActive={setActive} active={active} item="Operations">
             <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/dashboard/transfers">Transfers</HoveredLink>
-              <HoveredLink href="/dashboard/issues">Issues</HoveredLink>
-              <HoveredLink href="/dashboard/documents">Documents</HoveredLink>
+              <HoveredLink href="/transfers">Transfers</HoveredLink>
+              <HoveredLink href="/issues">Issues</HoveredLink>
+              <HoveredLink href="/documents">Documents</HoveredLink>
             </div>
           </MenuItem>
 
           <MenuItem setActive={setActive} active={active} item="Analytics">
             <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/dashboard/reports">Reports</HoveredLink>
+              <HoveredLink href="/reports">Reports</HoveredLink>
             </div>
           </MenuItem>
         </Menu>

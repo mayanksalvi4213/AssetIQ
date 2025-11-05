@@ -49,6 +49,15 @@ export const FileUpload = ({
     onDropRejected: (error) => {
       console.log(error);
     },
+    accept: {
+      'application/pdf': ['.pdf'],
+      'image/jpeg': ['.jpg', '.jpeg'],
+      'image/png': ['.png'],
+      'image/bmp': ['.bmp'],
+      'image/tiff': ['.tiff', '.tif'],
+      'image/gif': ['.gif'],
+      'image/webp': ['.webp']
+    }
   });
 
   return (
@@ -62,6 +71,7 @@ export const FileUpload = ({
           ref={fileInputRef}
           id="file-upload-handle"
           type="file"
+          accept=".pdf,.jpg,.jpeg,.png,.bmp,.tiff,.tif,.gif,.webp"
           onChange={(e) => handleFileChange(Array.from(e.target.files || []))}
           className="hidden"
         />

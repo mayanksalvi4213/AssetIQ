@@ -14,11 +14,27 @@ interface Device {
   warranty: string;
   purchaseDate: string;
   vendor: string;
+  health?: "healthy" | "issue"; // PC health status
+  os?: string[]; // Operating systems
+}
+
+interface GridCell {
+  id: string | null;
+  equipmentType: string;
+  os: string[];
+  device?: Device; // Link to device details
+}
+
+interface SeatingArrangement {
+  rows: number;
+  columns: number;
+  grid: GridCell[][];
 }
 
 interface Lab {
   name: string;
   devices: Device[];
+  seatingArrangement?: SeatingArrangement;
 }
 
 export default function Labplan() {
@@ -31,20 +47,60 @@ export default function Labplan() {
     {
       name: "Lab 309",
       devices: [
-        { id: "pc-1", type: "PC", batch: "Bill #123", warranty: "3 yrs", purchaseDate: "2022-07-01", vendor: "Dell" },
-        { id: "pc-2", type: "PC", batch: "Bill #123", warranty: "3 yrs", purchaseDate: "2022-07-01", vendor: "Dell" },
-        { id: "pc-3", type: "PC", batch: "Bill #777", warranty: "2 yrs", purchaseDate: "2023-01-15", vendor: "HP" },
-        { id: "ac-1", type: "AC", batch: "Bill #321", warranty: "5 yrs", purchaseDate: "2021-03-20", vendor: "Voltas" },
-        { id: "proj-1", type: "Projector", batch: "Bill #421", warranty: "2 yrs", purchaseDate: "2023-06-11", vendor: "Epson" },
+        { id: "C001", type: "PC", batch: "Bill #123", warranty: "3 yrs", purchaseDate: "2022-07-01", vendor: "Dell", health: "healthy", os: ["Windows"] },
+        { id: "C002", type: "PC", batch: "Bill #123", warranty: "3 yrs", purchaseDate: "2022-07-01", vendor: "Dell", health: "issue", os: ["Windows", "Linux"] },
+        { id: "C003", type: "PC", batch: "Bill #777", warranty: "2 yrs", purchaseDate: "2023-01-15", vendor: "HP", health: "healthy", os: ["Windows"] },
+        { id: "C004", type: "PC", batch: "Bill #777", warranty: "2 yrs", purchaseDate: "2023-01-15", vendor: "HP", health: "healthy", os: ["Linux"] },
+        { id: "C005", type: "PC", batch: "Bill #777", warranty: "2 yrs", purchaseDate: "2023-01-15", vendor: "HP", health: "issue", os: ["Windows"] },
+        { id: "C006", type: "PC", batch: "Bill #123", warranty: "3 yrs", purchaseDate: "2022-07-01", vendor: "Dell", health: "healthy", os: ["Windows"] },
       ],
+      seatingArrangement: {
+        rows: 3,
+        columns: 4,
+        grid: [
+          [
+            { id: "C001", equipmentType: "PC", os: ["Windows"], device: { id: "C001", type: "PC", batch: "Bill #123", warranty: "3 yrs", purchaseDate: "2022-07-01", vendor: "Dell", health: "healthy", os: ["Windows"] } },
+            { id: "C002", equipmentType: "PC", os: ["Windows", "Linux"], device: { id: "C002", type: "PC", batch: "Bill #123", warranty: "3 yrs", purchaseDate: "2022-07-01", vendor: "Dell", health: "issue", os: ["Windows", "Linux"] } },
+            { id: null, equipmentType: "Empty", os: [] },
+            { id: "C003", equipmentType: "PC", os: ["Windows"], device: { id: "C003", type: "PC", batch: "Bill #777", warranty: "2 yrs", purchaseDate: "2023-01-15", vendor: "HP", health: "healthy", os: ["Windows"] } },
+          ],
+          [
+            { id: "C004", equipmentType: "PC", os: ["Linux"], device: { id: "C004", type: "PC", batch: "Bill #777", warranty: "2 yrs", purchaseDate: "2023-01-15", vendor: "HP", health: "healthy", os: ["Linux"] } },
+            { id: null, equipmentType: "Empty", os: [] },
+            { id: null, equipmentType: "Empty", os: [] },
+            { id: "C005", equipmentType: "PC", os: ["Windows"], device: { id: "C005", type: "PC", batch: "Bill #777", warranty: "2 yrs", purchaseDate: "2023-01-15", vendor: "HP", health: "issue", os: ["Windows"] } },
+          ],
+          [
+            { id: "C006", equipmentType: "PC", os: ["Windows"], device: { id: "C006", type: "PC", batch: "Bill #123", warranty: "3 yrs", purchaseDate: "2022-07-01", vendor: "Dell", health: "healthy", os: ["Windows"] } },
+            { id: null, equipmentType: "Empty", os: [] },
+            { id: null, equipmentType: "Empty", os: [] },
+            { id: null, equipmentType: "Empty", os: [] },
+          ],
+        ],
+      },
     },
     {
       name: "Lab 310",
       devices: [
-        { id: "pc-1", type: "PC", batch: "Bill #555", warranty: "3 yrs", purchaseDate: "2021-09-10", vendor: "Lenovo" },
-        { id: "pc-2", type: "PC", batch: "Bill #555", warranty: "3 yrs", purchaseDate: "2021-09-10", vendor: "Lenovo" },
-        { id: "ac-1", type: "AC", batch: "Bill #777", warranty: "5 yrs", purchaseDate: "2022-01-05", vendor: "LG" },
+        { id: "C001", type: "PC", batch: "Bill #555", warranty: "3 yrs", purchaseDate: "2021-09-10", vendor: "Lenovo", health: "healthy", os: ["Windows"] },
+        { id: "C002", type: "PC", batch: "Bill #555", warranty: "3 yrs", purchaseDate: "2021-09-10", vendor: "Lenovo", health: "healthy", os: ["Windows"] },
       ],
+      seatingArrangement: {
+        rows: 2,
+        columns: 3,
+        grid: [
+          [
+            { id: "C001", equipmentType: "PC", os: ["Windows"], device: { id: "C001", type: "PC", batch: "Bill #555", warranty: "3 yrs", purchaseDate: "2021-09-10", vendor: "Lenovo", health: "healthy", os: ["Windows"] } },
+            { id: "C002", equipmentType: "PC", os: ["Windows"], device: { id: "C002", type: "PC", batch: "Bill #555", warranty: "3 yrs", purchaseDate: "2021-09-10", vendor: "Lenovo", health: "healthy", os: ["Windows"] } },
+            { id: null, equipmentType: "Empty", os: [] },
+          ],
+          [
+            { id: null, equipmentType: "Empty", os: [] },
+            { id: null, equipmentType: "Empty", os: [] },
+            { id: null, equipmentType: "Empty", os: [] },
+          ],
+        ],
+      },
     },
   ];
 
@@ -135,19 +191,91 @@ export default function Labplan() {
             <BackgroundGradient className="p-8 rounded-xl shadow-xl">
               <h2 className="text-2xl font-bold mb-6">{selectedLab.name} - Floor Plan</h2>
 
-              {/* Render devices as clickable tiles */}
-              <div className="grid grid-cols-6 gap-4">
-                {selectedLab.devices.map((device) => (
-                  <div
-                    key={device.id}
-                    className="bg-neutral-800 rounded-lg p-4 text-center shadow-lg cursor-pointer hover:bg-neutral-700 transition"
-                    onClick={() => setSelectedDevice(device)}
-                  >
-                    <p className="font-semibold">{device.type}</p>
-                    <p className="text-xs text-gray-400">{device.batch}</p>
+              {/* Render seating arrangement if available */}
+              {selectedLab.seatingArrangement ? (
+                <div className="overflow-x-auto">
+                  <div className="inline-block">
+                    {selectedLab.seatingArrangement.grid.map((row, rowIdx) => (
+                      <div key={rowIdx} className="flex gap-2 mb-2">
+                        {row.map((cell, colIdx) => (
+                          <div
+                            key={colIdx}
+                            onClick={() => cell.device && setSelectedDevice(cell.device)}
+                            className={`
+                              w-24 h-24 rounded-lg border-2 flex flex-col items-center justify-center transition cursor-pointer
+                              ${cell.equipmentType === "PC" && cell.device?.health === "healthy" 
+                                ? "bg-green-600 border-green-400 hover:bg-green-700" 
+                                : ""}
+                              ${cell.equipmentType === "PC" && cell.device?.health === "issue" 
+                                ? "bg-red-600 border-red-400 hover:bg-red-700" 
+                                : ""}
+                              ${cell.equipmentType === "Empty" 
+                                ? "bg-neutral-800 border-gray-600" 
+                                : ""}
+                            `}
+                          >
+                            {cell.equipmentType === "PC" && cell.device && (
+                              <>
+                                <div className="text-white font-bold text-sm">{cell.id}</div>
+                                <div className="text-white text-2xl">🖥️</div>
+                                <div className="flex gap-1 mt-1">
+                                  {cell.os.includes("Windows") && (
+                                    <div className="text-xs px-1 py-0.5 bg-blue-800 text-white rounded">
+                                      Win
+                                    </div>
+                                  )}
+                                  {cell.os.includes("Linux") && (
+                                    <div className="text-xs px-1 py-0.5 bg-orange-600 text-white rounded">
+                                      Linux
+                                    </div>
+                                  )}
+                                </div>
+                              </>
+                            )}
+                            {cell.equipmentType === "Empty" && (
+                              <div className="text-gray-500 text-xs">Empty</div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    ))}
                   </div>
-                ))}
-              </div>
+                  
+                  {/* Legend */}
+                  <div className="mt-6 flex gap-6 items-center">
+                    <div className="flex items-center gap-2">
+                      <div className="w-4 h-4 bg-green-600 rounded"></div>
+                      <span className="text-sm text-gray-300">Healthy PC</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <div className="w-4 h-4 bg-red-600 rounded"></div>
+                      <span className="text-sm text-gray-300">PC with Issues</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <div className="w-4 h-4 bg-neutral-800 border border-gray-600 rounded"></div>
+                      <span className="text-sm text-gray-300">Empty</span>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                // Fallback to simple grid if no seating arrangement
+                <div className="grid grid-cols-6 gap-4">
+                  {selectedLab.devices.map((device) => (
+                    <div
+                      key={device.id}
+                      className={`rounded-lg p-4 text-center shadow-lg cursor-pointer transition ${
+                        device.health === "healthy"
+                          ? "bg-green-600 hover:bg-green-700"
+                          : "bg-red-600 hover:bg-red-700"
+                      }`}
+                      onClick={() => setSelectedDevice(device)}
+                    >
+                      <p className="font-semibold">{device.type}</p>
+                      <p className="text-xs text-gray-200">{device.id}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
             </BackgroundGradient>
           </motion.div>
         )}
@@ -163,16 +291,37 @@ export default function Labplan() {
             <motion.div
               initial={{ scale: 0.9 }}
               animate={{ scale: 1 }}
-              className="bg-neutral-900 p-6 rounded-xl shadow-lg w-96"
+              className={`p-6 rounded-xl shadow-lg w-96 ${
+                selectedDevice.health === "healthy" ? "bg-green-900" : "bg-red-900"
+              }`}
               onClick={(e) => e.stopPropagation()} // prevent closing when clicking inside
             >
-              <h3 className="text-xl font-bold mb-4">{selectedDevice.type} Details</h3>
-              <p><span className="font-semibold">Batch:</span> {selectedDevice.batch}</p>
-              <p><span className="font-semibold">Warranty:</span> {selectedDevice.warranty}</p>
-              <p><span className="font-semibold">Purchase Date:</span> {selectedDevice.purchaseDate}</p>
-              <p><span className="font-semibold">Vendor:</span> {selectedDevice.vendor}</p>
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-xl font-bold">{selectedDevice.type} - {selectedDevice.id}</h3>
+                <div className={`px-3 py-1 rounded-full text-xs font-semibold ${
+                  selectedDevice.health === "healthy" 
+                    ? "bg-green-600 text-white" 
+                    : "bg-red-600 text-white"
+                }`}>
+                  {selectedDevice.health === "healthy" ? "✓ Healthy" : "⚠ Issue"}
+                </div>
+              </div>
+              
+              <div className="space-y-2 text-gray-200">
+                <p><span className="font-semibold">Batch:</span> {selectedDevice.batch}</p>
+                <p><span className="font-semibold">Warranty:</span> {selectedDevice.warranty}</p>
+                <p><span className="font-semibold">Purchase Date:</span> {selectedDevice.purchaseDate}</p>
+                <p><span className="font-semibold">Vendor:</span> {selectedDevice.vendor}</p>
+                {selectedDevice.os && (
+                  <p>
+                    <span className="font-semibold">OS:</span>{" "}
+                    {selectedDevice.os.join(", ")}
+                  </p>
+                )}
+              </div>
+              
               <button
-                className="mt-4 px-4 py-2 bg-red-600 rounded-lg hover:bg-red-700"
+                className="mt-4 w-full px-4 py-2 bg-neutral-800 hover:bg-neutral-700 rounded-lg transition text-white"
                 onClick={() => setSelectedDevice(null)}
               >
                 Close

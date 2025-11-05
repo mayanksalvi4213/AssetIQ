@@ -17,6 +17,7 @@ interface Asset {
   qr_code: string;
   brand?: string;
   model?: string;
+  device_type?: string; // Auto-detected device type
 }
 
 interface BillInfo {
@@ -49,17 +50,32 @@ const OcrPage: React.FC = () => {
   const [active, setActive] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [showRawText, setShowRawText] = useState(false);
+  const [assetIdPrefix, setAssetIdPrefix] = useState<string>("");
 
   const handleFileUpload = (files: File[]) => {
     if (file) {
-      alert("You can only upload one PDF at a time. Please remove the current file first.");
+      alert("You can only upload one file at a time. Please remove the current file first.");
       return;
     }
     const uploadedFile = files[0];
-    if (uploadedFile && uploadedFile.type !== "application/pdf") {
-      alert("Please upload only PDF files.");
+    
+    // Check if file type is supported (PDF or Image)
+    const supportedTypes = [
+      'application/pdf',
+      'image/jpeg',
+      'image/jpg', 
+      'image/png',
+      'image/bmp',
+      'image/tiff',
+      'image/gif',
+      'image/webp'
+    ];
+    
+    if (uploadedFile && !supportedTypes.includes(uploadedFile.type)) {
+      alert("Please upload PDF or Image files only (PDF, JPG, PNG, BMP, TIFF, GIF, WebP).");
       return;
     }
+    
     setFile(uploadedFile);
     setScanResult(null); // Clear previous results
     console.log("Uploaded file:", uploadedFile);
@@ -78,6 +94,11 @@ const OcrPage: React.FC = () => {
     try {
       const formData = new FormData();
       formData.append("file", file);
+      
+      // Add custom asset ID prefix if provided
+      if (assetIdPrefix) {
+        formData.append("asset_id_prefix", assetIdPrefix);
+      }
 
       // Get auth token from localStorage
       const token = localStorage.getItem('token');
@@ -186,7 +207,7 @@ const OcrPage: React.FC = () => {
         className="text-3xl font-bold mb-8 relative z-20 mt-16"
         style={{ color: "#f3f4f6" }}
       >
-        Asset Registry Scanner
+        Asset Registry Scanner 
       </h1>
 
       {/* File Upload */}
@@ -201,8 +222,10 @@ const OcrPage: React.FC = () => {
           ) : (
             <div className="flex items-center justify-between p-4">
               <div className="flex items-center gap-4">
-                <div className="w-12 h-12 bg-red-600 rounded-lg flex items-center justify-center">
-                  <span className="text-white font-bold text-sm">PDF</span>
+                <div className={`w-12 h-12 ${file.type === 'application/pdf' ? 'bg-red-600' : 'bg-blue-600'} rounded-lg flex items-center justify-center`}>
+                  <span className="text-white font-bold text-sm">
+                    {file.type === 'application/pdf' ? 'PDF' : 'IMG'}
+                  </span>
                 </div>
                 <div>
                   <p className="text-gray-200 font-medium">{file.name}</p>
@@ -226,15 +249,47 @@ const OcrPage: React.FC = () => {
 
       {/* Scan Button */}
       {file && !loading && !scanResult && (
-        <div className="flex gap-4 mb-6 relative z-20">
-          <HoverBorderGradient
-            as="button"
-            containerClassName="rounded-full"
-            className="px-6 py-2 bg-blue-600 text-white font-semibold"
-            onClick={handleScan}
-          >
-            Scan PDF & Extract Assets
-          </HoverBorderGradient>
+        <div className="w-full max-w-4xl mb-6 relative z-20">
+          {/* Custom Asset ID Prefix Input */}
+          <div className="mb-4 p-6 rounded-lg border border-gray-600 bg-gray-800/50">
+            <h3 className="text-gray-200 text-lg font-semibold mb-3">
+              🏷️ Custom Asset ID Prefix (Optional)
+            </h3>
+            <p className="text-gray-400 text-sm mb-3">
+              Enter a prefix for asset IDs. Assets will be numbered sequentially: prefix/1, prefix/2, etc.
+            </p>
+            <div className="flex gap-3 items-center">
+              <input
+                type="text"
+                placeholder="e.g., APSIT/COM/303/"
+                value={assetIdPrefix}
+                onChange={(e) => setAssetIdPrefix(e.target.value)}
+                className="flex-1 px-4 py-2 rounded-lg border border-gray-600 bg-gray-900 text-gray-200 placeholder-gray-500 focus:border-blue-500 focus:outline-none"
+              />
+              {assetIdPrefix && (
+                <div className="text-gray-400 text-sm">
+                  Preview: <span className="text-blue-400 font-medium">{assetIdPrefix}1</span>, <span className="text-blue-400 font-medium">{assetIdPrefix}2</span>, ...
+                </div>
+              )}
+            </div>
+            {!assetIdPrefix && (
+              <p className="text-gray-500 text-xs mt-2">
+                💡 Leave empty for default IDs (ASSET-001, ASSET-002, etc.)
+              </p>
+            )}
+          </div>
+
+          {/* Scan Button */}
+          <div className="flex justify-center">
+            <HoverBorderGradient
+              as="button"
+              containerClassName="rounded-full"
+              className="px-6 py-2 bg-blue-600 text-white font-semibold"
+              onClick={handleScan}
+            >
+              {file.type === 'application/pdf' ? 'Scan PDF & Extract Assets' : 'Scan Image & Extract Assets'}
+            </HoverBorderGradient>
+          </div>
         </div>
       )}
 
@@ -304,13 +359,18 @@ const OcrPage: React.FC = () => {
                   <div className="grid grid-cols-1 lg:grid-cols-4 gap-4 items-start">
                     {/* Asset Info */}
                     <div className="lg:col-span-3">
-                      <div className="flex items-center gap-3 mb-3">
+                      <div className="flex items-center gap-3 mb-3 flex-wrap">
                         <span className="bg-blue-600 text-white px-3 py-1 rounded-full text-sm font-semibold">
                           {asset.asset_id}
                         </span>
                         <span className="bg-purple-600 text-white px-2 py-1 rounded text-xs">
                           {asset.category.toUpperCase()}
                         </span>
+                        {asset.device_type && (
+                          <span className="bg-green-600 text-white px-2 py-1 rounded text-xs flex items-center gap-1">
+                            🖥️ {asset.device_type}
+                          </span>
+                        )}
                       </div>
                       
                       <h4 className="text-gray-200 font-semibold text-lg mb-2">
