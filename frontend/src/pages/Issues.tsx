@@ -1,5 +1,5 @@
 "use client";
-import React, { useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { motion } from "motion/react";
 import { Menu, MenuItem, HoveredLink } from "@/components/ui/navbar-menu";
 import { PlaceholdersAndVanishInput } from "@/components/ui/placeholders-and-vanish-input";
@@ -15,17 +15,19 @@ interface Issue {
   severity: "low" | "medium" | "high" | "critical";
   status: "open" | "in-progress" | "resolved";
   reportedDate: string;
-  reportedBy: string;
+  reportedBy?: string;
 }
 
 interface Device {
-  id: string;
+  deviceId: number;
+  id?: string | null; // assigned_code / station id
+  assignedCode?: string | null;
   type: string;
-  batch: string;
-  warranty: string;
-  purchaseDate: string;
-  vendor: string;
-  health: "healthy" | "issue";
+  brand?: string;
+  model?: string;
+  billId?: number;
+  invoiceNumber?: string;
+  isActive: boolean;
   os?: string[];
   issues: Issue[];
 }
@@ -34,7 +36,11 @@ interface GridCell {
   id: string | null;
   equipmentType: string;
   os: string[];
-  device?: Device;
+  device?: Device | null;
+  deviceGroup?: {
+    assignedCode: string;
+    devices: Device[];
+  };
 }
 
 interface SeatingArrangement {
@@ -44,367 +50,40 @@ interface SeatingArrangement {
 }
 
 interface Lab {
-  name: string;
-  devices: Device[];
+  labNumber: string;
+  labName: string;
   seatingArrangement?: SeatingArrangement;
+}
+
+interface LabListItem {
+  lab_id: string;
+  lab_name: string;
+  rows: number;
+  columns: number;
 }
 
 interface TicketForm {
   title: string;
   description: string;
   severity: "low" | "medium" | "high" | "critical";
+  issueKey: string;
 }
 
 export default function Issues() {
   const [active, setActive] = useState<string | null>(null);
+  const [labs, setLabs] = useState<LabListItem[]>([]);
   const [selectedLab, setSelectedLab] = useState<Lab | null>(null);
   const [selectedDevice, setSelectedDevice] = useState<Device | null>(null);
   const [showRaiseTicket, setShowRaiseTicket] = useState(false);
+  const [loadingLabs, setLoadingLabs] = useState(false);
+  const [loadingLabDetail, setLoadingLabDetail] = useState(false);
+  const [labError, setLabError] = useState<string | null>(null);
   const [ticketForm, setTicketForm] = useState<TicketForm>({
     title: "",
     description: "",
     severity: "medium",
+    issueKey: "no-boot",
   });
-
-  // Sample data with issues
-  const labs: Lab[] = [
-    {
-      name: "Lab 309",
-      devices: [
-        {
-          id: "C001",
-          type: "PC",
-          batch: "Bill #123",
-          warranty: "3 yrs",
-          purchaseDate: "2022-07-01",
-          vendor: "Dell",
-          health: "healthy",
-          os: ["Windows"],
-          issues: [],
-        },
-        {
-          id: "C002",
-          type: "PC",
-          batch: "Bill #123",
-          warranty: "3 yrs",
-          purchaseDate: "2022-07-01",
-          vendor: "Dell",
-          health: "issue",
-          os: ["Windows", "Linux"],
-          issues: [
-            {
-              id: "ISS-001",
-              title: "Monitor Not Working",
-              description: "Monitor screen remains black even after restart",
-              severity: "high",
-              status: "open",
-              reportedDate: "2025-11-05",
-              reportedBy: "Admin",
-            },
-            {
-              id: "ISS-002",
-              title: "Slow Performance",
-              description: "System running very slow, taking time to boot",
-              severity: "medium",
-              status: "in-progress",
-              reportedDate: "2025-11-03",
-              reportedBy: "Lab Technician",
-            },
-          ],
-        },
-        {
-          id: "C003",
-          type: "PC",
-          batch: "Bill #777",
-          warranty: "2 yrs",
-          purchaseDate: "2023-01-15",
-          vendor: "HP",
-          health: "healthy",
-          os: ["Windows"],
-          issues: [],
-        },
-        {
-          id: "C004",
-          type: "PC",
-          batch: "Bill #777",
-          warranty: "2 yrs",
-          purchaseDate: "2023-01-15",
-          vendor: "HP",
-          health: "healthy",
-          os: ["Linux"],
-          issues: [],
-        },
-        {
-          id: "C005",
-          type: "PC",
-          batch: "Bill #777",
-          warranty: "2 yrs",
-          purchaseDate: "2023-01-15",
-          vendor: "HP",
-          health: "issue",
-          os: ["Windows"],
-          issues: [
-            {
-              id: "ISS-003",
-              title: "Keyboard Not Responding",
-              description: "USB keyboard not detected, tried multiple ports",
-              severity: "critical",
-              status: "open",
-              reportedDate: "2025-11-06",
-              reportedBy: "Student",
-            },
-          ],
-        },
-        {
-          id: "C006",
-          type: "PC",
-          batch: "Bill #123",
-          warranty: "3 yrs",
-          purchaseDate: "2022-07-01",
-          vendor: "Dell",
-          health: "healthy",
-          os: ["Windows"],
-          issues: [],
-        },
-      ],
-      seatingArrangement: {
-        rows: 3,
-        columns: 4,
-        grid: [
-          [
-            {
-              id: "C001",
-              equipmentType: "PC",
-              os: ["Windows"],
-              device: {
-                id: "C001",
-                type: "PC",
-                batch: "Bill #123",
-                warranty: "3 yrs",
-                purchaseDate: "2022-07-01",
-                vendor: "Dell",
-                health: "healthy",
-                os: ["Windows"],
-                issues: [],
-              },
-            },
-            {
-              id: "C002",
-              equipmentType: "PC",
-              os: ["Windows", "Linux"],
-              device: {
-                id: "C002",
-                type: "PC",
-                batch: "Bill #123",
-                warranty: "3 yrs",
-                purchaseDate: "2022-07-01",
-                vendor: "Dell",
-                health: "issue",
-                os: ["Windows", "Linux"],
-                issues: [
-                  {
-                    id: "ISS-001",
-                    title: "Monitor Not Working",
-                    description: "Monitor screen remains black even after restart",
-                    severity: "high",
-                    status: "open",
-                    reportedDate: "2025-11-05",
-                    reportedBy: "Admin",
-                  },
-                  {
-                    id: "ISS-002",
-                    title: "Slow Performance",
-                    description: "System running very slow, taking time to boot",
-                    severity: "medium",
-                    status: "in-progress",
-                    reportedDate: "2025-11-03",
-                    reportedBy: "Lab Technician",
-                  },
-                ],
-              },
-            },
-            { id: null, equipmentType: "Empty", os: [] },
-            {
-              id: "C003",
-              equipmentType: "PC",
-              os: ["Windows"],
-              device: {
-                id: "C003",
-                type: "PC",
-                batch: "Bill #777",
-                warranty: "2 yrs",
-                purchaseDate: "2023-01-15",
-                vendor: "HP",
-                health: "healthy",
-                os: ["Windows"],
-                issues: [],
-              },
-            },
-          ],
-          [
-            {
-              id: "C004",
-              equipmentType: "PC",
-              os: ["Linux"],
-              device: {
-                id: "C004",
-                type: "PC",
-                batch: "Bill #777",
-                warranty: "2 yrs",
-                purchaseDate: "2023-01-15",
-                vendor: "HP",
-                health: "healthy",
-                os: ["Linux"],
-                issues: [],
-              },
-            },
-            { id: null, equipmentType: "Empty", os: [] },
-            { id: null, equipmentType: "Empty", os: [] },
-            {
-              id: "C005",
-              equipmentType: "PC",
-              os: ["Windows"],
-              device: {
-                id: "C005",
-                type: "PC",
-                batch: "Bill #777",
-                warranty: "2 yrs",
-                purchaseDate: "2023-01-15",
-                vendor: "HP",
-                health: "issue",
-                os: ["Windows"],
-                issues: [
-                  {
-                    id: "ISS-003",
-                    title: "Keyboard Not Responding",
-                    description: "USB keyboard not detected, tried multiple ports",
-                    severity: "critical",
-                    status: "open",
-                    reportedDate: "2025-11-06",
-                    reportedBy: "Student",
-                  },
-                ],
-              },
-            },
-          ],
-          [
-            {
-              id: "C006",
-              equipmentType: "PC",
-              os: ["Windows"],
-              device: {
-                id: "C006",
-                type: "PC",
-                batch: "Bill #123",
-                warranty: "3 yrs",
-                purchaseDate: "2022-07-01",
-                vendor: "Dell",
-                health: "healthy",
-                os: ["Windows"],
-                issues: [],
-              },
-            },
-            { id: null, equipmentType: "Empty", os: [] },
-            { id: null, equipmentType: "Empty", os: [] },
-            { id: null, equipmentType: "Empty", os: [] },
-          ],
-        ],
-      },
-    },
-    {
-      name: "Lab 310",
-      devices: [
-        {
-          id: "C001",
-          type: "PC",
-          batch: "Bill #555",
-          warranty: "3 yrs",
-          purchaseDate: "2021-09-10",
-          vendor: "Lenovo",
-          health: "issue",
-          os: ["Windows"],
-          issues: [
-            {
-              id: "ISS-004",
-              title: "Hard Disk Failure",
-              description: "System showing hard disk error, data backup needed",
-              severity: "critical",
-              status: "open",
-              reportedDate: "2025-11-04",
-              reportedBy: "Lab Manager",
-            },
-          ],
-        },
-        {
-          id: "C002",
-          type: "PC",
-          batch: "Bill #555",
-          warranty: "3 yrs",
-          purchaseDate: "2021-09-10",
-          vendor: "Lenovo",
-          health: "healthy",
-          os: ["Windows"],
-          issues: [],
-        },
-      ],
-      seatingArrangement: {
-        rows: 2,
-        columns: 3,
-        grid: [
-          [
-            {
-              id: "C001",
-              equipmentType: "PC",
-              os: ["Windows"],
-              device: {
-                id: "C001",
-                type: "PC",
-                batch: "Bill #555",
-                warranty: "3 yrs",
-                purchaseDate: "2021-09-10",
-                vendor: "Lenovo",
-                health: "issue",
-                os: ["Windows"],
-                issues: [
-                  {
-                    id: "ISS-004",
-                    title: "Hard Disk Failure",
-                    description: "System showing hard disk error, data backup needed",
-                    severity: "critical",
-                    status: "open",
-                    reportedDate: "2025-11-04",
-                    reportedBy: "Lab Manager",
-                  },
-                ],
-              },
-            },
-            {
-              id: "C002",
-              equipmentType: "PC",
-              os: ["Windows"],
-              device: {
-                id: "C002",
-                type: "PC",
-                batch: "Bill #555",
-                warranty: "3 yrs",
-                purchaseDate: "2021-09-10",
-                vendor: "Lenovo",
-                health: "healthy",
-                os: ["Windows"],
-                issues: [],
-              },
-            },
-            { id: null, equipmentType: "Empty", os: [] },
-          ],
-          [
-            { id: null, equipmentType: "Empty", os: [] },
-            { id: null, equipmentType: "Empty", os: [] },
-            { id: null, equipmentType: "Empty", os: [] },
-          ],
-        ],
-      },
-    },
-  ];
 
   // Search bar placeholders
   const placeholders = [
@@ -419,6 +98,79 @@ export default function Issues() {
     e.preventDefault();
     console.log("Search submitted");
   };
+
+  const ISSUE_OPTIONS = [
+    { key: "no-boot", label: "PC not powering on / no boot", severity: "critical", active: false, description: "PC not powering on" },
+    { key: "os-crash", label: "OS not loading / blue screen", severity: "high", active: false, description: "OS not loading / BSOD" },
+    { key: "monitor", label: "Monitor not displaying", severity: "high", active: false, description: "Monitor not displaying output" },
+    { key: "keyboard", label: "Keyboard/Mouse not working", severity: "medium", active: true, description: "Keyboard or mouse not working" },
+    { key: "internet", label: "No Internet / network slow", severity: "low", active: true, description: "Internet / network issue" },
+    { key: "slow", label: "Slow performance", severity: "medium", active: true, description: "System running slow" },
+    { key: "other", label: "Other (specify)", severity: "medium", active: true, description: "" },
+  ] as const;
+
+  const fetchLabs = async () => {
+    try {
+      setLoadingLabs(true);
+      const response = await fetch("http://localhost:5000/get_labs");
+      const data = await response.json();
+      if (data.success) {
+        setLabs(data.labs || []);
+      }
+    } catch (err) {
+      console.error("Error fetching labs", err);
+    } finally {
+      setLoadingLabs(false);
+    }
+  };
+
+  const fetchLabDetails = async (labId: string) => {
+    try {
+      setLoadingLabDetail(true);
+      setLabError(null);
+      const response = await fetch(`http://localhost:5000/get_lab/${labId}`);
+      const data = await response.json();
+      if (data.success && data.lab) {
+        setSelectedLab(data.lab);
+      } else {
+        throw new Error(data.error || "Failed to load lab");
+      }
+    } catch (err) {
+      console.error("Error fetching lab detail", err);
+      setLabError((err as Error).message || "Error fetching lab detail");
+    } finally {
+      setLoadingLabDetail(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchLabs();
+  }, []);
+
+  const gridWithDevices = useMemo(() => {
+    if (!selectedLab?.seatingArrangement) return null;
+    return selectedLab.seatingArrangement.grid.map((row) =>
+      row.map((cell) => {
+        let primary: Device | null = null;
+        if ((cell as any).deviceGroup && (cell as any).deviceGroup.devices?.length) {
+          const dg = (cell as any).deviceGroup;
+          const devices: Device[] = dg.devices;
+          primary = devices.find((d) => d.type?.toLowerCase() === "pc") || devices[0];
+          if (primary) {
+            primary = {
+              ...primary,
+              id: cell.id,
+              assignedCode: dg.assignedCode,
+              os: cell.os,
+              issues: primary.issues || [],
+              isActive: primary.isActive !== false,
+            };
+          }
+        }
+        return { ...cell, device: primary } as GridCell;
+      })
+    );
+  }, [selectedLab]);
 
   const getSeverityColor = (severity: string) => {
     switch (severity) {
@@ -448,37 +200,71 @@ export default function Issues() {
     }
   };
 
-  const handleRaiseTicket = () => {
-    if (!selectedDevice || !ticketForm.title || !ticketForm.description) {
-      alert("Please fill in all fields");
+  const selectedIssueOption = useMemo(
+    () => ISSUE_OPTIONS.find((o) => o.key === ticketForm.issueKey) || ISSUE_OPTIONS[0],
+    [ticketForm.issueKey]
+  );
+
+  const handleRaiseTicket = async () => {
+    if (!selectedDevice) {
+      alert("Please select a device first");
       return;
     }
 
-    // Create new issue
-    const newIssue: Issue = {
-      id: `ISS-${Date.now()}`,
-      title: ticketForm.title,
-      description: ticketForm.description,
-      severity: ticketForm.severity,
-      status: "open",
-      reportedDate: new Date().toISOString().split("T")[0],
-      reportedBy: "Current User",
-    };
+    if (ticketForm.issueKey === "other" && !ticketForm.description.trim()) {
+      alert("Please describe the issue");
+      return;
+    }
 
-    console.log("New ticket raised:", newIssue);
-    alert(`Ticket raised successfully for ${selectedDevice.id}!`);
+    const finalSeverity =
+      ticketForm.issueKey === "other"
+        ? ticketForm.severity
+        : (selectedIssueOption.severity as TicketForm["severity"]);
 
-    // Reset form
-    setTicketForm({
-      title: "",
-      description: "",
-      severity: "medium",
-    });
-    setShowRaiseTicket(false);
-  };
+    const finalTitle =
+      ticketForm.issueKey === "other"
+        ? ticketForm.description.substring(0, 40) || "Custom issue"
+        : selectedIssueOption.label;
 
-  const getTotalIssuesCount = (lab: Lab) => {
-    return lab.devices.reduce((sum, device) => sum + device.issues.length, 0);
+    const detailTail = ticketForm.description?.trim();
+    const finalDescription =
+      ticketForm.issueKey === "other"
+        ? detailTail || "User reported issue"
+        : `${selectedIssueOption.description}${detailTail ? ` - ${detailTail}` : ""}`;
+
+    const shouldDeactivate = ["high", "critical"].includes(finalSeverity);
+
+    try {
+      const response = await fetch("http://localhost:5000/raise_issue", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          deviceId: selectedDevice.deviceId,
+          title: finalTitle,
+          description: finalDescription,
+          severity: finalSeverity,
+          deactivate: shouldDeactivate,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok || !data.success) {
+        throw new Error(data.error || "Failed to raise issue");
+      }
+
+      // Refresh lab to reflect new status/issue
+      if (selectedLab?.labNumber) {
+        await fetchLabDetails(selectedLab.labNumber);
+      }
+
+      // Reset form/modal
+      setTicketForm({ title: "", description: "", severity: "medium", issueKey: "no-boot" });
+      setShowRaiseTicket(false);
+      setSelectedDevice(null);
+      alert("Ticket raised and device status updated.");
+    } catch (err) {
+      console.error("Error raising issue", err);
+      alert((err as Error).message || "Error raising issue");
+    }
   };
 
   return (
@@ -543,51 +329,33 @@ export default function Issues() {
       <div className="pt-32 px-6 max-w-7xl mx-auto">
         <h1 className="text-3xl font-bold mb-8">Lab Issues & Support Tickets</h1>
 
+        {labError && (
+          <div className="mb-4 rounded-lg border border-red-500 bg-red-900/40 text-red-200 px-4 py-3 text-sm">
+            {labError}
+          </div>
+        )}
+
         {/* Lab Cards List */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-          {labs.map((lab, idx) => {
-            const issuesCount = getTotalIssuesCount(lab);
-            const devicesWithIssues = lab.devices.filter(
-              (d) => d.issues.length > 0
-            ).length;
-
-            return (
-              <div
-                key={idx}
-                onClick={() => setSelectedLab(lab)}
-                className="cursor-pointer"
-              >
-                <WobbleCard containerClassName="bg-neutral-800 p-6 rounded-xl h-48">
-                  <h2 className="text-2xl font-semibold mb-2">{lab.name}</h2>
-                  <p className="text-gray-400 mb-1">
-                    {lab.devices.length} total devices
-                  </p>
-                  <div className="mt-3 space-y-2">
-                    <div className="flex items-center gap-2">
-                      <div
-                        className={`w-3 h-3 rounded-full ${
-                          issuesCount > 0 ? "bg-red-500" : "bg-green-500"
-                        }`}
-                      ></div>
-                      <span className="text-sm">
-                        {issuesCount > 0
-                          ? `${issuesCount} active issue${
-                              issuesCount > 1 ? "s" : ""
-                            }`
-                          : "No issues"}
-                      </span>
-                    </div>
-                    {devicesWithIssues > 0 && (
-                      <div className="text-xs text-orange-400">
-                        ⚠️ {devicesWithIssues} device{devicesWithIssues > 1 ? "s" : ""}{" "}
-                        need attention
-                      </div>
-                    )}
-                  </div>
-                </WobbleCard>
-              </div>
-            );
-          })}
+          {loadingLabs && (
+            <div className="text-gray-400">Loading labs...</div>
+          )}
+          {!loadingLabs && labs.map((lab) => (
+            <div
+              key={lab.lab_id}
+              onClick={() => fetchLabDetails(lab.lab_id)}
+              className="cursor-pointer"
+            >
+              <WobbleCard containerClassName="bg-neutral-800 p-6 rounded-xl h-40">
+                <h2 className="text-2xl font-semibold mb-2">{lab.lab_name}</h2>
+                <p className="text-gray-400 mb-1">Lab ID: {lab.lab_id}</p>
+                <p className="text-gray-400">Grid: {lab.rows} × {lab.columns}</p>
+                <p className="text-xs text-blue-400 mt-2">
+                  {loadingLabDetail ? "Loading..." : "Click to view devices and raise tickets"}
+                </p>
+              </WobbleCard>
+            </div>
+          ))}
         </div>
 
         {/* Selected Lab Floor Plan */}
@@ -601,7 +369,7 @@ export default function Issues() {
             <BackgroundGradient className="p-8 rounded-xl shadow-xl">
               <div className="flex items-center justify-between mb-6">
                 <h2 className="text-2xl font-bold">
-                  {selectedLab.name} - Device Issues
+                  {selectedLab.labName || selectedLab.labNumber} - Device Issues
                 </h2>
                 <button
                   onClick={() => setSelectedLab(null)}
@@ -615,65 +383,72 @@ export default function Issues() {
               {selectedLab.seatingArrangement ? (
                 <div className="overflow-x-auto">
                   <div className="inline-block">
-                    {selectedLab.seatingArrangement.grid.map((row, rowIdx) => (
+                    {(gridWithDevices || selectedLab.seatingArrangement.grid).map((row, rowIdx) => (
                       <div key={rowIdx} className="flex gap-2 mb-2">
-                        {row.map((cell, colIdx) => (
-                          <div
-                            key={colIdx}
-                            onClick={() =>
-                              cell.device && setSelectedDevice(cell.device)
-                            }
-                            className={`
-                              w-24 h-24 rounded-lg border-2 flex flex-col items-center justify-center transition cursor-pointer relative
-                              ${
-                                cell.equipmentType === "PC" &&
-                                cell.device?.health === "healthy"
-                                  ? "bg-green-600 border-green-400 hover:bg-green-700"
-                                  : ""
-                              }
-                              ${
-                                cell.equipmentType === "PC" &&
-                                cell.device?.health === "issue"
-                                  ? "bg-red-600 border-red-400 hover:bg-red-700"
-                                  : ""
-                              }
-                              ${
-                                cell.equipmentType === "Empty"
-                                  ? "bg-neutral-800 border-gray-600"
-                                  : ""
-                              }
-                            `}
-                          >
-                            {cell.equipmentType === "PC" && cell.device && (
-                              <>
-                                {cell.device.issues.length > 0 && (
-                                  <div className="absolute -top-1 -right-1 bg-red-500 text-white text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center">
-                                    {cell.device.issues.length}
+                        {row.map((cell, colIdx) => {
+                          const deviceGroup = (cell as any).deviceGroup;
+                          const devices: Device[] = deviceGroup?.devices || [];
+                          const primaryDevice = devices.find((d) => d.type?.toLowerCase() === "pc") || devices[0];
+                          const hasDevices = devices.length > 0;
+                          const isActive = primaryDevice ? primaryDevice.isActive : false;
+                          const background = hasDevices
+                            ? isActive
+                              ? "bg-green-600 border-green-400 hover:bg-green-700"
+                              : "bg-red-600 border-red-400 hover:bg-red-700"
+                            : "bg-neutral-800 border-gray-600";
+
+                          const emoji = (() => {
+                            if (!hasDevices) return "";
+                            const hasLaptop = devices.some((d) => (d.type || "").toLowerCase() === "laptop");
+                            const hasMonitor = devices.some((d) => (d.type || "").toLowerCase() === "monitor");
+                            const hasPc = devices.some((d) => (d.type || "").toLowerCase() === "pc");
+                            if (hasLaptop) return "💻";
+                            if (hasPc && hasMonitor) return "🖥️";
+                            if (hasPc) return "⚙️";
+                            if (hasMonitor) return "🖥️";
+                            return "🔧";
+                          })();
+
+                          return (
+                            <div
+                              key={colIdx}
+                              onClick={() => primaryDevice && setSelectedDevice(primaryDevice)}
+                              className={`
+                                w-24 h-24 rounded-lg border-2 flex flex-col items-center justify-center transition relative
+                                ${hasDevices ? "cursor-pointer" : ""}
+                                ${background}
+                              `}
+                            >
+                              {hasDevices ? (
+                                <>
+                                  {primaryDevice?.issues?.length > 0 && (
+                                    <div className="absolute -top-1 -right-1 bg-red-500 text-white text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center">
+                                      {primaryDevice.issues.length}
+                                    </div>
+                                  )}
+                                  <div className="text-white font-bold text-sm">
+                                    {cell.id || primaryDevice?.assignedCode}
                                   </div>
-                                )}
-                                <div className="text-white font-bold text-sm">
-                                  {cell.id}
-                                </div>
-                                <div className="text-white text-2xl">🖥️</div>
-                                <div className="flex gap-1 mt-1">
-                                  {cell.os.includes("Windows") && (
-                                    <div className="text-xs px-1 py-0.5 bg-blue-800 text-white rounded">
-                                      Win
-                                    </div>
-                                  )}
-                                  {cell.os.includes("Linux") && (
-                                    <div className="text-xs px-1 py-0.5 bg-orange-600 text-white rounded">
-                                      Linux
-                                    </div>
-                                  )}
-                                </div>
-                              </>
-                            )}
-                            {cell.equipmentType === "Empty" && (
-                              <div className="text-gray-500 text-xs">Empty</div>
-                            )}
-                          </div>
-                        ))}
+                                  <div className="text-white text-2xl">{emoji}</div>
+                                  <div className="flex gap-1 mt-1">
+                                    {cell.os.includes("Windows") && (
+                                      <div className="text-xs px-1 py-0.5 bg-blue-800 text-white rounded">
+                                        Win
+                                      </div>
+                                    )}
+                                    {cell.os.includes("Linux") && (
+                                      <div className="text-xs px-1 py-0.5 bg-orange-600 text-white rounded">
+                                        Linux
+                                      </div>
+                                    )}
+                                  </div>
+                                </>
+                              ) : (
+                                <div className="text-gray-500 text-xs">Empty</div>
+                              )}
+                            </div>
+                          );
+                        })}
                       </div>
                     ))}
                   </div>
@@ -697,25 +472,31 @@ export default function Issues() {
               ) : (
                 // Fallback to simple grid if no seating arrangement
                 <div className="grid grid-cols-6 gap-4">
-                  {selectedLab.devices.map((device) => (
-                    <div
-                      key={device.id}
-                      className={`rounded-lg p-4 text-center shadow-lg cursor-pointer transition relative ${
-                        device.health === "healthy"
-                          ? "bg-green-600 hover:bg-green-700"
-                          : "bg-red-600 hover:bg-red-700"
-                      }`}
-                      onClick={() => setSelectedDevice(device)}
-                    >
-                      {device.issues.length > 0 && (
-                        <div className="absolute -top-1 -right-1 bg-red-500 text-white text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center">
-                          {device.issues.length}
+                  {(gridWithDevices || [])
+                    .flat()
+                    .filter((c) => c.device)
+                    .map((cell, idx) => {
+                      const device = cell.device as Device;
+                      return (
+                        <div
+                          key={device.deviceId || idx}
+                          className={`rounded-lg p-4 text-center shadow-lg cursor-pointer transition relative ${
+                            device.isActive
+                              ? "bg-green-600 hover:bg-green-700"
+                              : "bg-red-600 hover:bg-red-700"
+                          }`}
+                          onClick={() => setSelectedDevice(device)}
+                        >
+                          {device.issues.length > 0 && (
+                            <div className="absolute -top-1 -right-1 bg-red-500 text-white text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center">
+                              {device.issues.length}
+                            </div>
+                          )}
+                          <p className="font-semibold">{device.type}</p>
+                          <p className="text-xs text-gray-200">{device.assignedCode || device.id}</p>
                         </div>
-                      )}
-                      <p className="font-semibold">{device.type}</p>
-                      <p className="text-xs text-gray-200">{device.id}</p>
-                    </div>
-                  ))}
+                      );
+                    })}
                 </div>
               )}
             </BackgroundGradient>
@@ -740,20 +521,20 @@ export default function Issues() {
               <div className="flex items-center justify-between mb-4 border-b border-gray-700 pb-4">
                 <div>
                   <h3 className="text-xl font-bold">
-                    {selectedDevice.type} - {selectedDevice.id}
+                    {selectedDevice.type} - {selectedDevice.assignedCode || selectedDevice.id}
                   </h3>
                   <p className="text-gray-400 text-sm">
-                    {selectedDevice.vendor} | {selectedDevice.batch}
+                    {selectedDevice.brand || ""} {selectedDevice.model || ""}
                   </p>
                 </div>
                 <div
                   className={`px-3 py-1 rounded-full text-xs font-semibold ${
-                    selectedDevice.health === "healthy"
+                    selectedDevice.isActive
                       ? "bg-green-600 text-white"
                       : "bg-red-600 text-white"
                   }`}
                 >
-                  {selectedDevice.health === "healthy"
+                  {selectedDevice.isActive
                     ? "✓ Healthy"
                     : `⚠ ${selectedDevice.issues.length} Issue${
                         selectedDevice.issues.length > 1 ? "s" : ""
@@ -768,19 +549,31 @@ export default function Issues() {
                 </h4>
                 <div className="grid grid-cols-2 gap-3 text-sm text-gray-400">
                   <div>
-                    <span className="font-semibold">Warranty:</span>{" "}
-                    {selectedDevice.warranty}
+                    <span className="font-semibold">Assigned Code:</span>{" "}
+                    {selectedDevice.assignedCode || selectedDevice.id || "N/A"}
                   </div>
-                  <div>
-                    <span className="font-semibold">Purchase Date:</span>{" "}
-                    {selectedDevice.purchaseDate}
-                  </div>
+                  {selectedDevice.billId && (
+                    <div>
+                      <span className="font-semibold">Bill ID:</span>{" "}
+                      {selectedDevice.billId}
+                    </div>
+                  )}
+                  {selectedDevice.invoiceNumber && (
+                    <div>
+                      <span className="font-semibold">Invoice:</span>{" "}
+                      {selectedDevice.invoiceNumber}
+                    </div>
+                  )}
                   {selectedDevice.os && (
                     <div>
                       <span className="font-semibold">OS:</span>{" "}
                       {selectedDevice.os.join(", ")}
                     </div>
                   )}
+                  <div>
+                    <span className="font-semibold">Active:</span>{" "}
+                    {selectedDevice.isActive ? "Yes" : "No"}
+                  </div>
                 </div>
               </div>
 
@@ -884,27 +677,44 @@ export default function Issues() {
               <div className="space-y-4">
                 <div>
                   <label className="block text-gray-300 mb-2 font-semibold">
-                    Issue Title *
+                    Issue Type *
                   </label>
-                  <input
-                    type="text"
+                  <select
                     className="w-full px-4 py-2 bg-neutral-800 border border-gray-600 rounded-lg text-white focus:border-blue-500 focus:outline-none"
-                    placeholder="Brief title for the issue"
-                    value={ticketForm.title}
+                    value={ticketForm.issueKey}
                     onChange={(e) =>
-                      setTicketForm({ ...ticketForm, title: e.target.value })
+                      setTicketForm({
+                        ...ticketForm,
+                        issueKey: e.target.value,
+                        severity:
+                          e.target.value === "other"
+                            ? "medium"
+                            : (ISSUE_OPTIONS.find((o) => o.key === e.target.value)?.severity as TicketForm["severity"]) || "medium",
+                        title: e.target.value === "other" ? "" : "",
+                        description: "",
+                      })
                     }
-                  />
+                  >
+                    {ISSUE_OPTIONS.map((opt) => (
+                      <option key={opt.key} value={opt.key}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
                 </div>
 
                 <div>
                   <label className="block text-gray-300 mb-2 font-semibold">
-                    Description *
+                    Description / Notes {ticketForm.issueKey === "other" ? "*" : "(optional)"}
                   </label>
                   <textarea
                     className="w-full px-4 py-2 bg-neutral-800 border border-gray-600 rounded-lg text-white focus:border-blue-500 focus:outline-none"
-                    rows={4}
-                    placeholder="Detailed description of the issue"
+                    rows={3}
+                    placeholder={
+                      ticketForm.issueKey === "other"
+                        ? "Describe the issue"
+                        : "Additional notes (optional)"
+                    }
                     value={ticketForm.description}
                     onChange={(e) =>
                       setTicketForm({
@@ -915,30 +725,37 @@ export default function Issues() {
                   />
                 </div>
 
-                <div>
-                  <label className="block text-gray-300 mb-2 font-semibold">
-                    Severity *
-                  </label>
-                  <select
-                    className="w-full px-4 py-2 bg-neutral-800 border border-gray-600 rounded-lg text-white focus:border-blue-500 focus:outline-none"
-                    value={ticketForm.severity}
-                    onChange={(e) =>
-                      setTicketForm({
-                        ...ticketForm,
-                        severity: e.target.value as
-                          | "low"
-                          | "medium"
-                          | "high"
-                          | "critical",
-                      })
-                    }
-                  >
-                    <option value="low">Low - Minor inconvenience</option>
-                    <option value="medium">Medium - Affects functionality</option>
-                    <option value="high">High - Significant impact</option>
-                    <option value="critical">Critical - System unusable</option>
-                  </select>
-                </div>
+                {ticketForm.issueKey === "other" && (
+                  <div>
+                    <label className="block text-gray-300 mb-2 font-semibold">
+                      Severity *
+                    </label>
+                    <select
+                      className="w-full px-4 py-2 bg-neutral-800 border border-gray-600 rounded-lg text-white focus:border-blue-500 focus:outline-none"
+                      value={ticketForm.severity}
+                      onChange={(e) =>
+                        setTicketForm({
+                          ...ticketForm,
+                          severity: e.target.value as TicketForm["severity"],
+                        })
+                      }
+                    >
+                      <option value="low">Low - Minor inconvenience</option>
+                      <option value="medium">Medium - Affects functionality</option>
+                      <option value="high">High - Significant impact</option>
+                      <option value="critical">Critical - System unusable</option>
+                    </select>
+                  </div>
+                )}
+
+                {ticketForm.issueKey !== "other" && (
+                  <div className="text-sm text-gray-300">
+                    <span className="font-semibold">Auto severity:</span>{" "}
+                    <span className={`px-2 py-1 rounded text-white ${getSeverityColor(selectedIssueOption.severity)}`}>
+                      {selectedIssueOption.severity.toUpperCase()} ({selectedIssueOption.active ? "Device remains active" : "Device marked inactive"})
+                    </span>
+                  </div>
+                )}
               </div>
 
               {/* Action Buttons */}

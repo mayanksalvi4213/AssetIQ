@@ -1,0 +1,109 @@
+Great! Here's what each table does in your Lab Configuration system:
+
+📋 Table Breakdown
+1. labs - Lab Basic Information
+Purpose: Stores the basic information about each lab and its grid dimensions.
+
+What it stores:
+
+id (PK) - Unique identifier for each lab
+lab_id - Lab reference code/number (e.g., "LAB309")
+lab_name - Name of the lab (e.g., "Computer Lab 309")
+rows - Number of rows in the seating grid (e.g., 6)
+columns - Number of columns in the seating grid (e.g., 6)
+Example: Lab 309 is a 6x6 grid computer lab
+
+2. lab_stations - Individual Workstations/Seats
+Purpose: Represents each physical workstation/seat in the lab grid. Each station can have multiple devices assigned to it.
+
+What it stores:
+
+station_id (PK) - Unique ID for each station
+lab_id (FK) - Which lab this station belongs to
+assigned_code - Unique code for the station (e.g., "apsit/it/309/1", "apsit/it/309/2")
+row_number - Which row in the grid (0-based or 1-based)
+column_number - Which column in the grid
+created_at - When the station was created
+Example: Station with code "apsit/it/309/1" is in Lab 309 at row 0, column 0
+
+3. lab_station_devices - Devices Assigned to Each Station
+Purpose: Links actual devices from the devices table to lab stations. This is where the PC, monitor, keyboard, etc. are connected to a specific workstation.
+
+What it stores:
+
+id (PK) - Unique record ID
+station_id (FK) - Which station this device belongs to
+device_id - Reference to the actual device in the devices table
+device_type - Type of device (PC, Monitor, Keyboard, etc.)
+brand, model, specification - Device details
+invoice_number, bill_id (FK) - Procurement information
+is_linked - Boolean: Is this device part of a linked group?
+linked_group_id - Which linked group (1, 2, 3...) if applicable
+created_at - Assignment timestamp
+Example:
+
+Station 1 has: PC (Dell, XPS), Monitor (Dell, 24"), Keyboard (Logitech)
+All three have linked_group_id = 1 (they were linked together)
+4. lab_grid_cells - Grid Layout Visual Representation
+Purpose: Stores the visual/UI state of each cell in the lab grid layout. Tracks what's displayed and the OS configuration.
+
+What it stores:
+
+cell_id (PK) - Unique cell identifier
+lab_id (FK) - Which lab this cell belongs to
+row_number, column_number - Position in grid
+assigned_code - Code displayed on this cell (e.g., "apsit/it/309/1")
+equipment_type - What type is displayed (PC, Laptop, Empty, etc.)
+os_windows, os_linux, os_other - Boolean flags for OS installed
+is_empty - Is this cell empty or occupied?
+station_id - Links to the station (if occupied)
+created_at - Creation timestamp
+UNIQUE constraint: (lab_id, row_number, column_number) - no duplicate cells
+Example:
+
+Cell at row 0, col 0 shows "apsit/it/309/1", has Windows + Linux installed, links to station_id 5
+5. lab_equipment_pool - Equipment Available for Assignment
+Purpose: Tracks all equipment that has been added to this lab from inventory (whether assigned to stations or still available). This is like your "Available Devices for Seating" list.
+
+What it stores:
+
+id (PK) - Unique record ID
+lab_id (FK) - Which lab owns this equipment pool
+equipment_type, brand, model, specification - Device details
+quantity_added - Total devices added to this lab (e.g., 30 PCs)
+quantity_assigned - How many are currently assigned to stations (e.g., 20)
+invoice_number, bill_id (FK) - Procurement details
+unit_price, purchase_date - Financial info
+is_standby - Boolean: Is this excess/standby equipment from a linked group?
+linked_group_id - Which linked group it belongs to (if any)
+created_at - When added
+Example:
+
+Lab 309 has 30 Dell PCs added (invoice: inv420)
+25 are assigned to stations, 5 are still available
+Also has 5 standby monitors (excess from linked group 1)
+🔄 How They Work Together
+Scenario: Creating a 6x6 Lab with Linked Devices
+
+labs: Create Lab 309 with 6 rows, 6 columns
+lab_equipment_pool: Add 30 PCs, 30 Monitors, 30 Keyboards from inventory
+User links devices → Creates linked_group_id = 1 (PC + Monitor + Keyboard)
+User assigns 20 stations:
+lab_stations: Creates 20 station records with codes "apsit/it/309/1" through "/20"
+lab_station_devices: Creates 60 records (20 stations × 3 devices each)
+lab_grid_cells: Creates cells for the 6x6 grid, 20 occupied, 16 empty
+lab_equipment_pool: Updates quantity_assigned from 0 to 20 for PCs, Monitors, Keyboards
+devices table: Updates assigned_code column for the 60 actual devices
+🎯 Key Benefits
+✅ Full history: Know exactly which devices are in each station
+✅ Linking tracking: See which devices were linked together
+✅ Availability: Know how many devices are still unassigned in the lab
+✅ Grid visualization: Recreate the exact visual layout
+✅ OS tracking: Know which OSes are installed on each station
+✅ Future queries:
+
+"Show all stations with Windows"
+"Which devices are in Station 5?"
+"How many PCs are still available in Lab 309?"
+"Show me the full layout of Lab 309"
+This structure gives you complete flexibility for managing, querying, and visualizing your lab configurations!
