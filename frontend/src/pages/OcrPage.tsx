@@ -83,6 +83,7 @@ interface ManualDevice {
   quantity: number;
   amountPerPcs: number;
   totalAmount: number;
+  identityNumber: string;
 }
 
 const OcrPage: React.FC = () => {
@@ -111,6 +112,7 @@ const OcrPage: React.FC = () => {
       quantity: 0,
       amountPerPcs: 0,
       totalAmount: 0,
+      identityNumber: "",
     },
   ]);
   const [manualGrandTotal, setManualGrandTotal] = useState(0);
@@ -118,6 +120,9 @@ const OcrPage: React.FC = () => {
   const [manualTaxAmount, setManualTaxAmount] = useState(0);
   const [manualGstin, setManualGstin] = useState("");
   const [manualBillDate, setManualBillDate] = useState("");
+  const [manualOrderNoAndDate, setManualOrderNoAndDate] = useState("");
+  const [manualCentralStoreInwardNoAndDate, setManualCentralStoreInwardNoAndDate] = useState("");
+  const [manualRemarks, setManualRemarks] = useState("");
   const [manualScanResult, setManualScanResult] = useState<ScanResult | null>(null);
 
   // Auto-calculate grand total whenever devices or tax amount changes
@@ -352,6 +357,7 @@ const OcrPage: React.FC = () => {
         quantity: 0,
         amountPerPcs: 0,
         totalAmount: 0,
+        identityNumber: "",
       },
     ]);
   };
@@ -792,6 +798,21 @@ const OcrPage: React.FC = () => {
                         className="mt-1 bg-gray-200 border-2 border-gray-300 cursor-not-allowed text-gray-900 font-bold"
                       />
                     </div>
+
+                    {/* Identity Number */}
+                    <div>
+                      <Label htmlFor={`identityNumber-${device.id}`} className="text-gray-900 font-semibold">Identity Number</Label>
+                      <Input
+                        id={`identityNumber-${device.id}`}
+                        type="text"
+                        placeholder="e.g., ID-2024-001"
+                        value={device.identityNumber}
+                        onChange={(e) =>
+                          updateManualDevice(device.id, "identityNumber", e.target.value)
+                        }
+                        className="mt-1 bg-white border-2 border-gray-300 text-gray-900 placeholder-gray-500 font-medium"
+                      />
+                    </div>
                   </div>
                 </div>
               ))}
@@ -926,6 +947,49 @@ const OcrPage: React.FC = () => {
                     value={manualGrandTotal.toFixed(2)}
                     readOnly
                     className="mt-1 bg-gray-200 border-2 border-gray-300 cursor-not-allowed text-gray-900 font-bold"
+                  />
+                </div>
+
+                {/* Order No. and Date */}
+                <div>
+                  <Label htmlFor="orderNoAndDate" className="text-gray-900 font-semibold">
+                    Order No. and Date <span className="text-red-600">*</span>
+                  </Label>
+                  <Input
+                    id="orderNoAndDate"
+                    type="text"
+                    placeholder="e.g., ORD-2024-001, 15/01/2024"
+                    value={manualOrderNoAndDate}
+                    onChange={(e) => setManualOrderNoAndDate(e.target.value)}
+                    className="mt-1 bg-white border-2 border-gray-300 text-gray-900 placeholder-gray-500 font-medium"
+                  />
+                </div>
+
+                {/* Central Store Inward No. and Date */}
+                <div>
+                  <Label htmlFor="centralStoreInwardNoAndDate" className="text-gray-900 font-semibold">
+                    Central Store Inward No. and Date <span className="text-red-600">*</span>
+                  </Label>
+                  <Input
+                    id="centralStoreInwardNoAndDate"
+                    type="text"
+                    placeholder="e.g., CSI-2024-001, 20/01/2024"
+                    value={manualCentralStoreInwardNoAndDate}
+                    onChange={(e) => setManualCentralStoreInwardNoAndDate(e.target.value)}
+                    className="mt-1 bg-white border-2 border-gray-300 text-gray-900 placeholder-gray-500 font-medium"
+                  />
+                </div>
+
+                {/* Remarks */}
+                <div className="md:col-span-2">
+                  <Label htmlFor="remarks" className="text-gray-900 font-semibold">Remarks</Label>
+                  <Input
+                    id="remarks"
+                    type="text"
+                    placeholder="Any additional notes or remarks"
+                    value={manualRemarks}
+                    onChange={(e) => setManualRemarks(e.target.value)}
+                    className="mt-1 bg-white border-2 border-gray-300 text-gray-900 placeholder-gray-500 font-medium"
                   />
                 </div>
               </div>
@@ -1103,6 +1167,7 @@ const OcrPage: React.FC = () => {
                         quantity: 0,
                         amountPerPcs: 0,
                         totalAmount: 0,
+                        identityNumber: "",
                       },
                     ]);
                     setManualGrandTotal(0);
@@ -1110,6 +1175,9 @@ const OcrPage: React.FC = () => {
                     setManualTaxAmount(0);
                     setManualGstin("");
                     setManualBillDate("");
+                    setManualOrderNoAndDate("");
+                    setManualCentralStoreInwardNoAndDate("");
+                    setManualRemarks("");
                     setManualScanResult(null);
                   }}
                 >

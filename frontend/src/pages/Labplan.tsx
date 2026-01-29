@@ -59,6 +59,8 @@ export default function Labplan() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [loadingBill, setLoadingBill] = useState(false);
+  const [stationList, setStationList] = useState<any[]>([]);
+  const [loadingStationList, setLoadingStationList] = useState(false);
 
   // Fetch all labs on component mount
   useEffect(() => {
@@ -91,6 +93,8 @@ export default function Labplan() {
       
       if (data.success) {
         setSelectedLab(data.lab);
+        // Fetch station list as well
+        fetchStationList(labId);
       } else {
         setError("Failed to fetch lab details");
       }
@@ -100,8 +104,64 @@ export default function Labplan() {
     }
   };
 
+  const fetchStationList = async (labId: string) => {
+    try {
+      setLoadingStationList(true);
+      const response = await fetch(`http://localhost:5000/get_lab_station_list/${labId}`);
+      const data = await response.json();
+      
+      if (data.success) {
+        setStationList(data.stations);
+      } else {
+        console.error("Failed to fetch station list:", data.error);
+      }
+    } catch (err) {
+      console.error("Error fetching station list:", err);
+    } finally {
+      setLoadingStationList(false);
+    }
+  };
+
   const handleLabClick = (lab: LabListItem) => {
     fetchLabDetails(lab.lab_id);
+  };
+
+  const exportToExcel = () => {
+    if (!stationList || stationList.length === 0) {
+      alert("No station data to export");
+      return;
+    }
+
+    // Create CSV content
+    let csv = "Station Code,Operating System,Device Type,Brand,Model,Specification,Asset Code,Unit Price,Warranty (Years),Purchase Date,Invoice Number,Status\n";
+    
+    stationList.forEach((station) => {
+      if (station.devices && station.devices.length > 0) {
+        station.devices.forEach((device: any, idx: number) => {
+          // For first device, include station info
+          if (idx === 0) {
+            csv += `"${station.assignedCode}","${station.os}","${device.type}","${device.brand}","${device.model}","${device.specification || ''}","${device.assetCode || ''}","${device.unitPrice || 0}","${device.warrantyYears || ''}","${device.purchaseDate || ''}","${device.invoiceNumber}","${device.isActive ? 'Active' : 'Inactive'}"\n`;
+          } else {
+            // For subsequent devices, empty station columns
+            csv += `"","","${device.type}","${device.brand}","${device.model}","${device.specification || ''}","${device.assetCode || ''}","${device.unitPrice || 0}","${device.warrantyYears || ''}","${device.purchaseDate || ''}","${device.invoiceNumber}","${device.isActive ? 'Active' : 'Inactive'}"\n`;
+          }
+        });
+      } else {
+        // Station with no devices
+        csv += `"${station.assignedCode}","${station.os}","","","","","","","","","",""\n`;
+      }
+    });
+
+    // Create blob and download
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement("a");
+    const url = URL.createObjectURL(blob);
+    link.setAttribute("href", url);
+    link.setAttribute("download", `${selectedLab?.labName || 'lab'}_station_list.csv`);
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
   };
 
   const fetchBillDetails = async (billId: number) => {
@@ -381,6 +441,106 @@ export default function Labplan() {
               ) : (
                 <div className="text-center text-gray-400">
                   No seating arrangement configured for this lab.
+                </div>
+              )}
+
+              {/* ✅ Station List Table */}
+              {stationList && stationList.length > 0 && (
+                <div className="mt-8">
+                  <div className="flex items-center justify-between mb-4">
+                    <h3 className="text-xl font-bold">Station Details</h3>
+                    <button
+                      onClick={exportToExcel}
+                      className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg transition flex items-center gap-2"
+                    >
+                      📥 Export to Excel
+                    </button>
+                  </div>
+
+                  {loadingStationList ? (
+                    <div className="text-center py-8">
+                      <p className="text-gray-400">Loading station details...</p>
+                    </div>
+                  ) : (
+                    <div className="overflow-x-auto bg-neutral-900 rounded-lg border border-neutral-700">
+                      <table className="w-full text-sm text-left">
+                        <thead className="text-xs uppercase bg-neutral-800 border-b-2 border-neutral-600">
+                          <tr>
+                            <th className="px-6 py-4 font-bold text-white">Station</th>
+                            <th className="px-6 py-4 font-bold text-white">OS</th>
+                            <th className="px-6 py-4 font-bold text-white">Devices</th>
+                            <th className="px-6 py-4 font-bold text-white">Status</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-neutral-700">
+                          {stationList.map((station, idx) => (
+                            <tr key={idx} className="hover:bg-neutral-800/70 transition-colors">
+                              <td className="px-6 py-4 font-bold text-lg text-white">{station.assignedCode}</td>
+                              <td className="px-6 py-4 text-gray-300 font-medium">{station.os}</td>
+                              <td className="px-6 py-4">
+                                {station.devices && station.devices.length > 0 ? (
+                                  <div className="space-y-3">
+                                    {station.devices.map((device: any, deviceIdx: number) => (
+                                      <div key={deviceIdx} className="bg-neutral-800 p-3 rounded-lg border border-neutral-600">
+                                        <div className="flex items-center gap-2 mb-1">
+                                          <span className="font-bold text-white text-sm">
+                                            {device.type}:
+                                          </span>
+                                          <span className="text-gray-200 font-medium">
+                                            {device.brand} {device.model}
+                                          </span>
+                                        </div>
+                                        {device.assetCode && (
+                                          <div className="text-blue-400 font-mono text-xs mb-1">
+                                            {device.assetCode}
+                                          </div>
+                                        )}
+                                        {device.specification && (
+                                          <div className="text-gray-400 italic text-xs mb-1">
+                                            {device.specification}
+                                          </div>
+                                        )}
+                                        <div className="flex gap-4 text-gray-300 mt-2 text-xs">
+                                          {device.unitPrice > 0 && (
+                                            <span className="font-semibold">₹{device.unitPrice.toFixed(2)}</span>
+                                          )}
+                                          {device.warrantyYears && (
+                                            <span>Warranty: {device.warrantyYears}y</span>
+                                          )}
+                                          {device.invoiceNumber && (
+                                            <span className="text-blue-300">Invoice: {device.invoiceNumber}</span>
+                                          )}
+                                        </div>
+                                      </div>
+                                    ))}
+                                  </div>
+                                ) : (
+                                  <span className="text-gray-500">No devices assigned</span>
+                                )}
+                              </td>
+                              <td className="px-6 py-4">
+                                {station.devices && station.devices.length > 0 ? (
+                                  station.devices.every((d: any) => d.isActive) ? (
+                                    <span className="px-3 py-1.5 bg-green-600 text-white text-xs font-bold rounded-md">
+                                      Active
+                                    </span>
+                                  ) : (
+                                    <span className="px-3 py-1.5 bg-yellow-600 text-white text-xs font-bold rounded-md">
+                                      Partial
+                                    </span>
+                                  )
+                                ) : (
+                                  <span className="px-3 py-1.5 bg-gray-600 text-white text-xs font-bold rounded-md">
+                                    Empty
+                                  </span>
+                                )}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
                 </div>
               )}
             </BackgroundGradient>

@@ -59,7 +59,7 @@ const Reports: React.FC = () => {
       </h1>
 
       {/* Reports Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8 max-w-6xl relative z-20">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-2 gap-8 max-w-6xl relative z-20">
         <LogoButton />
         {/* Warranty Expiry */}
         <CometCard>
@@ -68,7 +68,10 @@ const Reports: React.FC = () => {
             <p className="text-gray-300 text-sm mb-4">
               Track which asset batches are nearing warranty expiry.
             </p>
-            <button className="px-4 py-2 bg-blue-600 rounded-lg text-white font-semibold hover:bg-blue-700 transition-colors">
+            <button
+              onClick={() => (window.location.href = "/reports/warranty")}
+              className="px-4 py-2 bg-blue-600 rounded-lg text-white font-semibold hover:bg-blue-700 transition-colors"
+            >
               View Report
             </button>
           </div>
@@ -87,18 +90,7 @@ const Reports: React.FC = () => {
           </div>
         </CometCard>
 
-        {/* Budget & Purchase Planning */}
-        <CometCard>
-          <div className="p-6 text-white bg-neutral-800/95 rounded-2xl backdrop-blur-sm">
-            <h2 className="text-xl font-semibold mb-2">Budget & Purchase</h2>
-            <p className="text-gray-300 text-sm mb-4">
-              Plan purchases and allocate budgets effectively.
-            </p>
-            <button className="px-4 py-2 bg-green-600 rounded-lg text-white font-semibold hover:bg-green-700 transition-colors">
-              View Report
-            </button>
-          </div>
-        </CometCard>
+        {/* Budget & Purchase removed per request */}
 
         {/* Proactive Maintenance */}
         <CometCard>

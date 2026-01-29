@@ -1231,14 +1231,18 @@ def get_lab(lab_id):
         device_ids = [sd['device_id'] for sd in station_devices if sd.get('device_id')]
 
         # Fallback: devices assigned to this lab by assigned_code but missing in lab_station_devices
+        # Only include devices that are currently assigned to this lab (lab_id matches)
         cursor.execute(
             """SELECT d.device_id, d.assigned_code, d.is_active, d.brand, d.model,
                           d.bill_id, d.invoice_number, et.name AS device_type, ls.station_id
                    FROM devices d
                    JOIN lab_stations ls ON d.assigned_code = ls.assigned_code
                    LEFT JOIN equipment_types et ON d.type_id = et.type_id
-                   WHERE ls.lab_id = %s""",
-            (lab_id,)
+                   WHERE ls.lab_id = %s 
+                     AND (d.lab_id = %s OR d.lab_id IS NULL)
+                     AND d.assigned_code IS NOT NULL
+                     AND d.assigned_code != ''""",
+            (lab_id, lab_id)
         )
         fallback_devices = cursor.fetchall()
         fallback_device_ids = [fd['device_id'] for fd in fallback_devices]
@@ -1246,27 +1250,34 @@ def get_lab(lab_id):
         merged_device_ids = list({*device_ids, *fallback_device_ids})
 
         # Fetch issues for all devices in this lab so UI can show counts/colors
+        # Only fetch issues for devices that are currently in this lab
         issues_map = {}
         if merged_device_ids:
             if severity_exists:
                 cursor.execute(
-                    """SELECT issue_id, device_id, issue_title, description,
-                              LOWER(status) AS status, reported_at, resolved_at,
-                              COALESCE(severity, 'medium') AS severity
-                       FROM device_issues
-                       WHERE device_id = ANY(%s)
-                       ORDER BY reported_at DESC""",
-                    (merged_device_ids,)
+                    """SELECT di.issue_id, di.device_id, di.issue_title, di.description,
+                              LOWER(di.status) AS status, di.reported_at, di.resolved_at,
+                              COALESCE(di.severity, 'medium') AS severity
+                       FROM device_issues di
+                       JOIN devices d ON di.device_id = d.device_id
+                       WHERE di.device_id = ANY(%s)
+                         AND (d.lab_id = %s OR d.assigned_code LIKE %s)
+                         AND LOWER(di.status) != 'resolved'
+                       ORDER BY di.reported_at DESC""",
+                    (merged_device_ids, lab_id, f"{lab_id}/%")
                 )
             else:
                 cursor.execute(
-                    """SELECT issue_id, device_id, issue_title, description,
-                              LOWER(status) AS status, reported_at, resolved_at,
+                    """SELECT di.issue_id, di.device_id, di.issue_title, di.description,
+                              LOWER(di.status) AS status, di.reported_at, di.resolved_at,
                               'medium' AS severity
-                       FROM device_issues
-                       WHERE device_id = ANY(%s)
-                       ORDER BY reported_at DESC""",
-                    (merged_device_ids,)
+                       FROM device_issues di
+                       JOIN devices d ON di.device_id = d.device_id
+                       WHERE di.device_id = ANY(%s)
+                         AND (d.lab_id = %s OR d.assigned_code LIKE %s)
+                         AND LOWER(di.status) != 'resolved'
+                       ORDER BY di.reported_at DESC""",
+                    (merged_device_ids, lab_id, f"{lab_id}/%")
                 )
             issues = cursor.fetchall()
             for issue in issues:
@@ -1280,6 +1291,7 @@ def get_lab(lab_id):
                     "severity": issue['severity'],
                     "status": issue['status'],
                     "reportedDate": issue['reported_at'].isoformat() if issue['reported_at'] else None,
+                    "reportedBy": issue.get('reported_by', 'System'),
                 })
         
         # Build grid structure
@@ -1411,6 +1423,122 @@ def get_lab(lab_id):
             "error": str(e),
             "success": False
         }), 500
+
+# -----------------------------
+# Get Lab Station List (for export)
+# -----------------------------
+@app.route("/get_lab_station_list/<lab_id>", methods=["GET"])
+def get_lab_station_list(lab_id):
+    """
+    Get lab stations with their devices in a flat format for table display and Excel export
+    """
+    try:
+        conn = db.get_connection()
+        cursor = conn.cursor()
+        
+        # Get lab info
+        cursor.execute(
+            """SELECT lab_id, lab_name FROM labs WHERE lab_id = %s""",
+            (lab_id,)
+        )
+        lab = cursor.fetchone()
+        
+        if not lab:
+            return jsonify({"success": False, "error": "Lab not found"}), 404
+        
+        # Get all stations with their devices
+        cursor.execute(
+            """SELECT 
+                ls.station_id,
+                ls.assigned_code,
+                lgc.row_number,
+                lgc.column_number,
+                lgc.os_windows,
+                lgc.os_linux,
+                lgc.os_other,
+                lsd.device_id,
+                lsd.device_type,
+                lsd.brand,
+                lsd.model,
+                lsd.specification,
+                lsd.invoice_number,
+                lsd.is_linked,
+                lsd.linked_group_id,
+                d.asset_code,
+                d.unit_price,
+                d.warranty_years,
+                d.purchase_date,
+                d.is_active
+            FROM lab_stations ls
+            LEFT JOIN lab_grid_cells lgc ON ls.station_id = lgc.station_id
+            LEFT JOIN lab_station_devices lsd ON ls.station_id = lsd.station_id
+            LEFT JOIN devices d ON lsd.device_id = d.device_id
+            WHERE ls.lab_id = %s
+            ORDER BY ls.assigned_code, lsd.device_type""",
+            (lab_id,)
+        )
+        results = cursor.fetchall()
+        
+        # Group by station
+        stations_map = {}
+        for row in results:
+            station_id = row['station_id']
+            assigned_code = row['assigned_code']
+            
+            if station_id not in stations_map:
+                # Build OS list
+                os_list = []
+                if row['os_windows']:
+                    os_list.append('Windows')
+                if row['os_linux']:
+                    os_list.append('Linux')
+                if row['os_other']:
+                    os_list.append('Other')
+                
+                stations_map[station_id] = {
+                    'stationId': station_id,
+                    'assignedCode': assigned_code,
+                    'row': row['row_number'],
+                    'column': row['column_number'],
+                    'os': ', '.join(os_list) if os_list else 'N/A',
+                    'devices': []
+                }
+            
+            # Add device if exists
+            if row['device_id']:
+                stations_map[station_id]['devices'].append({
+                    'deviceId': row['device_id'],
+                    'type': row['device_type'],
+                    'brand': row['brand'],
+                    'model': row['model'],
+                    'specification': row['specification'],
+                    'assetCode': row['asset_code'],
+                    'unitPrice': float(row['unit_price']) if row['unit_price'] else 0,
+                    'warrantyYears': row['warranty_years'],
+                    'purchaseDate': row['purchase_date'].strftime('%Y-%m-%d') if row['purchase_date'] else None,
+                    'invoiceNumber': row['invoice_number'],
+                    'isLinked': row['is_linked'],
+                    'linkedGroupId': row['linked_group_id'],
+                    'isActive': row['is_active']
+                })
+        
+        # Convert to list
+        stations_list = list(stations_map.values())
+        
+        cursor.close()
+        conn.close()
+        
+        return jsonify({
+            "success": True,
+            "labName": lab['lab_name'],
+            "labId": lab['lab_id'],
+            "stations": stations_list
+        })
+    
+    except Exception as e:
+        print(f"Error fetching lab station list: {str(e)}")
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
 
 # -----------------------------
 # Raise Device Issue
@@ -1566,14 +1694,16 @@ def save_lab():
                 lab_pk_id = existing_lab['id']
                 
                 # Reset all existing device assignments for this lab before re-assigning
+                # This includes devices with matching lab_id OR matching assigned_code pattern
                 cursor.execute(
                     """UPDATE devices
                        SET lab_id = NULL,
                            assigned_code = NULL,
                            qr_value = NULL,
                            is_active = FALSE
-                       WHERE lab_id = %s""",
-                    (lab_number,)
+                       WHERE lab_id = %s 
+                          OR assigned_code LIKE %s""",
+                    (lab_number, f"{lab_number}/%")
                 )
                 print(f"🔄 Reset {cursor.rowcount} devices previously assigned to lab {lab_number}")
                 
@@ -1910,6 +2040,217 @@ def get_bill(bill_id):
     
     except Exception as e:
         print(f"Error fetching bill: {str(e)}")
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
+
+# -----------------------------
+# Get All Bills
+# -----------------------------
+@app.route("/get_all_bills", methods=["GET"])
+def get_all_bills():
+    """Get all bills from the database"""
+    try:
+        conn = db.get_connection()
+        if not conn:
+            return jsonify({"success": False, "error": "Database connection failed"}), 500
+        
+        cursor = conn.cursor()
+        
+        # Get all bills with device count
+        query = """
+            SELECT 
+                b.*,
+                COUNT(d.device_id) as items_count
+            FROM bills b
+            LEFT JOIN devices d ON b.bill_id = d.bill_id
+            GROUP BY b.bill_id
+            ORDER BY b.bill_date DESC
+        """
+        
+        cursor.execute(query)
+        bills = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        
+        # Format the response
+        formatted_bills = []
+        for bill in bills:
+            formatted_bills.append({
+                "id": bill['bill_id'],
+                "billNo": bill['invoice_number'],
+                "supplier": bill['vendor_name'],
+                "date": bill['bill_date'].strftime("%Y-%m-%d") if bill['bill_date'] else None,
+                "amount": float(bill['total_amount']) if bill['total_amount'] else 0,
+                "taxAmount": float(bill['tax_amount']) if bill['tax_amount'] else 0,
+                "gstin": bill['gstin'],
+                "stockEntry": bill['stock_entry'],
+                "items": bill['items_count']
+            })
+        
+        return jsonify({
+            "success": True,
+            "bills": formatted_bills
+        })
+    
+    except Exception as e:
+        print(f"Error fetching bills: {str(e)}")
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
+
+# -----------------------------
+# Get Dead Stock Register Data
+# -----------------------------
+@app.route("/get_deadstock_register", methods=["GET"])
+def get_deadstock_register():
+    """Get dead stock register data grouped by lab stations with linked devices"""
+    try:
+        conn = db.get_connection()
+        if not conn:
+            return jsonify({"success": False, "error": "Database connection failed"}), 500
+        
+        cursor = conn.cursor()
+        
+        # Get all stations with their devices and lab information
+        query = """
+            SELECT 
+                ls.station_id,
+                ls.assigned_code,
+                ls.lab_id,
+                l.lab_name,
+                lsd.device_id,
+                lsd.device_type,
+                lsd.brand,
+                lsd.model,
+                lsd.specification,
+                lsd.invoice_number,
+                lsd.bill_id,
+                lsd.is_linked,
+                lsd.linked_group_id,
+                d.asset_code,
+                d.unit_price,
+                d.warranty_years,
+                d.purchase_date,
+                d.dept,
+                b.vendor_name,
+                b.gstin,
+                b.bill_date,
+                b.stock_entry
+            FROM lab_stations ls
+            JOIN labs l ON ls.lab_id = l.lab_id
+            LEFT JOIN lab_station_devices lsd ON ls.station_id = lsd.station_id
+            LEFT JOIN devices d ON lsd.device_id = d.device_id
+            LEFT JOIN bills b ON lsd.bill_id = b.bill_id
+            WHERE lsd.device_id IS NOT NULL
+            ORDER BY l.lab_name, ls.assigned_code, lsd.device_type
+        """
+        
+        cursor.execute(query)
+        results = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        
+        # Group by station
+        stations_map = {}
+        for row in results:
+            station_key = f"{row['lab_id']}_{row['station_id']}"
+            
+            if station_key not in stations_map:
+                stations_map[station_key] = {
+                    "stationId": row['station_id'],
+                    "assignedCode": row['assigned_code'],
+                    "labId": row['lab_id'],
+                    "labName": row['lab_name'],
+                    "devices": [],
+                    "totalCost": 0,
+                    "billInfo": {
+                        "vendorName": row['vendor_name'] or "",
+                        "gstin": row['gstin'] or "",
+                        "invoiceNumber": row['invoice_number'] or "",
+                        "billDate": row['bill_date'].strftime("%d/%m/%Y") if row['bill_date'] else "",
+                        "stockEntry": row['stock_entry'] or ""
+                    }
+                }
+            
+            # Add device to station
+            if row['device_id']:
+                device_info = {
+                    "deviceId": row['device_id'],
+                    "type": row['device_type'],
+                    "brand": row['brand'],
+                    "model": row['model'],
+                    "specification": row['specification'],
+                    "assetCode": row['asset_code'],
+                    "unitPrice": float(row['unit_price']) if row['unit_price'] else 0,
+                    "warrantyYears": row['warranty_years'],
+                    "purchaseDate": row['purchase_date'].strftime("%d/%m/%Y") if row['purchase_date'] else "",
+                    "dept": row['dept'] or "",
+                    "isLinked": row['is_linked'],
+                    "linkedGroupId": row['linked_group_id']
+                }
+                stations_map[station_key]["devices"].append(device_info)
+                stations_map[station_key]["totalCost"] += device_info["unitPrice"]
+        
+        # Format for dead stock register
+        deadstock_entries = []
+        sr_no = 1
+        
+        for station_key, station in stations_map.items():
+            if not station["devices"]:
+                continue
+                
+            # Create item description from all devices
+            device_descriptions = []
+            for device in station["devices"]:
+                desc_parts = [device["type"]]
+                if device["brand"]:
+                    desc_parts.append(device["brand"])
+                if device["model"]:
+                    desc_parts.append(device["model"])
+                device_descriptions.append(" ".join(desc_parts))
+            
+            item_description = " + ".join(device_descriptions)
+            
+            # Get identity numbers
+            identity_nos = [device["assetCode"] for device in station["devices"] if device["assetCode"]]
+            identity_display = ", ".join(identity_nos)
+            
+            # Get purchase date (use first device's date)
+            purchase_date = station["devices"][0]["purchaseDate"] if station["devices"] else ""
+            
+            # Get warranty (max of all devices)
+            max_warranty = max([d["warrantyYears"] or 0 for d in station["devices"]])
+            
+            deadstock_entries.append({
+                "srNo": str(sr_no),
+                "labName": station["labName"],
+                "stationCode": station["assignedCode"],
+                "itemDescription": item_description,
+                "deviceCount": len(station["devices"]),
+                "devices": station["devices"],
+                "supplierInfo": station["billInfo"]["vendorName"],
+                "orderNo": station["billInfo"]["gstin"],
+                "billNo": station["billInfo"]["invoiceNumber"],
+                "billDate": station["billInfo"]["billDate"],
+                "centralStore": station["billInfo"]["stockEntry"],
+                "quantity": str(len(station["devices"])).zfill(2),
+                "ratePerUnit": f"{station['totalCost'] / len(station['devices']):.2f}/-" if station["devices"] else "0.00/-",
+                "cost": f"{station['totalCost']:.2f}/-",
+                "dateOfDelivery": purchase_date,
+                "dateOfInstallation": purchase_date,
+                "identityNo": identity_display,
+                "remark": station["devices"][0]["dept"] if station["devices"] else "",
+                "signOfLabInCharge": "",
+                "warrantyYears": max_warranty
+            })
+            sr_no += 1
+        
+        return jsonify({
+            "success": True,
+            "deadstock": deadstock_entries
+        })
+    
+    except Exception as e:
+        print(f"Error fetching deadstock register: {str(e)}")
         traceback.print_exc()
         return jsonify({"success": False, "error": str(e)}), 500
 
