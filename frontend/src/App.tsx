@@ -1,10 +1,13 @@
 import { BrowserRouter as Router, Routes, Route } from "react-router-dom";
+import { AuthProvider } from "./contexts/AuthContext";
+import ProtectedRoute from "./components/ProtectedRoute";
 import LandingPage from "./pages/LandingPage.tsx";
 import OcrPage from "./pages/OcrPage.tsx"; 
 import Dashboard from "./pages/Dashboard.tsx";
 import { LoginForm } from "./pages/Login.tsx";
 import Signup from "./pages/Signup.tsx";
 import ForgotPassword from "./pages/ForgotPassword";
+import Settings from "./pages/Settings.tsx";
 // import LoginPage from "./pages/LoginPage";   // create later
 // import RegisterPage from "./pages/RegisterPage"; // create later
 import LabConfiguration from "./pages/Labconfiguration.tsx";
@@ -14,28 +17,51 @@ import Reports from "./pages/Reports.tsx";
 import WarrantyExpiry from "./pages/WarrantyExpiry.tsx";
 import Issues from "./pages/Issues.tsx";
 import Documents from "./pages/Documents.tsx";
+import Transfers from "./pages/Transfers.tsx";
 
 const App: React.FC = () => {
   return (
     <Router>
-      <Routes>
-        <Route path="/" element={<LandingPage />} />
-        <Route path="/ocr" element={<OcrPage />} />
-        <Route path="/dashboard" element={<Dashboard />} />
-        {/* Future pages */}
-        { <Route path="/login" element={<LoginForm />} /> }
-        <Route path="/forgot" element={<ForgotPassword />} />
-        <Route path="/signup" element={<Signup />} />
-        <Route path="/lab-configuration" element={<LabConfiguration />} />
-        <Route path="/lab-plan" element={<LabFloorPlan />} />
-        <Route path="/assets" element={<AllAssets />} />
-        <Route path="/reports" element={<Reports />} />
-        <Route path="/reports/warranty" element={<WarrantyExpiry />} />
-        <Route path="/dashboard/issues" element={<Issues />} />
-        <Route path="/documents" element={<Documents />} />
-        <Route path="/dashboard/documents" element={<Documents />} />
-        {/* <Route path="/register" element={<RegisterPage />} /> */}
-      </Routes>
+      <AuthProvider>
+        <Routes>
+          {/* Public routes */}
+          <Route path="/" element={<LandingPage />} />
+          <Route path="/login" element={<LoginForm />} />
+          <Route path="/forgot" element={<ForgotPassword />} />
+          <Route path="/signup" element={<Signup />} />
+          
+          {/* Protected routes */}
+          <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
+          <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
+          
+          {/* Asset Management - All roles */}
+          <Route path="/assets" element={<ProtectedRoute><AllAssets /></ProtectedRoute>} />
+          <Route path="/ocr" element={<ProtectedRoute><OcrPage /></ProtectedRoute>} />
+          
+          {/* Lab Management - HOD and Lab Incharge */}
+          <Route path="/lab-configuration" element={
+            <ProtectedRoute allowedRoles={['HOD', 'Lab Incharge']}>
+              <LabConfiguration />
+            </ProtectedRoute>
+          } />
+          <Route path="/lab-plan" element={
+            <ProtectedRoute allowedRoles={['HOD', 'Lab Incharge']}>
+              <LabFloorPlan />
+            </ProtectedRoute>
+          } />
+          
+          {/* Operations - All roles */}
+          <Route path="/transfers" element={<ProtectedRoute><Transfers /></ProtectedRoute>} />
+          <Route path="/dashboard/issues" element={<ProtectedRoute><Issues /></ProtectedRoute>} />
+          <Route path="/documents" element={<ProtectedRoute><Documents /></ProtectedRoute>} />
+          <Route path="/dashboard/documents" element={<ProtectedRoute><Documents /></ProtectedRoute>} />
+          
+          {/* Analytics - All roles */}
+          <Route path="/reports" element={<ProtectedRoute><Reports /></ProtectedRoute>} />
+          <Route path="/warranty-expiry" element={<ProtectedRoute><WarrantyExpiry /></ProtectedRoute>} />
+          <Route path="/reports/warranty" element={<ProtectedRoute><WarrantyExpiry /></ProtectedRoute>} />
+        </Routes>
+      </AuthProvider>
     </Router>
   );
 };

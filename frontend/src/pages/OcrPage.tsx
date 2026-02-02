@@ -9,6 +9,7 @@ import { LogoButton } from "@/components/ui/logo-button";
 import { BackgroundGradient } from "@/components/ui/background-gradient";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { useAuth } from "@/contexts/AuthContext";
 
 interface Asset {
   asset_id: string;
@@ -87,6 +88,7 @@ interface ManualDevice {
 }
 
 const OcrPage: React.FC = () => {
+  const { logout } = useAuth();
   const [file, setFile] = useState<File | null>(null);
   const [scanResult, setScanResult] = useState<ScanResult | null>(null);
   const [active, setActive] = useState<string | null>(null);
@@ -547,7 +549,7 @@ const OcrPage: React.FC = () => {
 
           <MenuItem setActive={setActive} active={active} item="Operations">
             <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/dashboard/transfers">Transfers</HoveredLink>
+              <HoveredLink href="/transfers">Transfers</HoveredLink>
               <HoveredLink href="/dashboard/issues">Issues</HoveredLink>
               <HoveredLink href="/dashboard/documents">Documents</HoveredLink>
             </div>
@@ -556,6 +558,19 @@ const OcrPage: React.FC = () => {
           <MenuItem setActive={setActive} active={active} item="Analytics">
             <div className="flex flex-col space-y-2 text-sm p-2">
               <HoveredLink href="/reports">Reports</HoveredLink>
+              <HoveredLink href="/warranty-expiry">Warranty Expiry</HoveredLink>
+            </div>
+          </MenuItem>
+
+          <MenuItem setActive={setActive} active={active} item="Account">
+            <div className="flex flex-col space-y-2 text-sm p-2">
+              <HoveredLink href="/settings">Settings</HoveredLink>
+              <button 
+                onClick={logout}
+                className="text-left text-neutral-600 hover:text-neutral-800 transition-colors"
+              >
+                Logout
+              </button>
             </div>
           </MenuItem>
         </Menu>

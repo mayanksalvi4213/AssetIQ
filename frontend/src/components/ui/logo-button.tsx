@@ -12,7 +12,7 @@ export function LogoButton() {
       onClick={() => navigate("/dashboard")}
     >
       <img
-        src="/public/logoasset.png" // <-- replace with actual file name from /public
+        src="/logoasset.png"
         alt="Institute Logo"
         className="h-17 w-17 object-contain"
       />

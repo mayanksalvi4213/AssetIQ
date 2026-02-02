@@ -6,6 +6,7 @@ import { Menu, MenuItem, HoveredLink } from "@/components/ui/navbar-menu";
 import { LogoButton } from "@/components/ui/logo-button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { useAuth } from "@/contexts/AuthContext";
 
 interface Device {
   device_id: number;
@@ -37,6 +38,7 @@ interface DeviceGroup {
 }
 
 export default function AllAssets() {
+  const { logout } = useAuth();
   const [devices, setDevices] = useState<Device[]>([]);
   const [groupedAssets, setGroupedAssets] = useState<DeviceGroup[]>([]);
   const [filteredAssets, setFilteredAssets] = useState<DeviceGroup[]>([]);
@@ -46,12 +48,19 @@ export default function AllAssets() {
   const [filterType, setFilterType] = useState("all");
   const [filterStatus, setFilterStatus] = useState("all");
   const [expandedGroup, setExpandedGroup] = useState<number | null>(null);
+  const [groupBills, setGroupBills] = useState<Map<number, any>>(new Map());
+  const [loadingBills, setLoadingBills] = useState<Set<number>>(new Set());
   
   const deviceTypes = [
     "All Types", "Laptop", "PC", "Monitor", "AC", "Smart Board", "Projector",
     "Printer", "Scanner", "UPS", "Router", "Switch", "Server",
     "Keyboard", "Mouse", "Webcam", "Headset", "Other"
   ];
+
+  const formatMoney = (value: number | string | null | undefined) => {
+    const num = Number(value);
+    return Number.isFinite(num) ? `₹${num.toFixed(2)}` : "₹N/A";
+  };
 
   useEffect(() => {
     fetchAllDevices();
@@ -117,7 +126,8 @@ export default function AllAssets() {
       group.devices.push(device);
       group.total++;
       
-      if (device.is_active && device.assigned_code) {
+      // Device is assigned if it has an assigned_code, regardless of is_active status
+      if (device.assigned_code) {
         group.assigned++;
       } else {
         group.unassigned++;
@@ -162,13 +172,44 @@ export default function AllAssets() {
 
   const getTotalStats = () => {
     const total = devices.length;
-    const assigned = devices.filter(d => d.is_active && d.assigned_code).length;
+    // Device is assigned if it has an assigned_code, regardless of is_active status
+    const assigned = devices.filter(d => d.assigned_code).length;
     const unassigned = total - assigned;
     
     return { total, assigned, unassigned };
   };
 
   const stats = getTotalStats();
+
+  const fetchBillDetails = async (billId: number, groupIdx: number) => {
+    try {
+      setLoadingBills(prev => new Set(prev).add(groupIdx));
+      const response = await fetch(`http://localhost:5000/get_bill/${billId}`);
+      const data = await response.json();
+      
+      setGroupBills(prev => new Map(prev).set(groupIdx, data));
+    } catch (err) {
+      console.error("Error fetching bill details:", err);
+      setGroupBills(prev => new Map(prev).set(groupIdx, { error: err instanceof Error ? err.message : 'Network error' }));
+    } finally {
+      setLoadingBills(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(groupIdx);
+        return newSet;
+      });
+    }
+  };
+
+  const handleGroupClick = (idx: number, billId: number) => {
+    if (expandedGroup === idx) {
+      setExpandedGroup(null);
+    } else {
+      setExpandedGroup(idx);
+      if (!groupBills.has(idx) && billId) {
+        fetchBillDetails(billId, idx);
+      }
+    }
+  };
 
   return (
     <div className="relative min-h-screen w-full bg-black text-white" style={{
@@ -198,7 +239,7 @@ export default function AllAssets() {
           <MenuItem setActive={setActive} active={active} item="Operations">
             <div className="flex flex-col space-y-2 text-sm p-2">
               <HoveredLink href="/transfers">Transfers</HoveredLink>
-              <HoveredLink href="/issues">Issues</HoveredLink>
+              <HoveredLink href="/dashboard/issues">Issues</HoveredLink>
               <HoveredLink href="/documents">Documents</HoveredLink>
             </div>
           </MenuItem>
@@ -206,6 +247,19 @@ export default function AllAssets() {
           <MenuItem setActive={setActive} active={active} item="Analytics">
             <div className="flex flex-col space-y-2 text-sm p-2">
               <HoveredLink href="/reports">Reports</HoveredLink>
+              <HoveredLink href="/warranty-expiry">Warranty Expiry</HoveredLink>
+            </div>
+          </MenuItem>
+
+          <MenuItem setActive={setActive} active={active} item="Account">
+            <div className="flex flex-col space-y-2 text-sm p-2">
+              <HoveredLink href="/settings">Settings</HoveredLink>
+              <button 
+                onClick={logout}
+                className="text-left text-neutral-600 hover:text-neutral-800 transition-colors"
+              >
+                Logout
+              </button>
             </div>
           </MenuItem>
         </Menu>
@@ -294,7 +348,7 @@ export default function AllAssets() {
                 <div key={idx} className="bg-neutral-800/50 rounded-lg overflow-hidden border border-neutral-700">
                   {/* Group Header */}
                   <div 
-                    onClick={() => setExpandedGroup(expandedGroup === idx ? null : idx)}
+                    onClick={() => handleGroupClick(idx, asset.devices[0]?.bill_id)}
                     className="p-4 cursor-pointer hover:bg-neutral-700/50 transition flex justify-between items-center"
                   >
                     <div className="flex-1 grid grid-cols-1 md:grid-cols-4 gap-4">
@@ -323,50 +377,123 @@ export default function AllAssets() {
                   </div>
 
                   {/* Expanded Details */}
-                  {expandedGroup === idx && (
-                    <div className="border-t border-neutral-700 p-4 bg-neutral-900/50">
-                      <div className="overflow-x-auto">
-                        <table className="min-w-full text-sm">
-                          <thead>
-                            <tr className="border-b border-neutral-700">
-                              <th className="px-3 py-2 text-left text-gray-400">Asset ID</th>
-                              <th className="px-3 py-2 text-left text-gray-400">Assigned Code</th>
-                              <th className="px-3 py-2 text-left text-gray-400">Location</th>
-                              <th className="px-3 py-2 text-left text-gray-400">Invoice</th>
-                              <th className="px-3 py-2 text-left text-gray-400">Price</th>
-                              <th className="px-3 py-2 text-left text-gray-400">Status</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {asset.devices.map(device => (
-                              <tr key={device.device_id} className="border-b border-neutral-800 hover:bg-neutral-800/50">
-                                <td className="px-3 py-2 text-white">{device.asset_id || "-"}</td>
-                                <td className="px-3 py-2 text-white">{device.assigned_code || "-"}</td>
-                                <td className="px-3 py-2 text-white">
-                                  {device.lab_name ? `${device.lab_name} (Lab ${device.lab_id})` : "Unassigned"}
-                                </td>
-                                <td className="px-3 py-2 text-white">{device.invoice_number}</td>
-                                <td className="px-3 py-2 text-white">₹{device.unit_price?.toFixed(2) || "N/A"}</td>
-                                <td className="px-3 py-2">
-                                  {device.is_active && device.assigned_code ? (
-                                    <span className="text-green-400 font-semibold">✓ Assigned</span>
-                                  ) : (
-                                    <span className="text-yellow-400 font-semibold">○ Available</span>
+                  {expandedGroup === idx && (() => {
+                    const billData = groupBills.get(idx);
+                    const isLoading = loadingBills.has(idx);
+                    
+                    return (
+                      <div className="border-t border-neutral-700 p-4 bg-neutral-900/50 space-y-4">
+                        {/* Bill Details Section */}
+                        {isLoading ? (
+                          <div className="text-center text-gray-400 py-4">Loading bill details...</div>
+                        ) : billData?.error ? (
+                          <div className="bg-red-900/20 border border-red-500/30 rounded-lg p-4 text-red-400 text-sm">
+                            {billData.error}
+                          </div>
+                        ) : billData?.bill ? (
+                          <div className="bg-neutral-800/50 rounded-lg p-4">
+                            <h3 className="text-white font-semibold mb-3 text-sm">Bill Details</h3>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                              <div className="bg-neutral-700/30 rounded p-3">
+                                <h4 className="text-purple-400 font-semibold text-sm mb-2">📄 Bill Information</h4>
+                                <div className="space-y-2 text-xs">
+                                  <div>
+                                    <span className="text-gray-400">Invoice:</span>
+                                    <span className="text-white ml-2 font-semibold">{billData.bill.invoiceNumber || "N/A"}</span>
+                                  </div>
+                                  <div>
+                                    <span className="text-gray-400">Date:</span>
+                                    <span className="text-white ml-2">{billData.bill.billDate || "N/A"}</span>
+                                  </div>
+                                  <div>
+                                    <span className="text-gray-400">Total Amount:</span>
+                                    <span className="text-white ml-2 font-semibold">{formatMoney(billData.bill.totalAmount)}</span>
+                                  </div>
+                                  <div>
+                                    <span className="text-gray-400">Tax:</span>
+                                    <span className="text-white ml-2">{formatMoney(billData.bill.taxAmount)}</span>
+                                  </div>
+                                  {billData.bill.stockEntry && (
+                                    <div>
+                                      <span className="text-gray-400">Stock Entry:</span>
+                                      <span className="text-white ml-2">{billData.bill.stockEntry}</span>
+                                    </div>
                                   )}
-                                </td>
+                                </div>
+                              </div>
+                              <div className="bg-neutral-700/30 rounded p-3">
+                                <h4 className="text-orange-400 font-semibold text-sm mb-2">🏢 Vendor Information</h4>
+                                <div className="space-y-2 text-xs">
+                                  <div>
+                                    <span className="text-gray-400">Name:</span>
+                                    <span className="text-white ml-2 font-semibold">{billData.bill.vendorName || "N/A"}</span>
+                                  </div>
+                                  {billData.bill.vendorGstin && (
+                                    <div>
+                                      <span className="text-gray-400">GSTIN:</span>
+                                      <span className="text-white ml-2">{billData.bill.vendorGstin}</span>
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="bg-neutral-800/50 rounded-lg p-4 text-center text-gray-400 text-sm">
+                            No bill information available
+                          </div>
+                        )}
+
+                        {/* Device List Table */}
+                        <div className="overflow-x-auto">
+                          <h3 className="text-white font-semibold mb-2 text-sm">Devices ({asset.total})</h3>
+                          <table className="min-w-full text-sm">
+                            <thead>
+                              <tr className="border-b border-neutral-700">
+                                <th className="px-3 py-2 text-left text-gray-400">Asset ID</th>
+                                <th className="px-3 py-2 text-left text-gray-400">Assigned Code</th>
+                                <th className="px-3 py-2 text-left text-gray-400">Location</th>
+                                <th className="px-3 py-2 text-left text-gray-400">Invoice</th>
+                                <th className="px-3 py-2 text-left text-gray-400">Price</th>
+                                <th className="px-3 py-2 text-left text-gray-400">Status</th>
                               </tr>
-                            ))}
-                          </tbody>
-                        </table>
+                            </thead>
+                            <tbody>
+                              {asset.devices.map(device => (
+                                <tr 
+                                  key={device.device_id}
+                                  className="border-b border-neutral-800 hover:bg-neutral-800/30"
+                                >
+                                  <td className="px-3 py-2 text-white">{device.asset_id || "-"}</td>
+                                  <td className="px-3 py-2 text-white">{device.assigned_code || "-"}</td>
+                                  <td className="px-3 py-2 text-white">
+                                    {device.lab_name ? `${device.lab_name} (Lab ${device.lab_id})` : "Unassigned"}
+                                  </td>
+                                  <td className="px-3 py-2 text-white">{device.invoice_number}</td>
+                                  <td className="px-3 py-2 text-white">{formatMoney(device.unit_price)}</td>
+                                  <td className="px-3 py-2">
+                                    {device.assigned_code ? (
+                                      <span className="text-green-400 font-semibold">✓ Assigned</span>
+                                    ) : (
+                                      <span className="text-yellow-400 font-semibold">○ Available</span>
+                                    )}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
                       </div>
-                    </div>
-                  )}
+                    );
+                  })()}
                 </div>
               ))}
             </div>
           )}
         </motion.div>
       </div>
+
+
     </div>
   );
 }

@@ -2,6 +2,9 @@
 import React, { useState, useEffect } from "react";
 import { Menu, MenuItem, HoveredLink } from "@/components/ui/navbar-menu";
 import { LogoButton } from "@/components/ui/logo-button";
+import jsPDF from "jspdf";
+import autoTable from "jspdf-autotable";
+import { useAuth } from "@/contexts/AuthContext";
 
 interface Bill {
   id: number;
@@ -47,11 +50,271 @@ interface DeadStockEntry {
 
 const Documents: React.FC = () => {
   const [active, setActive] = useState<string | null>(null);
+  const { logout } = useAuth();
   const [activeTab, setActiveTab] = useState<"bills" | "deadstock">("bills");
   const [bills, setBills] = useState<Bill[]>([]);
   const [deadStockData, setDeadStockData] = useState<DeadStockEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  // Export Bills to CSV
+  const exportBillsToCSV = () => {
+    const headers = ["Bill No.", "Supplier", "GSTIN", "Date", "Amount", "Tax", "Items"];
+    const csvContent = [
+      headers.join(","),
+      ...bills.map(bill =>
+        [
+          bill.billNo,
+          bill.supplier,
+          bill.gstin,
+          bill.date,
+          bill.amount,
+          bill.taxAmount,
+          bill.items
+        ].join(",")
+      )
+    ].join("\n");
+
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const link = document.createElement("a");
+    const url = URL.createObjectURL(blob);
+    link.setAttribute("href", url);
+    link.setAttribute("download", `bills_${new Date().toISOString().split('T')[0]}.csv`);
+    link.style.visibility = "hidden";
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  // Export Bills to PDF
+  const exportBillsToPDF = async () => {
+    try {
+      const doc = new jsPDF();
+      
+      // Load header image asynchronously
+      const headerImg = new Image();
+      headerImg.src = '/header.png';
+      
+      // Wait for image to load
+      await new Promise((resolve, reject) => {
+        headerImg.onload = resolve;
+        headerImg.onerror = () => reject(new Error('Failed to load header image'));
+      });
+      
+      // Add header image
+      doc.addImage(headerImg, 'PNG', 0, 0, 210, 40);
+      
+      doc.setFontSize(20);
+      doc.text("Bills Report", 14, 48);
+      doc.setFontSize(11);
+      doc.text(`Generated on: ${new Date().toLocaleDateString()}`, 14, 56);
+
+      const tableData = bills.map(bill => [
+        bill.billNo,
+        bill.supplier,
+        bill.gstin,
+        bill.date,
+        `₹${bill.amount.toLocaleString()}`,
+        `₹${bill.taxAmount.toLocaleString()}`,
+        bill.items.toString()
+      ]);
+
+      autoTable(doc, {
+        head: [["Bill No.", "Supplier", "GSTIN", "Date", "Amount", "Tax", "Items"]],
+        body: tableData,
+        startY: 63,
+        theme: 'grid',
+        styles: { fontSize: 10, cellPadding: 3 },
+        headStyles: { fillColor: [59, 130, 246], fontSize: 11, fontStyle: 'bold' }
+      });
+
+      doc.save(`bills_${new Date().toISOString().split('T')[0]}.pdf`);
+    } catch (error) {
+      console.error('Error generating PDF:', error);
+      alert('Failed to generate PDF. Please try again.');
+    }
+  };
+
+  // Export Dead Stock to CSV
+  const exportDeadStockToCSV = () => {
+    const headers = [
+      "Sr. No.",
+      "Lab",
+      "Station",
+      "Device Type",
+      "Brand",
+      "Model",
+      "Specification",
+      "Asset Code",
+      "Unit Price",
+      "Supplier",
+      "Order No.",
+      "Bill No.",
+      "Bill Date",
+      "Central Store",
+      "Quantity",
+      "Rate/Unit",
+      "Cost",
+      "Delivery Date",
+      "Identity No.",
+      "Warranty"
+    ];
+    
+    const rows: string[] = [];
+    deadStockData.forEach(item => {
+      if (item.devices && item.devices.length > 0) {
+        item.devices.forEach(device => {
+          rows.push([
+            item.srNo,
+            item.labName,
+            item.stationCode,
+            device.type,
+            device.brand,
+            device.model,
+            device.specification || "",
+            device.assetCode || "",
+            device.unitPrice.toString(),
+            item.supplierInfo,
+            item.orderNo,
+            item.billNo,
+            item.billDate,
+            item.centralStore,
+            item.quantity,
+            item.ratePerUnit,
+            item.cost,
+            item.dateOfDelivery,
+            item.identityNo,
+            `${item.warrantyYears}y`
+          ].map(val => `"${val}"`).join(","));
+        });
+      } else {
+        rows.push([
+          item.srNo,
+          item.labName,
+          item.stationCode,
+          "",
+          "",
+          "",
+          "",
+          "",
+          "",
+          item.supplierInfo,
+          item.orderNo,
+          item.billNo,
+          item.billDate,
+          item.centralStore,
+          item.quantity,
+          item.ratePerUnit,
+          item.cost,
+          item.dateOfDelivery,
+          item.identityNo,
+          `${item.warrantyYears}y`
+        ].map(val => `"${val}"`).join(","));
+      }
+    });
+
+    const csvContent = [headers.join(","), ...rows].join("\n");
+
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const link = document.createElement("a");
+    const url = URL.createObjectURL(blob);
+    link.setAttribute("href", url);
+    link.setAttribute("download", `deadstock_register_${new Date().toISOString().split('T')[0]}.csv`);
+    link.style.visibility = "hidden";
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  // Export Dead Stock to PDF
+  const exportDeadStockToPDF = async () => {
+    try {
+      const doc = new jsPDF('l', 'mm', 'a4'); // landscape orientation
+      
+      // Load header image asynchronously
+      const headerImg = new Image();
+      headerImg.src = '/header.png';
+      
+      // Wait for image to load
+      await new Promise((resolve, reject) => {
+        headerImg.onload = resolve;
+        headerImg.onerror = () => reject(new Error('Failed to load header image'));
+      });
+      
+      // Add header image
+      doc.addImage(headerImg, 'PNG', 0, 0, 297, 40);
+      
+      doc.setFontSize(18);
+      doc.text("Dead Stock Register", 14, 48);
+      doc.setFontSize(12);
+      doc.text("A. P. SHAH INSTITUTE OF TECHNOLOGY", 14, 55);
+      doc.setFontSize(9);
+      doc.text("Survey No. 12, Opp. Hypercity Mall, Kasarvadavali, Ghodbunder Road, Thane (W)-400 615.", 14, 60);
+      doc.text(`Generated on: ${new Date().toLocaleDateString()}`, 14, 65);
+
+    const tableData: any[] = [];
+    deadStockData.forEach(item => {
+      if (item.devices && item.devices.length > 0) {
+        item.devices.forEach((device, idx) => {
+          tableData.push([
+            idx === 0 ? item.srNo : "",
+            idx === 0 ? item.labName : "",
+            idx === 0 ? item.stationCode : "",
+            `${device.type}: ${device.brand} ${device.model}${device.specification ? '\n' + device.specification : ''}${device.assetCode ? '\n' + device.assetCode : ''}`,
+            idx === 0 ? item.supplierInfo : "",
+            idx === 0 ? item.orderNo : "",
+            idx === 0 ? `${item.billNo}\n${item.billDate}` : "",
+            idx === 0 ? item.quantity : "",
+            idx === 0 ? item.cost : "",
+            idx === 0 ? item.dateOfDelivery : "",
+            idx === 0 ? `${item.warrantyYears}y` : ""
+          ]);
+        });
+      } else {
+        tableData.push([
+          item.srNo,
+          item.labName,
+          item.stationCode,
+          "",
+          item.supplierInfo,
+          item.orderNo,
+          `${item.billNo}\n${item.billDate}`,
+          item.quantity,
+          item.cost,
+          item.dateOfDelivery,
+          `${item.warrantyYears}y`
+        ]);
+      }
+    });
+
+    autoTable(doc, {
+      head: [["Sr.", "Lab", "Station", "Devices", "Supplier", "Order", "Bill", "Qty", "Cost", "Delivery", "Warranty"]],
+      body: tableData,
+      startY: 70,
+      theme: 'grid',
+      styles: { fontSize: 8, cellPadding: 2 },
+      headStyles: { fillColor: [59, 130, 246], fontSize: 9, fontStyle: 'bold' },
+      columnStyles: {
+        0: { cellWidth: 10 },
+        1: { cellWidth: 25 },
+        2: { cellWidth: 20 },
+        3: { cellWidth: 60 },
+        4: { cellWidth: 35 },
+        5: { cellWidth: 20 },
+        6: { cellWidth: 25 },
+        7: { cellWidth: 15 },
+        8: { cellWidth: 20 },
+        9: { cellWidth: 20 },
+        10: { cellWidth: 15 }
+      }
+    });
+
+      doc.save(`deadstock_register_${new Date().toISOString().split('T')[0]}.pdf`);
+    } catch (error) {
+      console.error('Error generating PDF:', error);
+      alert('Failed to generate PDF. Please try again.');
+    }
+  };
 
   // Fetch bills from API
   useEffect(() => {
@@ -139,6 +402,19 @@ const Documents: React.FC = () => {
           <MenuItem setActive={setActive} active={active} item="Analytics">
             <div className="flex flex-col space-y-2 text-sm p-2">
               <HoveredLink href="/reports">Reports</HoveredLink>
+              <HoveredLink href="/warranty-expiry">Warranty Expiry</HoveredLink>
+            </div>
+          </MenuItem>
+
+          <MenuItem setActive={setActive} active={active} item="Account">
+            <div className="flex flex-col space-y-2 text-sm p-2">
+              <HoveredLink href="/settings">Settings</HoveredLink>
+              <button 
+                onClick={logout}
+                className="text-left text-neutral-600 hover:text-neutral-800 transition-colors"
+              >
+                Logout
+              </button>
             </div>
           </MenuItem>
         </Menu>
@@ -194,7 +470,31 @@ const Documents: React.FC = () => {
             {/* Bills Section */}
             {activeTab === "bills" && (
               <div className="p-6 bg-neutral-800/95 rounded-2xl backdrop-blur-sm">
-                <h2 className="text-2xl font-semibold mb-6 text-white">Bills</h2>
+                <div className="flex justify-between items-center mb-6">
+                  <h2 className="text-2xl font-semibold text-white">Bills</h2>
+                  <div className="flex gap-3">
+                    <button
+                      onClick={exportBillsToCSV}
+                      disabled={bills.length === 0}
+                      className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors disabled:bg-gray-600 disabled:cursor-not-allowed flex items-center gap-2"
+                    >
+                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                      </svg>
+                      Export CSV
+                    </button>
+                    <button
+                      onClick={exportBillsToPDF}
+                      disabled={bills.length === 0}
+                      className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors disabled:bg-gray-600 disabled:cursor-not-allowed flex items-center gap-2"
+                    >
+                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
+                      </svg>
+                      Export PDF
+                    </button>
+                  </div>
+                </div>
                 <div className="overflow-x-auto">
                   <table className="w-full text-left text-white">
                     <thead className="border-b border-gray-600">
@@ -247,9 +547,35 @@ const Documents: React.FC = () => {
             {activeTab === "deadstock" && (
               <div className="p-6 bg-neutral-800/95 rounded-2xl backdrop-blur-sm">
                 <div className="mb-6">
-                  <h2 className="text-2xl font-semibold text-white">Dead Stock Register</h2>
-                  <p className="text-sm text-gray-400 mt-1">A. P. SHAH INSTITUTE OF TECHNOLOGY</p>
-                  <p className="text-xs text-gray-500">Survey No. 12, Opp. Hypercity Mall, Kasarvadavali, Ghodbunder Road, Thane (W)-400 615.</p>
+                  <div className="flex justify-between items-start mb-2">
+                    <div>
+                      <h2 className="text-2xl font-semibold text-white">Dead Stock Register</h2>
+                      <p className="text-sm text-gray-400 mt-1">A. P. SHAH INSTITUTE OF TECHNOLOGY</p>
+                      <p className="text-xs text-gray-500">Survey No. 12, Opp. Hypercity Mall, Kasarvadavali, Ghodbunder Road, Thane (W)-400 615.</p>
+                    </div>
+                    <div className="flex gap-3">
+                      <button
+                        onClick={exportDeadStockToCSV}
+                        disabled={deadStockData.length === 0}
+                        className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors disabled:bg-gray-600 disabled:cursor-not-allowed flex items-center gap-2"
+                      >
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                        </svg>
+                        Export CSV
+                      </button>
+                      <button
+                        onClick={exportDeadStockToPDF}
+                        disabled={deadStockData.length === 0}
+                        className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors disabled:bg-gray-600 disabled:cursor-not-allowed flex items-center gap-2"
+                      >
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
+                        </svg>
+                        Export PDF
+                      </button>
+                    </div>
+                  </div>
                 </div>
                 
                 <div className="overflow-x-auto">

@@ -3,9 +3,11 @@ import React, { useState } from "react";
 import { Menu, MenuItem, HoveredLink } from "@/components/ui/navbar-menu";
 import { CometCard } from "@/components/ui/comet-card";
 import { LogoButton } from "@/components/ui/logo-button";
+import { useAuth } from "@/contexts/AuthContext";
 
 const Reports: React.FC = () => {
   const [active, setActive] = useState<string | null>(null);
+  const { logout } = useAuth();
 
   return (
     <div
@@ -48,6 +50,19 @@ const Reports: React.FC = () => {
           <MenuItem setActive={setActive} active={active} item="Analytics">
             <div className="flex flex-col space-y-2 text-sm p-2">
               <HoveredLink href="/reports">Reports</HoveredLink>
+              <HoveredLink href="/warranty-expiry">Warranty Expiry</HoveredLink>
+            </div>
+          </MenuItem>
+
+          <MenuItem setActive={setActive} active={active} item="Account">
+            <div className="flex flex-col space-y-2 text-sm p-2">
+              <HoveredLink href="/settings">Settings</HoveredLink>
+              <button 
+                onClick={logout}
+                className="text-left text-neutral-600 hover:text-neutral-800 transition-colors"
+              >
+                Logout
+              </button>
             </div>
           </MenuItem>
         </Menu>

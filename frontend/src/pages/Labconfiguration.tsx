@@ -8,6 +8,7 @@ import { HoverBorderGradient } from "@/components/ui/hover-border-gradient";
 import { Menu, MenuItem, HoveredLink } from "@/components/ui/navbar-menu"; // ✅ navbar
 import { cn } from "@/lib/utils";
 import { LogoButton } from "@/components/ui/logo-button";
+import { useAuth } from "@/contexts/AuthContext";
 
 interface Equipment {
   type: string;
@@ -52,6 +53,7 @@ interface Lab {
 
 export default function LabConfiguration() {
   
+  const { logout } = useAuth();
   const [labs, setLabs] = useState<Lab[]>([]);
   const [selectedLabId, setSelectedLabId] = useState<string | null>(null);
   const [labNumber, setLabNumber] = useState("");
@@ -1048,7 +1050,7 @@ export default function LabConfiguration() {
 
           <MenuItem setActive={setActive} active={active} item="Operations">
             <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/dashboard/transfers">Transfers</HoveredLink>
+              <HoveredLink href="/transfers">Transfers</HoveredLink>
               <HoveredLink href="/dashboard/issues">Issues</HoveredLink>
               <HoveredLink href="/dashboard/documents">Documents</HoveredLink>
             </div>
@@ -1057,6 +1059,19 @@ export default function LabConfiguration() {
           <MenuItem setActive={setActive} active={active} item="Analytics">
             <div className="flex flex-col space-y-2 text-sm p-2">
               <HoveredLink href="/reports">Reports</HoveredLink>
+              <HoveredLink href="/warranty-expiry">Warranty Expiry</HoveredLink>
+            </div>
+          </MenuItem>
+
+          <MenuItem setActive={setActive} active={active} item="Account">
+            <div className="flex flex-col space-y-2 text-sm p-2">
+              <HoveredLink href="/settings">Settings</HoveredLink>
+              <button 
+                onClick={logout}
+                className="text-left text-neutral-600 hover:text-neutral-800 transition-colors"
+              >
+                Logout
+              </button>
             </div>
           </MenuItem>
         </Menu>

@@ -34,7 +34,6 @@ export default function Signup() {
   const [lab, setLab] = useState<string>("");
   const [showPasswordValidation, setShowPasswordValidation] = useState(false);
 
-  const requiresLabSelection = useMemo(() => role === "Lab Incharge", [role]);
   const passwordValidations = validatePassword(password);
   const isPasswordValid = Object.values(passwordValidations).every(Boolean);
   const passwordsMatch = password === confirmPassword && confirmPassword.length > 0;
@@ -58,7 +57,6 @@ export default function Signup() {
       email,
       password,
       role,
-      accessScope: role === "Lab Incharge" ? { lab } : {},
     };
 
     try {
@@ -216,7 +214,6 @@ export default function Signup() {
                     onChange={(e) => {
                       const value = e.target.value as Role | "";
                       setRole(value);
-                      if (value !== "Lab Incharge") setLab("");
                     }}
                     required
                   >
@@ -226,25 +223,6 @@ export default function Signup() {
                     <option value="Lab Incharge">Lab Incharge</option>
                   </select>
                 </LabelInputContainer>
-
-                {/* Lab selection */}
-                {requiresLabSelection && (
-                  <LabelInputContainer>
-                    <Label htmlFor="lab" className="text-white">Assigned Lab</Label>
-                    <select
-                      id="lab"
-                      className="h-10 w-full rounded-md border border-gray-700 bg-gray-900/50 px-3 text-sm text-white placeholder-gray-400 focus:border-blue-500 focus:ring-blue-500"
-                      value={lab}
-                      onChange={(e) => setLab(e.target.value)}
-                      required
-                    >
-                      <option value="" disabled>Select lab</option>
-                      {LAB_OPTIONS.map((name) => (
-                        <option key={name} value={name}>{name}</option>
-                      ))}
-                    </select>
-                  </LabelInputContainer>
-                )}
 
                 {/* Submit button */}
                 <button

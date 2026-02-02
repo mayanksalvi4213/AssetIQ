@@ -6,6 +6,7 @@ import { PlaceholdersAndVanishInput } from "@/components/ui/placeholders-and-van
 import { WobbleCard } from "@/components/ui/wobble-card";
 import { BackgroundGradient } from "@/components/ui/background-gradient";
 import { LogoButton } from "@/components/ui/logo-button";
+import { useAuth } from "@/contexts/AuthContext";
 
 interface GridCell {
   id: string | null;
@@ -51,6 +52,7 @@ interface LabListItem {
 
 export default function Labplan() {
   const [active, setActive] = useState<string | null>(null);
+  const { logout } = useAuth();
   const [labs, setLabs] = useState<LabListItem[]>([]);
   const [selectedLab, setSelectedLab] = useState<Lab | null>(null);
   const [selectedDevice, setSelectedDevice] = useState<any>(null);
@@ -133,22 +135,22 @@ export default function Labplan() {
     }
 
     // Create CSV content
-    let csv = "Station Code,Operating System,Device Type,Brand,Model,Specification,Asset Code,Unit Price,Warranty (Years),Purchase Date,Invoice Number,Status\n";
+    let csv = "Station Code,Operating System,Device Type,Brand,Model,Specification,Asset Code,Unit Price,Warranty (Years),Purchase Date,Invoice Number\n";
     
     stationList.forEach((station) => {
       if (station.devices && station.devices.length > 0) {
         station.devices.forEach((device: any, idx: number) => {
           // For first device, include station info
           if (idx === 0) {
-            csv += `"${station.assignedCode}","${station.os}","${device.type}","${device.brand}","${device.model}","${device.specification || ''}","${device.assetCode || ''}","${device.unitPrice || 0}","${device.warrantyYears || ''}","${device.purchaseDate || ''}","${device.invoiceNumber}","${device.isActive ? 'Active' : 'Inactive'}"\n`;
+            csv += `"${station.assignedCode}","${station.os}","${device.type}","${device.brand}","${device.model}","${device.specification || ''}","${device.assetCode || ''}","${device.unitPrice || 0}","${device.warrantyYears || ''}","${device.purchaseDate || ''}","${device.invoiceNumber}"\n`;
           } else {
             // For subsequent devices, empty station columns
-            csv += `"","","${device.type}","${device.brand}","${device.model}","${device.specification || ''}","${device.assetCode || ''}","${device.unitPrice || 0}","${device.warrantyYears || ''}","${device.purchaseDate || ''}","${device.invoiceNumber}","${device.isActive ? 'Active' : 'Inactive'}"\n`;
+            csv += `"","","${device.type}","${device.brand}","${device.model}","${device.specification || ''}","${device.assetCode || ''}","${device.unitPrice || 0}","${device.warrantyYears || ''}","${device.purchaseDate || ''}","${device.invoiceNumber}"\n`;
           }
         });
       } else {
         // Station with no devices
-        csv += `"${station.assignedCode}","${station.os}","","","","","","","","","",""\n`;
+        csv += `"${station.assignedCode}","${station.os}","","","","","","","","",""\n`;
       }
     });
 
@@ -239,7 +241,7 @@ export default function Labplan() {
 
           <MenuItem setActive={setActive} active={active} item="Operations">
             <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/dashboard/transfers">Transfers</HoveredLink>
+              <HoveredLink href="/transfers">Transfers</HoveredLink>
               <HoveredLink href="/dashboard/issues">Issues</HoveredLink>
               <HoveredLink href="/dashboard/documents">Documents</HoveredLink>
             </div>
@@ -248,6 +250,19 @@ export default function Labplan() {
           <MenuItem setActive={setActive} active={active} item="Analytics">
             <div className="flex flex-col space-y-2 text-sm p-2">
               <HoveredLink href="/reports">Reports</HoveredLink>
+              <HoveredLink href="/warranty-expiry">Warranty Expiry</HoveredLink>
+            </div>
+          </MenuItem>
+
+          <MenuItem setActive={setActive} active={active} item="Account">
+            <div className="flex flex-col space-y-2 text-sm p-2">
+              <HoveredLink href="/settings">Settings</HoveredLink>
+              <button 
+                onClick={logout}
+                className="text-left text-neutral-600 hover:text-neutral-800 transition-colors"
+              >
+                Logout
+              </button>
             </div>
           </MenuItem>
         </Menu>
@@ -449,12 +464,23 @@ export default function Labplan() {
                 <div className="mt-8">
                   <div className="flex items-center justify-between mb-4">
                     <h3 className="text-xl font-bold">Station Details</h3>
-                    <button
-                      onClick={exportToExcel}
-                      className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg transition flex items-center gap-2"
-                    >
-                      📥 Export to Excel
-                    </button>
+                    <div className="flex gap-3">
+                      <button
+                        onClick={exportToExcel}
+                        className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg transition flex items-center gap-2"
+                      >
+                        📥 Export to Excel
+                      </button>
+                      <button
+                        onClick={() => {
+                          if (!selectedLab) return;
+                          window.open(`http://localhost:5000/export_lab_station_pdf/${selectedLab.labNumber}`, '_blank');
+                        }}
+                        className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition flex items-center gap-2"
+                      >
+                        📄 Export to PDF
+                      </button>
+                    </div>
                   </div>
 
                   {loadingStationList ? (
@@ -511,6 +537,37 @@ export default function Labplan() {
                                             <span className="text-blue-300">Invoice: {device.invoiceNumber}</span>
                                           )}
                                         </div>
+                                        
+                                        {/* Display Issues */}
+                                        {device.issues && device.issues.length > 0 && (
+                                          <div className="mt-3 space-y-2">
+                                            {device.issues.map((issue: any, issueIdx: number) => (
+                                              <div 
+                                                key={issueIdx} 
+                                                className={`p-2 rounded border-l-4 ${
+                                                  issue.severity === 'high' || issue.severity === 'critical' 
+                                                    ? 'bg-red-900/30 border-red-500' 
+                                                    : issue.severity === 'medium' 
+                                                    ? 'bg-yellow-900/30 border-yellow-500'
+                                                    : 'bg-blue-900/30 border-blue-500'
+                                                }`}
+                                              >
+                                                <div className="flex items-start justify-between mb-1">
+                                                  <span className="font-bold text-xs text-white uppercase">
+                                                    {issue.severity === 'high' || issue.severity === 'critical' ? '🔴' : issue.severity === 'medium' ? '🟡' : '🔵'} {issue.severity}
+                                                  </span>
+                                                  <span className="text-xs text-gray-400">
+                                                    {issue.reportedAt ? new Date(issue.reportedAt).toLocaleDateString() : ''}
+                                                  </span>
+                                                </div>
+                                                <p className="text-white text-xs font-semibold mb-1">{issue.title}</p>
+                                                {issue.description && (
+                                                  <p className="text-gray-300 text-xs">{issue.description}</p>
+                                                )}
+                                              </div>
+                                            ))}
+                                          </div>
+                                        )}
                                       </div>
                                     ))}
                                   </div>
@@ -522,11 +579,11 @@ export default function Labplan() {
                                 {station.devices && station.devices.length > 0 ? (
                                   station.devices.every((d: any) => d.isActive) ? (
                                     <span className="px-3 py-1.5 bg-green-600 text-white text-xs font-bold rounded-md">
-                                      Active
+                                      ✅ Active
                                     </span>
                                   ) : (
-                                    <span className="px-3 py-1.5 bg-yellow-600 text-white text-xs font-bold rounded-md">
-                                      Partial
+                                    <span className="px-3 py-1.5 bg-red-600 text-white text-xs font-bold rounded-md">
+                                      ⚠️ Issues
                                     </span>
                                   )
                                 ) : (

@@ -5,9 +5,11 @@ import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { BackgroundGradient } from "@/components/ui/background-gradient";
+import { useAuth } from "@/contexts/AuthContext";
 
 export function LoginForm() {
   const navigate = useNavigate();
+  const { login } = useAuth();
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -27,8 +29,8 @@ export function LoginForm() {
 
       if (response.ok) {
         console.log("Login successful!", data);
-        localStorage.setItem("token", data.token);
-        alert("Login successful!");
+        // Use AuthContext login method
+        login(data.token, data.user);
         navigate("/dashboard"); // redirect to dashboard
       } else {
         alert(data.error || "Login failed!");

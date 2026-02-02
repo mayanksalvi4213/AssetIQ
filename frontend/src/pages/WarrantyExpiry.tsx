@@ -2,6 +2,7 @@
 import React, { useEffect, useState } from "react";
 import { Menu, MenuItem, HoveredLink } from "@/components/ui/navbar-menu";
 import { LogoButton } from "@/components/ui/logo-button";
+import { useAuth } from "@/contexts/AuthContext";
 
 interface Device {
   device_id: number;
@@ -25,9 +26,13 @@ interface Device {
 
 export default function WarrantyExpiry() {
   const [active, setActive] = useState<string | null>(null);
+  const { logout } = useAuth();
   const [devices, setDevices] = useState<Device[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [filterStatus, setFilterStatus] = useState<'all' | 'expired' | 'urgent' | 'warning' | 'good'>('all');
+  const [searchTerm, setSearchTerm] = useState('');
+  const [expandedLabs, setExpandedLabs] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     fetchDevices();
@@ -53,20 +58,13 @@ export default function WarrantyExpiry() {
     }
   };
 
-  // Group devices by invoice_number (batch)
-  const groups = devices.reduce((map: Record<string, Device[]>, d) => {
-    const key = d.invoice_number || `BILL_${d.bill_id || 'unknown'}`;
-    if (!map[key]) map[key] = [];
-    map[key].push(d);
-    return map;
-  }, {} as Record<string, Device[]>);
-
   // Compute summary
   const now = new Date();
   let totalDevices = 0;
   let expiring30 = 0;
   let expiring90 = 0;
   let expired = 0;
+  let good = 0;
 
   devices.forEach((d) => {
     totalDevices++;
@@ -76,7 +74,62 @@ export default function WarrantyExpiry() {
     if (days < 0) expired++;
     else if (days <= 30) expiring30++;
     else if (days <= 90) expiring90++;
+    else good++;
   });
+
+  // Filter devices based on status
+  const getDeviceStatus = (device: Device) => {
+    const expiry = device.warranty_expiry ? new Date(device.warranty_expiry) : null;
+    if (!expiry) return 'unknown';
+    const days = Math.ceil((expiry.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+    if (days < 0) return 'expired';
+    if (days <= 30) return 'urgent';
+    if (days <= 90) return 'warning';
+    return 'good';
+  };
+
+  const filteredDevices = filterStatus === 'all' 
+    ? devices 
+    : devices.filter(d => getDeviceStatus(d) === filterStatus);
+
+  // Apply search filter
+  const searchFilteredDevices = searchTerm.trim() === ''
+    ? filteredDevices
+    : filteredDevices.filter(d => 
+        (d.type_name?.toLowerCase().includes(searchTerm.toLowerCase())) ||
+        (d.brand?.toLowerCase().includes(searchTerm.toLowerCase())) ||
+        (d.model?.toLowerCase().includes(searchTerm.toLowerCase())) ||
+        (d.asset_id?.toLowerCase().includes(searchTerm.toLowerCase())) ||
+        (d.assigned_code?.toLowerCase().includes(searchTerm.toLowerCase())) ||
+        (d.lab_name?.toLowerCase().includes(searchTerm.toLowerCase())) ||
+        (d.invoice_number?.toLowerCase().includes(searchTerm.toLowerCase()))
+      );
+
+  // Group devices by lab
+  const labGroups = searchFilteredDevices.reduce((map: Record<string, Device[]>, d) => {
+    const key = d.lab_name || 'Unassigned';
+    if (!map[key]) map[key] = [];
+    map[key].push(d);
+    return map;
+  }, {} as Record<string, Device[]>);
+
+  const toggleLab = (labName: string) => {
+    const newExpanded = new Set(expandedLabs);
+    if (newExpanded.has(labName)) {
+      newExpanded.delete(labName);
+    } else {
+      newExpanded.add(labName);
+    }
+    setExpandedLabs(newExpanded);
+  };
+
+  const expandAll = () => {
+    setExpandedLabs(new Set(Object.keys(labGroups)));
+  };
+
+  const collapseAll = () => {
+    setExpandedLabs(new Set());
+  };
 
   return (
     <div className="relative min-h-screen flex flex-col items-center py-12 px-4" style={{
@@ -113,6 +166,19 @@ export default function WarrantyExpiry() {
           <MenuItem setActive={setActive} active={active} item="Analytics">
             <div className="flex flex-col space-y-2 text-sm p-2">
               <HoveredLink href="/reports">Reports</HoveredLink>
+              <HoveredLink href="/warranty-expiry">Warranty Expiry</HoveredLink>
+            </div>
+          </MenuItem>
+
+          <MenuItem setActive={setActive} active={active} item="Account">
+            <div className="flex flex-col space-y-2 text-sm p-2">
+              <HoveredLink href="/settings">Settings</HoveredLink>
+              <button 
+                onClick={logout}
+                className="text-left text-neutral-600 hover:text-neutral-800 transition-colors"
+              >
+                Logout
+              </button>
             </div>
           </MenuItem>
         </Menu>
@@ -120,27 +186,89 @@ export default function WarrantyExpiry() {
 
       <LogoButton />
 
-      <h1 className="text-3xl font-bold mb-6 mt-16 text-gray-200">Warranty Expiry</h1>
+      <h1 className="text-3xl font-bold mb-6 mt-16 text-gray-200">📋 Warranty Management Dashboard</h1>
 
-      <div className="w-full max-w-7xl p-6 bg-neutral-800/90 rounded-2xl mb-6">
-        <div className="flex gap-6 items-center">
-          <div className="text-white">
-            <div className="text-xs text-gray-300">Total devices</div>
-            <div className="text-2xl font-bold">{totalDevices}</div>
-          </div>
-          <div className="text-white">
-            <div className="text-xs text-gray-300">Expiring ≤ 30 days</div>
-            <div className="text-2xl font-bold text-amber-400">{expiring30}</div>
-          </div>
-          <div className="text-white">
-            <div className="text-xs text-gray-300">Expiring ≤ 90 days</div>
-            <div className="text-2xl font-bold text-yellow-300">{expiring90}</div>
-          </div>
-          <div className="text-white">
-            <div className="text-xs text-gray-300">Expired</div>
-            <div className="text-2xl font-bold text-red-500">{expired}</div>
-          </div>
-        </div>
+      {/* Search Bar */}
+      <div className="w-full max-w-7xl mb-4">
+        <input
+          type="text"
+          placeholder="🔍 Search by device name, brand, model, asset ID, lab, or invoice..."
+          value={searchTerm}
+          onChange={(e) => setSearchTerm(e.target.value)}
+          className="w-full px-4 py-3 bg-neutral-800/90 border border-neutral-600 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+        />
+      </div>
+
+      {/* Enhanced Summary Cards */}
+      <div className="w-full max-w-7xl grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
+        <button
+          onClick={() => setFilterStatus('all')}
+          className={`p-4 rounded-xl transition cursor-pointer ${
+            filterStatus === 'all' 
+              ? 'bg-blue-600 ring-2 ring-blue-400' 
+              : 'bg-neutral-800/90 hover:bg-neutral-700/90'
+          }`}
+        >
+          <div className="text-4xl mb-2">📊</div>
+          <div className="text-xs text-gray-300 uppercase">Total Devices</div>
+          <div className="text-3xl font-bold text-white">{totalDevices}</div>
+        </button>
+
+        <button
+          onClick={() => setFilterStatus('expired')}
+          className={`p-4 rounded-xl transition cursor-pointer ${
+            filterStatus === 'expired' 
+              ? 'bg-red-600 ring-2 ring-red-400' 
+              : 'bg-neutral-800/90 hover:bg-neutral-700/90'
+          }`}
+        >
+          <div className="text-4xl mb-2">❌</div>
+          <div className="text-xs text-gray-300 uppercase">Expired</div>
+          <div className="text-3xl font-bold text-red-400">{expired}</div>
+          <div className="text-[10px] text-gray-400 mt-1">Action Required</div>
+        </button>
+
+        <button
+          onClick={() => setFilterStatus('urgent')}
+          className={`p-4 rounded-xl transition cursor-pointer ${
+            filterStatus === 'urgent' 
+              ? 'bg-orange-600 ring-2 ring-orange-400' 
+              : 'bg-neutral-800/90 hover:bg-neutral-700/90'
+          }`}
+        >
+          <div className="text-4xl mb-2">🚨</div>
+          <div className="text-xs text-gray-300 uppercase">Urgent (≤30d)</div>
+          <div className="text-3xl font-bold text-orange-400">{expiring30}</div>
+          <div className="text-[10px] text-gray-400 mt-1">Renew Soon</div>
+        </button>
+
+        <button
+          onClick={() => setFilterStatus('warning')}
+          className={`p-4 rounded-xl transition cursor-pointer ${
+            filterStatus === 'warning' 
+              ? 'bg-yellow-600 ring-2 ring-yellow-400' 
+              : 'bg-neutral-800/90 hover:bg-neutral-700/90'
+          }`}
+        >
+          <div className="text-4xl mb-2">⚠️</div>
+          <div className="text-xs text-gray-300 uppercase">Warning (≤90d)</div>
+          <div className="text-3xl font-bold text-yellow-400">{expiring90}</div>
+          <div className="text-[10px] text-gray-400 mt-1">Plan Renewal</div>
+        </button>
+
+        <button
+          onClick={() => setFilterStatus('good')}
+          className={`p-4 rounded-xl transition cursor-pointer ${
+            filterStatus === 'good' 
+              ? 'bg-green-600 ring-2 ring-green-400' 
+              : 'bg-neutral-800/90 hover:bg-neutral-700/90'
+          }`}
+        >
+          <div className="text-4xl mb-2">✅</div>
+          <div className="text-xs text-gray-300 uppercase">Good (&gt;90d)</div>
+          <div className="text-3xl font-bold text-green-400">{good}</div>
+          <div className="text-[10px] text-gray-400 mt-1">No Action</div>
+        </button>
       </div>
 
       <div className="w-full max-w-7xl">
@@ -149,66 +277,238 @@ export default function WarrantyExpiry() {
         ) : error ? (
           <div className="text-red-400">{error}</div>
         ) : (
-          <div className="overflow-x-auto bg-neutral-900 rounded-lg border border-neutral-700 p-4">
-            {Object.keys(groups).length === 0 ? (
-              <div className="text-gray-400">No devices found.</div>
+          <div className="bg-neutral-900 rounded-lg border border-neutral-700 p-4">
+            {Object.keys(labGroups).length === 0 ? (
+              <div className="text-gray-400 text-center py-8">
+                {searchTerm ? `No devices found matching "${searchTerm}"` : 'No devices found.'}
+              </div>
             ) : (
-              Object.entries(groups).map(([batch, list]) => {
-                // compute soonest expiry in this batch
-                let soonest: Date | null = null;
-                list.forEach((d) => {
-                  if (!d.warranty_expiry) return;
-                  const ex = new Date(d.warranty_expiry);
-                  if (!soonest || ex.getTime() < soonest.getTime()) soonest = ex;
-                });
-                const daysLeft = soonest ? Math.ceil((soonest.getTime() - now.getTime())/(1000*60*60*24)) : null;
-
-                return (
-                  <div key={batch} className="mb-6 border-b border-neutral-700 pb-4">
-                    <div className="flex items-center justify-between mb-3">
-                      <div>
-                        <div className="text-sm text-gray-300">Batch / Invoice</div>
-                        <div className="font-semibold text-white">{batch}</div>
-                        <div className="text-xs text-gray-400 mt-1">Devices: {list.length}</div>
-                      </div>
-                      <div className="text-right">
-                        <div className={`text-sm ${daysLeft !== null && daysLeft <= 30 ? 'text-amber-400' : daysLeft !== null && daysLeft < 0 ? 'text-red-400' : 'text-gray-300'}`}>
-                          {daysLeft === null ? 'No warranty info' : (daysLeft < 0 ? `${Math.abs(daysLeft)} days ago` : `${daysLeft} days`)}
-                        </div>
-                        <div className="text-xs text-gray-400 mt-1">Soonest expiry</div>
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                      {list.map((d) => {
-                        const expiry = d.warranty_expiry ? new Date(d.warranty_expiry) : null;
-                        const days = expiry ? Math.ceil((expiry.getTime() - now.getTime())/(1000*60*60*24)) : null;
-                        const highlight = days !== null && (days <= 30 || days < 0);
-
-                        return (
-                          <div key={d.device_id} className={`p-3 rounded-lg ${highlight ? 'bg-gradient-to-r from-neutral-800 to-neutral-700 border-2 border-amber-600' : 'bg-neutral-800/60 border border-neutral-700'}`}>
-                            <div className="flex items-center justify-between">
-                              <div>
-                                <div className="font-semibold text-white">{d.type_name || d.type_id} - {d.brand} {d.model}</div>
-                                <div className="text-xs text-gray-400">Asset: {d.asset_id || d.assigned_code || '-'}</div>
-                                {d.lab_name && <div className="text-xs text-gray-400">Lab: {d.lab_name}</div>}
-                              </div>
-                              <div className="text-right">
-                                <div className={`font-semibold ${days !== null && days <= 30 ? 'text-amber-400' : days !== null && days < 0 ? 'text-red-400' : 'text-gray-300'}`}>
-                                  {expiry ? expiry.toLocaleDateString() : 'N/A'}
-                                </div>
-                                <div className="text-xs text-gray-400">{days === null ? 'No warranty' : days < 0 ? `${Math.abs(days)}d ago` : `${days}d left`}</div>
-                              </div>
-                            </div>
-                            {d.specification && <div className="text-xs text-gray-400 mt-2 italic">{d.specification}</div>}
-                            <div className="text-xs text-green-300 mt-2">Price: ₹{d.unit_price ? Number(d.unit_price).toFixed(2) : '0.00'}</div>
-                          </div>
-                        );
-                      })}
-                    </div>
+              <>
+                {/* Lab count info and controls */}
+                <div className="mb-4 flex items-center justify-between">
+                  <div className="text-sm text-gray-400">
+                    <span className="font-semibold text-white">{Object.keys(labGroups).length}</span> lab{Object.keys(labGroups).length !== 1 ? 's' : ''} · 
+                    <span className="font-semibold text-white ml-1">{searchFilteredDevices.length}</span> device{searchFilteredDevices.length !== 1 ? 's' : ''}
+                    {searchTerm && (
+                      <button 
+                        onClick={() => setSearchTerm('')}
+                        className="text-blue-400 hover:text-blue-300 text-xs ml-3"
+                      >
+                        Clear search
+                      </button>
+                    )}
                   </div>
-                );
-              })
+                  <div className="flex gap-2">
+                    <button
+                      onClick={expandAll}
+                      className="px-3 py-1 text-xs bg-neutral-700 hover:bg-neutral-600 text-white rounded transition"
+                    >
+                      Expand All
+                    </button>
+                    <button
+                      onClick={collapseAll}
+                      className="px-3 py-1 text-xs bg-neutral-700 hover:bg-neutral-600 text-white rounded transition"
+                    >
+                      Collapse All
+                    </button>
+                  </div>
+                </div>
+
+                {/* Lab Groups */}
+                {Object.entries(labGroups).map(([labName, deviceList]) => {
+                  const isExpanded = expandedLabs.has(labName);
+                  
+                  // Compute lab-level stats
+                  let labExpired = 0;
+                  let labUrgent = 0;
+                  let labWarning = 0;
+                  let labGood = 0;
+                  
+                  deviceList.forEach((d) => {
+                    const status = getDeviceStatus(d);
+                    if (status === 'expired') labExpired++;
+                    else if (status === 'urgent') labUrgent++;
+                    else if (status === 'warning') labWarning++;
+                    else if (status === 'good') labGood++;
+                  });
+
+                  return (
+                    <div key={labName} className="mb-4 border border-neutral-700 rounded-lg overflow-hidden">
+                      {/* Lab Header - Clickable */}
+                      <button
+                        onClick={() => toggleLab(labName)}
+                        className="w-full px-4 py-3 bg-neutral-800 hover:bg-neutral-750 transition flex items-center justify-between text-left"
+                      >
+                        <div className="flex items-center gap-3">
+                          <span className="text-2xl">{isExpanded ? '📂' : '📁'}</span>
+                          <div>
+                            <div className="font-semibold text-white text-lg">{labName}</div>
+                            <div className="text-xs text-gray-400 mt-0.5">
+                              {deviceList.length} device{deviceList.length !== 1 ? 's' : ''}
+                            </div>
+                          </div>
+                        </div>
+                        
+                        <div className="flex items-center gap-2">
+                          {/* Mini status badges */}
+                          {labExpired > 0 && (
+                            <span className="px-2 py-1 bg-red-600 text-white text-xs rounded-full font-semibold">
+                              ❌ {labExpired}
+                            </span>
+                          )}
+                          {labUrgent > 0 && (
+                            <span className="px-2 py-1 bg-orange-600 text-white text-xs rounded-full font-semibold">
+                              🚨 {labUrgent}
+                            </span>
+                          )}
+                          {labWarning > 0 && (
+                            <span className="px-2 py-1 bg-yellow-600 text-white text-xs rounded-full font-semibold">
+                              ⚠️ {labWarning}
+                            </span>
+                          )}
+                          {labGood > 0 && (
+                            <span className="px-2 py-1 bg-green-600 text-white text-xs rounded-full font-semibold">
+                              ✅ {labGood}
+                            </span>
+                          )}
+                          
+                          <span className="text-gray-400 ml-2">
+                            {isExpanded ? '▼' : '▶'}
+                          </span>
+                        </div>
+                      </button>
+
+                      {/* Lab Content - Expandable */}
+                      {isExpanded && (
+                        <div className="p-4 bg-neutral-900">
+                          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                            {deviceList.map((d) => {
+                              const expiry = d.warranty_expiry ? new Date(d.warranty_expiry) : null;
+                              const days = expiry ? Math.ceil((expiry.getTime() - now.getTime())/(1000*60*60*24)) : null;
+                              const status = getDeviceStatus(d);
+                              
+                              // Define status styles
+                              const statusConfig = {
+                                expired: { 
+                                  bg: 'bg-red-900/40 border-2 border-red-500', 
+                                  badge: 'bg-red-600 text-white', 
+                                  icon: '❌', 
+                                  label: 'EXPIRED',
+                                  textColor: 'text-red-400'
+                                },
+                                urgent: { 
+                                  bg: 'bg-orange-900/40 border-2 border-orange-500', 
+                                  badge: 'bg-orange-600 text-white', 
+                                  icon: '🚨', 
+                                  label: 'URGENT',
+                                  textColor: 'text-orange-400'
+                                },
+                                warning: { 
+                                  bg: 'bg-yellow-900/40 border-2 border-yellow-500', 
+                                  badge: 'bg-yellow-600 text-white', 
+                                  icon: '⚠️', 
+                                  label: 'WARNING',
+                                  textColor: 'text-yellow-400'
+                                },
+                                good: { 
+                                  bg: 'bg-green-900/40 border border-green-700', 
+                                  badge: 'bg-green-600 text-white', 
+                                  icon: '✅', 
+                                  label: 'GOOD',
+                                  textColor: 'text-green-400'
+                                },
+                                unknown: { 
+                                  bg: 'bg-neutral-800/60 border border-neutral-700', 
+                                  badge: 'bg-gray-600 text-white', 
+                                  icon: '❓', 
+                                  label: 'NO DATA',
+                                  textColor: 'text-gray-400'
+                                }
+                              };
+                              
+                              const config = statusConfig[status as keyof typeof statusConfig] || statusConfig.unknown;
+                              
+                              // Calculate progress bar width (0-100%)
+                              const warrantyDays = 365;
+                              const progressPercent = days !== null && days >= 0 
+                                ? Math.min(100, Math.max(0, (days / warrantyDays) * 100))
+                                : 0;
+
+                              return (
+                                <div key={d.device_id} className={`p-4 rounded-lg ${config.bg} relative overflow-hidden transition hover:shadow-lg`}>
+                                  {/* Status Badge */}
+                                  <div className="absolute top-2 right-2">
+                                    <div className={`${config.badge} px-2 py-1 rounded-full text-[10px] font-bold flex items-center gap-1`}>
+                                      <span>{config.icon}</span>
+                                      <span>{config.label}</span>
+                                    </div>
+                                  </div>
+                                  
+                                  <div className="flex flex-col gap-3">
+                                    {/* Device Info */}
+                                    <div className="pr-20">
+                                      <div className="font-bold text-white text-lg">{d.type_name || d.type_id}</div>
+                                      <div className="text-sm text-gray-300">{d.brand} {d.model}</div>
+                                      <div className="text-xs text-gray-400 mt-1 flex items-center gap-2 flex-wrap">
+                                        <span>🏷️ {d.asset_id || d.assigned_code || 'N/A'}</span>
+                                        {d.invoice_number && (
+                                          <span className="text-[10px] bg-neutral-700/50 px-1.5 py-0.5 rounded">
+                                            📄 {d.invoice_number}
+                                          </span>
+                                        )}
+                                      </div>
+                                    </div>
+                                    
+                                    {/* Progress Bar */}
+                                    {days !== null && days >= 0 && (
+                                      <div className="w-full bg-neutral-700 rounded-full h-2 overflow-hidden">
+                                        <div 
+                                          className={`h-full transition-all ${
+                                            progressPercent > 50 ? 'bg-green-500' : 
+                                            progressPercent > 25 ? 'bg-yellow-500' : 
+                                            'bg-red-500'
+                                          }`}
+                                          style={{ width: `${progressPercent}%` }}
+                                        />
+                                      </div>
+                                    )}
+                                    
+                                    {/* Warranty Info */}
+                                    <div className="flex items-center justify-between bg-black/20 rounded p-2">
+                                      <div>
+                                        <div className="text-[10px] text-gray-400 uppercase">Expiry Date</div>
+                                        <div className={`font-semibold ${config.textColor}`}>
+                                          {expiry ? expiry.toLocaleDateString() : 'N/A'}
+                                        </div>
+                                      </div>
+                                      <div className="text-right">
+                                        <div className="text-[10px] text-gray-400 uppercase">Time Left</div>
+                                        <div className={`font-bold text-lg ${config.textColor}`}>
+                                          {days === null ? 'N/A' : days < 0 ? `${Math.abs(days)}d ago` : `${days}d`}
+                                        </div>
+                                      </div>
+                                    </div>
+                                    
+                                    {/* Additional Info */}
+                                    <div className="flex items-center justify-between text-xs">
+                                      {d.specification && (
+                                        <div className="text-gray-400 italic truncate flex-1">{d.specification}</div>
+                                      )}
+                                      <div className="text-green-400 font-semibold ml-2">
+                                        ₹{d.unit_price ? Number(d.unit_price).toFixed(2) : '0.00'}
+                                      </div>
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </>
             )}
           </div>
         )}

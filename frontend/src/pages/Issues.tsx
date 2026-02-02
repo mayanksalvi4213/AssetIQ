@@ -7,6 +7,7 @@ import { WobbleCard } from "@/components/ui/wobble-card";
 import { BackgroundGradient } from "@/components/ui/background-gradient";
 import { LogoButton } from "@/components/ui/logo-button";
 import { HoverBorderGradient } from "@/components/ui/hover-border-gradient";
+import { useAuth } from "@/contexts/AuthContext";
 
 interface Issue {
   id: string;
@@ -71,6 +72,7 @@ interface TicketForm {
 
 export default function Issues() {
   const [active, setActive] = useState<string | null>(null);
+  const { logout, user } = useAuth();
   const [labs, setLabs] = useState<LabListItem[]>([]);
   const [selectedLab, setSelectedLab] = useState<Lab | null>(null);
   const [selectedDevice, setSelectedDevice] = useState<Device | null>(null);
@@ -267,6 +269,47 @@ export default function Issues() {
     }
   };
 
+  const handleUpdateIssueStatus = async (issueId: string, newStatus: "open" | "in-progress" | "resolved") => {
+    if (!selectedDevice) return;
+
+    try {
+      const response = await fetch("http://localhost:5000/update_issue_status", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          issueId: issueId,
+          status: newStatus,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok || !data.success) {
+        throw new Error(data.error || "Failed to update issue status");
+      }
+
+      // If issue is resolved, reactivate the device
+      if (newStatus === "resolved") {
+        await fetch("http://localhost:5000/reactivate_device", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            deviceId: selectedDevice.deviceId,
+          }),
+        });
+      }
+
+      // Refresh lab to reflect updated status
+      if (selectedLab?.labNumber) {
+        await fetchLabDetails(selectedLab.labNumber);
+      }
+
+      alert(`Issue marked as ${newStatus}`);
+      setSelectedDevice(null);
+    } catch (err) {
+      console.error("Error updating issue status", err);
+      alert((err as Error).message || "Error updating issue status");
+    }
+  };
+
   return (
     <div
       className="min-h-screen bg-neutral-950 text-white"
@@ -303,7 +346,7 @@ export default function Issues() {
 
           <MenuItem setActive={setActive} active={active} item="Operations">
             <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/dashboard/transfers">Transfers</HoveredLink>
+              <HoveredLink href="/transfers">Transfers</HoveredLink>
               <HoveredLink href="/dashboard/issues">Issues</HoveredLink>
               <HoveredLink href="/dashboard/documents">Documents</HoveredLink>
             </div>
@@ -312,6 +355,19 @@ export default function Issues() {
           <MenuItem setActive={setActive} active={active} item="Analytics">
             <div className="flex flex-col space-y-2 text-sm p-2">
               <HoveredLink href="/reports">Reports</HoveredLink>
+              <HoveredLink href="/warranty-expiry">Warranty Expiry</HoveredLink>
+            </div>
+          </MenuItem>
+
+          <MenuItem setActive={setActive} active={active} item="Account">
+            <div className="flex flex-col space-y-2 text-sm p-2">
+              <HoveredLink href="/settings">Settings</HoveredLink>
+              <button 
+                onClick={logout}
+                className="text-left text-neutral-600 hover:text-neutral-800 transition-colors"
+              >
+                Logout
+              </button>
             </div>
           </MenuItem>
         </Menu>
@@ -618,6 +674,26 @@ export default function Issues() {
                           <span>Reported: {issue.reportedDate}</span>
                           <span>By: {issue.reportedBy}</span>
                         </div>
+
+                        {/* Lab Incharge Controls */}
+                        {user?.role === "Lab Incharge" && issue.status !== "resolved" && (
+                          <div className="mt-3 pt-3 border-t border-neutral-700 flex gap-2">
+                            {issue.status === "open" && (
+                              <button
+                                onClick={() => handleUpdateIssueStatus(issue.id, "in-progress")}
+                                className="px-3 py-1.5 bg-yellow-600 hover:bg-yellow-700 text-white text-sm rounded-lg transition"
+                              >
+                                ⚙️ Mark In Progress
+                              </button>
+                            )}
+                            <button
+                              onClick={() => handleUpdateIssueStatus(issue.id, "resolved")}
+                              className="px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white text-sm rounded-lg transition"
+                            >
+                              ✓ Mark Resolved
+                            </button>
+                          </div>
+                        )}
                       </div>
                     ))}
                   </div>

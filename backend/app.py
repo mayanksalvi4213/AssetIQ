@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 import pytesseract
 from pdf2image import convert_from_bytes
@@ -15,6 +15,13 @@ import os
 import requests
 import time
 from dotenv import load_dotenv
+from io import BytesIO
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import letter, A4
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image as RLImage
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import inch
+from reportlab.lib.enums import TA_CENTER, TA_LEFT
 
 # Load env variables
 load_dotenv()
@@ -550,9 +557,115 @@ def login():
     user.update_last_login()
     token = jwt.encode({
         "user_id": user.id,
+        "role": user.role,
         "exp": datetime.utcnow() + timedelta(hours=JWT_EXPIRATION_HOURS)
     }, JWT_SECRET_KEY, algorithm="HS256")
-    return jsonify({"message": "Login successful", "token": token})
+    return jsonify({
+        "message": "Login successful", 
+        "token": token,
+        "user": {
+            "id": user.id,
+            "firstName": user.first_name,
+            "lastName": user.last_name,
+            "email": user.email,
+            "role": user.role,
+            "assignedLab": user.assigned_lab
+        }
+    })
+
+
+@app.route("/user/profile", methods=["GET"])
+def get_user_profile():
+    """Get current user profile"""
+    user = get_current_user()
+    if not user:
+        return jsonify({"error": "Unauthorized"}), 401
+    
+    return jsonify({
+        "id": user.id,
+        "firstName": user.first_name,
+        "lastName": user.last_name,
+        "email": user.email,
+        "role": user.role,
+        "assignedLab": user.assigned_lab,
+        "accessScope": user.access_scope if hasattr(user, 'access_scope') else {}
+    })
+
+
+@app.route("/user/update", methods=["PUT"])
+def update_user_profile():
+    """Update current user profile"""
+    user = get_current_user()
+    if not user:
+        return jsonify({"error": "Unauthorized"}), 401
+    
+    data = request.get_json()
+    
+    try:
+        # Update basic info
+        if "firstName" in data:
+            user.first_name = data["firstName"]
+        if "lastName" in data:
+            user.lastName = data["lastName"]
+        if "email" in data:
+            # Check if email is already taken by another user
+            existing = User.find_by_email(data["email"])
+            if existing and existing.id != user.id:
+                return jsonify({"error": "Email already in use"}), 400
+            user.email = data["email"]
+        
+        # Update role and lab (only if provided)
+        if "role" in data:
+            user.role = data["role"]
+        if "assignedLab" in data:
+            user.assigned_lab = data["assignedLab"]
+        
+        # Handle password change
+        if "newPassword" in data and data["newPassword"]:
+            if "currentPassword" not in data:
+                return jsonify({"error": "Current password required"}), 400
+            if not User.verify_password(data["currentPassword"], user.password_hash):
+                return jsonify({"error": "Current password is incorrect"}), 401
+            user.password_hash = User.hash_password(data["newPassword"])
+        
+        # Save to database
+        cursor = db.cursor()
+        cursor.execute("""
+            UPDATE users 
+            SET first_name = %s, last_name = %s, email = %s, 
+                role = %s, assigned_lab = %s, password_hash = %s,
+                updated_at = NOW()
+            WHERE id = %s
+        """, (user.first_name, user.last_name, user.email, 
+              user.role, user.assigned_lab, user.password_hash, user.id))
+        db.commit()
+        cursor.close()
+        
+        return jsonify({"message": "Profile updated successfully"})
+        
+    except Exception as e:
+        print(f"Error updating profile: {e}")
+        return jsonify({"error": "Failed to update profile"}), 500
+
+
+@app.route("/verify_token", methods=["GET"])
+def verify_token():
+    """Verify if token is valid and return user info"""
+    user = get_current_user()
+    if not user:
+        return jsonify({"error": "Invalid or expired token"}), 401
+    
+    return jsonify({
+        "valid": True,
+        "user": {
+            "id": user.id,
+            "firstName": user.first_name,
+            "lastName": user.last_name,
+            "email": user.email,
+            "role": user.role,
+            "assignedLab": user.assigned_lab
+        }
+    })
 
 # -----------------------------
 # Manual Entry Endpoint
@@ -1446,6 +1559,13 @@ def get_lab_station_list(lab_id):
         if not lab:
             return jsonify({"success": False, "error": "Lab not found"}), 404
         
+        # Check if severity column exists
+        cursor.execute(
+            """SELECT 1 FROM information_schema.columns
+               WHERE table_name = 'device_issues' AND column_name = 'severity'"""
+        )
+        severity_exists = cursor.fetchone() is not None
+
         # Get all stations with their devices
         cursor.execute(
             """SELECT 
@@ -1479,6 +1599,48 @@ def get_lab_station_list(lab_id):
         )
         results = cursor.fetchall()
         
+        # Get all device IDs for issue lookup
+        device_ids = [row['device_id'] for row in results if row['device_id']]
+        
+        # Fetch issues for all devices
+        issues_map = {}
+        if device_ids:
+            if severity_exists:
+                cursor.execute(
+                    """SELECT di.issue_id, di.device_id, di.issue_title, di.description,
+                              LOWER(di.status) AS status, di.reported_at,
+                              COALESCE(di.severity, 'medium') AS severity
+                       FROM device_issues di
+                       WHERE di.device_id = ANY(%s)
+                         AND LOWER(di.status) != 'resolved'
+                       ORDER BY di.reported_at DESC""",
+                    (device_ids,)
+                )
+            else:
+                cursor.execute(
+                    """SELECT di.issue_id, di.device_id, di.issue_title, di.description,
+                              LOWER(di.status) AS status, di.reported_at,
+                              'medium' AS severity
+                       FROM device_issues di
+                       WHERE di.device_id = ANY(%s)
+                         AND LOWER(di.status) != 'resolved'
+                       ORDER BY di.reported_at DESC""",
+                    (device_ids,)
+                )
+            issues = cursor.fetchall()
+            for issue in issues:
+                dev_id = issue['device_id']
+                if dev_id not in issues_map:
+                    issues_map[dev_id] = []
+                issues_map[dev_id].append({
+                    'issueId': issue['issue_id'],
+                    'title': issue['issue_title'],
+                    'description': issue['description'],
+                    'severity': issue['severity'],
+                    'status': issue['status'],
+                    'reportedAt': issue['reported_at'].isoformat() if issue['reported_at'] else None
+                })
+        
         # Group by station
         stations_map = {}
         for row in results:
@@ -1506,8 +1668,9 @@ def get_lab_station_list(lab_id):
             
             # Add device if exists
             if row['device_id']:
-                stations_map[station_id]['devices'].append({
-                    'deviceId': row['device_id'],
+                device_id = row['device_id']
+                device_data = {
+                    'deviceId': device_id,
                     'type': row['device_type'],
                     'brand': row['brand'],
                     'model': row['model'],
@@ -1519,8 +1682,10 @@ def get_lab_station_list(lab_id):
                     'invoiceNumber': row['invoice_number'],
                     'isLinked': row['is_linked'],
                     'linkedGroupId': row['linked_group_id'],
-                    'isActive': row['is_active']
-                })
+                    'isActive': row['is_active'],
+                    'issues': issues_map.get(device_id, [])
+                }
+                stations_map[station_id]['devices'].append(device_data)
         
         # Convert to list
         stations_list = list(stations_map.values())
@@ -1539,6 +1704,251 @@ def get_lab_station_list(lab_id):
         print(f"Error fetching lab station list: {str(e)}")
         traceback.print_exc()
         return jsonify({"success": False, "error": str(e)}), 500
+
+# -----------------------------
+# Export Lab Station List to PDF
+# -----------------------------
+@app.route("/export_lab_station_pdf/<lab_id>", methods=["GET"])
+def export_lab_station_pdf(lab_id):
+    """
+    Generate PDF with lab station details including header image
+    """
+    try:
+        conn = db.get_connection()
+        cursor = conn.cursor()
+        
+        # Get lab info
+        cursor.execute(
+            """SELECT lab_id, lab_name FROM labs WHERE lab_id = %s""",
+            (lab_id,)
+        )
+        lab = cursor.fetchone()
+        
+        if not lab:
+            return jsonify({"success": False, "error": "Lab not found"}), 404
+        
+        # Check if severity column exists
+        cursor.execute(
+            """SELECT 1 FROM information_schema.columns
+               WHERE table_name = 'device_issues' AND column_name = 'severity'"""
+        )
+        severity_exists = cursor.fetchone() is not None
+        
+        # Get all stations with their devices
+        cursor.execute(
+            """SELECT 
+                ls.station_id,
+                ls.assigned_code,
+                lgc.row_number,
+                lgc.column_number,
+                lgc.os_windows,
+                lgc.os_linux,
+                lgc.os_other,
+                lsd.device_id,
+                lsd.device_type,
+                lsd.brand,
+                lsd.model,
+                lsd.specification,
+                lsd.invoice_number,
+                lsd.is_linked,
+                lsd.linked_group_id,
+                d.asset_code,
+                d.unit_price,
+                d.warranty_years,
+                d.purchase_date,
+                d.is_active
+            FROM lab_stations ls
+            LEFT JOIN lab_grid_cells lgc ON ls.station_id = lgc.station_id
+            LEFT JOIN lab_station_devices lsd ON ls.station_id = lsd.station_id
+            LEFT JOIN devices d ON lsd.device_id = d.device_id
+            WHERE ls.lab_id = %s
+            ORDER BY ls.assigned_code, lsd.device_type""",
+            (lab_id,)
+        )
+        results = cursor.fetchall()
+        
+        # Get all device IDs for issue lookup
+        device_ids = [row['device_id'] for row in results if row['device_id']]
+        
+        # Fetch issues for all devices
+        issues_map = {}
+        if device_ids:
+            if severity_exists:
+                cursor.execute(
+                    """SELECT di.issue_id, di.device_id, di.issue_title, di.description,
+                              LOWER(di.status) AS status, di.reported_at,
+                              COALESCE(di.severity, 'medium') AS severity
+                       FROM device_issues di
+                       WHERE di.device_id = ANY(%s)
+                         AND LOWER(di.status) != 'resolved'
+                       ORDER BY di.reported_at DESC""",
+                    (device_ids,)
+                )
+            else:
+                cursor.execute(
+                    """SELECT di.issue_id, di.device_id, di.issue_title, di.description,
+                              LOWER(di.status) AS status, di.reported_at,
+                              'medium' AS severity
+                       FROM device_issues di
+                       WHERE di.device_id = ANY(%s)
+                         AND LOWER(di.status) != 'resolved'
+                       ORDER BY di.reported_at DESC""",
+                    (device_ids,)
+                )
+            issues = cursor.fetchall()
+            for issue in issues:
+                dev_id = issue['device_id']
+                if dev_id not in issues_map:
+                    issues_map[dev_id] = []
+                issues_map[dev_id].append({
+                    'issueId': issue['issue_id'],
+                    'title': issue['issue_title'],
+                    'description': issue['description'],
+                    'severity': issue['severity'],
+                    'status': issue['status'],
+                    'reportedAt': issue['reported_at'].isoformat() if issue['reported_at'] else None
+                })
+        
+        # Group by station
+        stations_map = {}
+        for row in results:
+            station_id = row['station_id']
+            assigned_code = row['assigned_code']
+            
+            if station_id not in stations_map:
+                # Build OS list
+                os_list = []
+                if row['os_windows']:
+                    os_list.append('Windows')
+                if row['os_linux']:
+                    os_list.append('Linux')
+                if row['os_other']:
+                    os_list.append('Other')
+                
+                stations_map[station_id] = {
+                    'stationId': station_id,
+                    'assignedCode': assigned_code,
+                    'row': row['row_number'],
+                    'column': row['column_number'],
+                    'os': ', '.join(os_list) if os_list else 'N/A',
+                    'devices': []
+                }
+            
+            # Add device if exists
+            if row['device_id']:
+                device_id = row['device_id']
+                device_data = {
+                    'deviceId': device_id,
+                    'type': row['device_type'],
+                    'brand': row['brand'],
+                    'model': row['model'],
+                    'specification': row['specification'],
+                    'assetCode': row['asset_code'],
+                    'unitPrice': float(row['unit_price']) if row['unit_price'] else 0,
+                    'warrantyYears': row['warranty_years'],
+                    'purchaseDate': row['purchase_date'].strftime('%Y-%m-%d') if row['purchase_date'] else None,
+                    'invoiceNumber': row['invoice_number'],
+                    'isLinked': row['is_linked'],
+                    'linkedGroupId': row['linked_group_id'],
+                    'isActive': row['is_active'],
+                    'issues': issues_map.get(device_id, [])
+                }
+                stations_map[station_id]['devices'].append(device_data)
+        
+        # Convert to list
+        stations_list = list(stations_map.values())
+        
+        cursor.close()
+        conn.close()
+        
+        # Generate PDF
+        pdf_buffer = BytesIO()
+        doc = SimpleDocTemplate(pdf_buffer, pagesize=A4, topMargin=0.5*inch)
+        elements = []
+        styles = getSampleStyleSheet()
+        
+        # Add header image if exists
+        header_path = os.path.join(os.path.dirname(__file__), 'header.png')
+        if os.path.exists(header_path):
+            img = RLImage(header_path, width=7*inch, height=1*inch)
+            elements.append(img)
+            elements.append(Spacer(1, 0.3*inch))
+        
+        # Add title
+        title_style = ParagraphStyle(
+            'CustomTitle',
+            parent=styles['Heading1'],
+            fontSize=18,
+            textColor=colors.HexColor('#1a1a1a'),
+            spaceAfter=20,
+            alignment=TA_CENTER
+        )
+        title = Paragraph(f"<b>{lab['lab_name']} - Station Details</b>", title_style)
+        elements.append(title)
+        elements.append(Spacer(1, 0.2*inch))
+        
+        # Create table data
+        for station in stations_list:
+            # Station header
+            station_header = Paragraph(
+                f"<b>Station: {station['assignedCode']}</b> | OS: {station['os']}",
+                styles['Heading3']
+            )
+            elements.append(station_header)
+            elements.append(Spacer(1, 0.1*inch))
+            
+            if station['devices'] and len(station['devices']) > 0:
+                # Device table
+                table_data = [['Device', 'Brand/Model', 'Asset Code', 'Specification']]
+                
+                for device in station['devices']:
+                    table_data.append([
+                        device['type'],
+                        f"{device['brand']} {device['model']}",
+                        device['assetCode'] or 'N/A',
+                        device['specification'] or 'N/A'
+                    ])
+                
+                device_table = Table(table_data, colWidths=[1.3*inch, 2.2*inch, 1.8*inch, 1.5*inch])
+                device_table.setStyle(TableStyle([
+                    ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+                    ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                    ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+                    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                    ('FONTSIZE', (0, 0), (-1, 0), 10),
+                    ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+                    ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+                    ('GRID', (0, 0), (-1, -1), 1, colors.black),
+                    ('FONTSIZE', (0, 1), (-1, -1), 8),
+                    ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                ]))
+                elements.append(device_table)
+            else:
+                no_devices = Paragraph("<i>No devices assigned</i>", styles['Italic'])
+                elements.append(no_devices)
+            
+            elements.append(Spacer(1, 0.3*inch))
+        
+        # Build PDF
+        doc.build(elements)
+        pdf_buffer.seek(0)
+        
+        # Return PDF file
+        return send_file(
+            pdf_buffer,
+            mimetype='application/pdf',
+            as_attachment=True,
+            download_name=f"{lab['lab_name']}_station_details.pdf"
+        )
+    
+    except Exception as e:
+        print(f"Error generating PDF: {str(e)}")
+        traceback.print_exc()
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
 
 # -----------------------------
 # Raise Device Issue
@@ -1638,6 +2048,126 @@ def raise_issue():
         print(f"Error raising issue: {str(e)}")
         traceback.print_exc()
         return jsonify({"success": False, "error": str(e)}), 500
+
+
+# -----------------------------
+# Update Issue Status
+# -----------------------------
+@app.route("/update_issue_status", methods=["POST"])
+def update_issue_status():
+    """
+    Update the status of a device issue.
+    Expects JSON: { issueId, status }
+    """
+    try:
+        data = request.get_json(force=True)
+        issue_id = data.get("issueId")
+        new_status = (data.get("status") or "").strip().lower()
+
+        if not issue_id:
+            return jsonify({"success": False, "error": "issueId is required"}), 400
+        
+        if new_status not in ["open", "in-progress", "resolved"]:
+            return jsonify({"success": False, "error": "Invalid status. Must be: open, in-progress, or resolved"}), 400
+
+        conn = db.get_connection()
+        cursor = conn.cursor()
+
+        # Check if issue exists
+        cursor.execute(
+            "SELECT issue_id, status FROM device_issues WHERE issue_id = %s",
+            (issue_id,)
+        )
+        issue_row = cursor.fetchone()
+        if not issue_row:
+            cursor.close()
+            conn.close()
+            return jsonify({"success": False, "error": "Issue not found"}), 404
+
+        old_status = issue_row['status']
+
+        # Update status
+        cursor.execute(
+            "UPDATE device_issues SET status = %s WHERE issue_id = %s",
+            (new_status, issue_id)
+        )
+
+        # Log history
+        cursor.execute(
+            """INSERT INTO device_issue_history (issue_id, action, old_status, new_status, note)
+                   VALUES (%s, %s, %s, %s, %s)""",
+            (issue_id, "status_updated", old_status, new_status, f"Status changed from {old_status} to {new_status}")
+        )
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return jsonify({
+            "success": True,
+            "message": f"Issue status updated to {new_status}",
+            "issueId": issue_id,
+            "oldStatus": old_status,
+            "newStatus": new_status
+        })
+
+    except Exception as e:
+        print(f"Error updating issue status: {str(e)}")
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+# -----------------------------
+# Reactivate Device
+# -----------------------------
+@app.route("/reactivate_device", methods=["POST"])
+def reactivate_device():
+    """
+    Reactivate a device by setting is_active to TRUE.
+    Expects JSON: { deviceId }
+    """
+    try:
+        data = request.get_json(force=True)
+        device_id = data.get("deviceId")
+
+        if not device_id:
+            return jsonify({"success": False, "error": "deviceId is required"}), 400
+
+        conn = db.get_connection()
+        cursor = conn.cursor()
+
+        # Check if device exists
+        cursor.execute(
+            "SELECT device_id, is_active FROM devices WHERE device_id = %s",
+            (device_id,)
+        )
+        device_row = cursor.fetchone()
+        if not device_row:
+            cursor.close()
+            conn.close()
+            return jsonify({"success": False, "error": "Device not found"}), 404
+
+        # Reactivate device
+        cursor.execute(
+            "UPDATE devices SET is_active = TRUE WHERE device_id = %s",
+            (device_id,)
+        )
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return jsonify({
+            "success": True,
+            "message": "Device reactivated successfully",
+            "deviceId": device_id
+        })
+
+    except Exception as e:
+        print(f"Error reactivating device: {str(e)}")
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
+
 
 # -----------------------------
 # Save Lab Configuration
@@ -2253,6 +2783,294 @@ def get_deadstock_register():
         print(f"Error fetching deadstock register: {str(e)}")
         traceback.print_exc()
         return jsonify({"success": False, "error": str(e)}), 500
+
+# -----------------------------
+# Transfer Management Endpoints
+# -----------------------------
+
+@app.route('/get_lab_devices/<lab_id>', methods=['GET'])
+def get_lab_devices(lab_id):
+    """Get all devices assigned to a specific lab via lab_station_devices"""
+    try:
+        conn = db.get_connection()
+        cursor = conn.cursor()
+        
+        print(f"Fetching devices for lab_id: {lab_id}")
+        
+        # Query devices through lab_station_devices (same as Labplan.tsx)
+        # Include ALL devices in lab regardless of active status or issues - they can still be transferred
+        cursor.execute("""
+            SELECT DISTINCT
+                d.device_id,
+                lsd.device_type as type_name,
+                lsd.brand,
+                lsd.model,
+                lsd.specification,
+                d.asset_code as asset_id,
+                ls.assigned_code,
+                d.lab_id,
+                l.lab_name
+            FROM lab_station_devices lsd
+            INNER JOIN lab_stations ls ON lsd.station_id = ls.station_id
+            INNER JOIN devices d ON lsd.device_id = d.device_id
+            LEFT JOIN labs l ON ls.lab_id = l.lab_id
+            WHERE ls.lab_id = %s
+            ORDER BY lsd.device_type, lsd.brand, lsd.model
+        """, (lab_id,))
+        
+        devices = []
+        rows = cursor.fetchall()
+        print(f"Found {len(rows)} devices in lab {lab_id}")
+        
+        for row in rows:
+            devices.append({
+                'device_id': row['device_id'],
+                'type_name': row['type_name'],
+                'brand': row['brand'],
+                'model': row['model'],
+                'specification': row['specification'],
+                'asset_id': row['asset_id'],
+                'assigned_code': row['assigned_code'],
+                'lab_id': row['lab_id'],
+                'lab_name': row['lab_name']
+            })
+        
+        cursor.close()
+        conn.close()
+        
+        return jsonify({
+            'success': True,
+            'devices': devices
+        })
+        
+    except Exception as e:
+        print(f"Error fetching lab devices: {str(e)}")
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/create_transfer_request', methods=['POST'])
+def create_transfer_request():
+    """Create a new transfer request"""
+    try:
+        data = request.json
+        from_lab_id = data.get('from_lab_id')
+        to_lab_id = data.get('to_lab_id')
+        device_ids = data.get('device_ids', [])
+        remark = data.get('remark', '')
+        
+        if not from_lab_id or not to_lab_id or not device_ids:
+            return jsonify({'success': False, 'error': 'Missing required fields'}), 400
+        
+        if from_lab_id == to_lab_id:
+            return jsonify({'success': False, 'error': 'Source and destination labs cannot be the same'}), 400
+        
+        # Get current user
+        user_info = get_current_user()
+        user_email = user_info.get('email', 'Unknown') if user_info else 'Unknown'
+        
+        conn = db.get_connection()
+        cursor = conn.cursor()
+        
+        # Create transfer request
+        cursor.execute("""
+            INSERT INTO transfer_requests 
+            (from_lab_id, to_lab_id, device_ids, remark, status, requested_by, requested_at)
+            VALUES (%s, %s, %s, %s, 'pending', %s, NOW())
+            RETURNING transfer_id
+        """, (from_lab_id, to_lab_id, json.dumps(device_ids), remark, user_email))
+        
+        transfer_id = cursor.fetchone()[0]
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        return jsonify({
+            'success': True,
+            'transfer_id': transfer_id,
+            'message': 'Transfer request created successfully'
+        })
+        
+    except Exception as e:
+        print(f"Error creating transfer request: {str(e)}")
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/get_pending_transfers', methods=['GET'])
+def get_pending_transfers():
+    """Get all pending transfer requests (for HOD)"""
+    try:
+        conn = db.get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT 
+                tr.transfer_id,
+                tr.from_lab_id,
+                l1.lab_name as from_lab_name,
+                tr.to_lab_id,
+                l2.lab_name as to_lab_name,
+                tr.device_ids,
+                tr.remark,
+                tr.status,
+                tr.requested_by,
+                tr.requested_at
+            FROM transfer_requests tr
+            LEFT JOIN labs l1 ON tr.from_lab_id = l1.lab_id
+            LEFT JOIN labs l2 ON tr.to_lab_id = l2.lab_id
+            WHERE tr.status = 'pending'
+            ORDER BY tr.requested_at DESC
+        """)
+        
+        transfers = []
+        for row in cursor.fetchall():
+            device_ids = json.loads(row[5])
+            
+            # Fetch device details
+            cursor.execute("""
+                SELECT 
+                    d.device_id,
+                    dt.type_name,
+                    d.brand,
+                    d.model,
+                    d.asset_id,
+                    lsd.assigned_code
+                FROM devices d
+                LEFT JOIN device_types dt ON d.type_id = dt.type_id
+                LEFT JOIN lab_station_devices lsd ON d.device_id = lsd.device_id
+                WHERE d.device_id = ANY(%s)
+            """, (device_ids,))
+            
+            devices = []
+            for dev_row in cursor.fetchall():
+                devices.append({
+                    'device_id': dev_row[0],
+                    'type_name': dev_row[1],
+                    'brand': dev_row[2],
+                    'model': dev_row[3],
+                    'asset_id': dev_row[4],
+                    'assigned_code': dev_row[5]
+                })
+            
+            transfers.append({
+                'transfer_id': row[0],
+                'from_lab_id': row[1],
+                'from_lab_name': row[2],
+                'to_lab_id': row[3],
+                'to_lab_name': row[4],
+                'device_ids': device_ids,
+                'devices': devices,
+                'remark': row[6],
+                'status': row[7],
+                'requested_by': row[8],
+                'requested_at': row[9].isoformat() if row[9] else None
+            })
+        
+        cursor.close()
+        conn.close()
+        
+        return jsonify({
+            'success': True,
+            'transfers': transfers
+        })
+        
+    except Exception as e:
+        print(f"Error fetching pending transfers: {str(e)}")
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/approve_transfer/<int:transfer_id>', methods=['POST'])
+def approve_transfer(transfer_id):
+    """Approve transfer request and move devices"""
+    try:
+        # Get current user (should be HOD)
+        user_info = get_current_user()
+        user_email = user_info.get('email', 'Unknown') if user_info else 'Unknown'
+        
+        conn = db.get_connection()
+        cursor = conn.cursor()
+        
+        # Get transfer details
+        cursor.execute("""
+            SELECT from_lab_id, to_lab_id, device_ids
+            FROM transfer_requests
+            WHERE transfer_id = %s AND status = 'pending'
+        """, (transfer_id,))
+        
+        result = cursor.fetchone()
+        if not result:
+            return jsonify({'success': False, 'error': 'Transfer request not found or already processed'}), 404
+        
+        from_lab_id, to_lab_id, device_ids_json = result
+        device_ids = json.loads(device_ids_json)
+        
+        # Update devices lab assignment
+        for device_id in device_ids:
+            cursor.execute("""
+                UPDATE devices
+                SET lab_id = %s
+                WHERE device_id = %s
+            """, (to_lab_id, device_id))
+        
+        # Update transfer request status
+        cursor.execute("""
+            UPDATE transfer_requests
+            SET status = 'approved',
+                approved_by = %s,
+                approved_at = NOW()
+            WHERE transfer_id = %s
+        """, (user_email, transfer_id))
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        return jsonify({
+            'success': True,
+            'message': f'Transfer approved and {len(device_ids)} devices moved successfully'
+        })
+        
+    except Exception as e:
+        print(f"Error approving transfer: {str(e)}")
+        traceback.print_exc()
+        if conn:
+            conn.rollback()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/reject_transfer/<int:transfer_id>', methods=['POST'])
+def reject_transfer(transfer_id):
+    """Reject transfer request"""
+    try:
+        # Get current user (should be HOD)
+        user_info = get_current_user()
+        user_email = user_info.get('email', 'Unknown') if user_info else 'Unknown'
+        
+        conn = db.get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            UPDATE transfer_requests
+            SET status = 'rejected',
+                approved_by = %s,
+                approved_at = NOW()
+            WHERE transfer_id = %s AND status = 'pending'
+        """, (user_email, transfer_id))
+        
+        if cursor.rowcount == 0:
+            return jsonify({'success': False, 'error': 'Transfer request not found or already processed'}), 404
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        return jsonify({
+            'success': True,
+            'message': 'Transfer request rejected'
+        })
+        
+    except Exception as e:
+        print(f"Error rejecting transfer: {str(e)}")
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 # -----------------------------
 # Run App
