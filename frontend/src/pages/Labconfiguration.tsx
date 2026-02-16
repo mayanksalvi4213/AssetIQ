@@ -65,6 +65,13 @@ export default function LabConfiguration() {
   const [isSearching, setIsSearching] = useState(false);
   const [selectedQuantities, setSelectedQuantities] = useState<{ [key: number]: number }>({});
   
+  // Device types that require OS selection
+  const deviceTypesWithOS = ["Laptop", "PC", "Server"];
+  
+  const requiresOS = (deviceType: string): boolean => {
+    return deviceTypesWithOS.includes(deviceType);
+  };
+
   // Equipment types matching database device_types table
   const commonEquipmentTypes = [
     { id: 1, name: "Laptop" },
@@ -94,7 +101,7 @@ export default function LabConfiguration() {
   });
   const [showSeatingEditor, setShowSeatingEditor] = useState(false);
   const [nextComputerId, setNextComputerId] = useState(1);
-  const [assignedCodePrefix, setAssignedCodePrefix] = useState("");
+  const [codePrefixes, setCodePrefixes] = useState<{ [deviceType: string]: string }>({});
   const [availableDevicesForSeating, setAvailableDevicesForSeating] = useState<Equipment[]>([]);
   const [selectedDeviceForPlacement, setSelectedDeviceForPlacement] = useState<Equipment | null>(null);
   const [selectedDeviceMode, setSelectedDeviceMode] = useState<'linked' | 'standby' | 'standalone' | null>(null);
@@ -392,12 +399,7 @@ export default function LabConfiguration() {
         setLabName(labData.labName);
         setEquipment(labData.equipment || []);
         
-        // Set assigned code prefix if available
-        if (labData.assignedCodePrefix) {
-          setAssignedCodePrefix(labData.assignedCodePrefix);
-        }
-        
-        // Calculate which devices are already placed on the grid
+        // Calculate which devices are already placed on the grid and extract linked groups FIRST
         const placedDevices: { type: string; brand?: string; model?: string; billId?: number; count: number }[] = [];
         const linkedGroupsFromGrid: Equipment[][] = [];
         const linkedGroupMap = new Map<number, Equipment[]>(); // linked_group_id -> devices
@@ -469,6 +471,45 @@ export default function LabConfiguration() {
         // Set linked device groups
         setLinkedDeviceGroups(linkedGroupsFromGrid);
         console.log("🔗 Reconstructed linked groups:", linkedGroupsFromGrid);
+        
+        // Extract code prefixes from grid (after we know the linked groups)
+        const extractedPrefixes: { [deviceType: string]: string } = {};
+        if (labData.seatingArrangement?.grid) {
+          labData.seatingArrangement.grid.forEach((row: any) => {
+            row.forEach((cell: any) => {
+              if (cell.deviceGroup && cell.deviceGroup.devices && cell.deviceGroup.assignedCode) {
+                const devices = cell.deviceGroup.devices;
+                // Extract prefix by removing the sequence number
+                const parts = cell.deviceGroup.assignedCode.split('/');
+                if (parts.length > 0) {
+                  parts.pop(); // Remove sequence number
+                  const prefix = parts.join('/');
+                  
+                  // Check if this is a linked group (multiple device types)
+                  if (devices.length > 1) {
+                    // Find the linked group index
+                    const groupIndex = linkedGroupsFromGrid.findIndex(group => {
+                      const groupDeviceTypes = group.map(d => d.type).sort().join(',');
+                      const cellDeviceTypes = devices.map((d: any) => d.type).sort().join(',');
+                      return groupDeviceTypes === cellDeviceTypes;
+                    });
+                    
+                    if (groupIndex !== -1 && !extractedPrefixes[`linked_group_${groupIndex}`]) {
+                      extractedPrefixes[`linked_group_${groupIndex}`] = prefix;
+                    }
+                  } else {
+                    // Standalone device
+                    const deviceType = devices[0].type;
+                    if (!extractedPrefixes[deviceType]) {
+                      extractedPrefixes[deviceType] = prefix;
+                    }
+                  }
+                }
+              }
+            });
+          });
+        }
+        setCodePrefixes(extractedPrefixes);
         
         // Calculate available devices (total equipment - placed devices)
         console.log("📊 Placed devices count:", placedDevices);
@@ -667,10 +708,13 @@ export default function LabConfiguration() {
             }))
           };
           
+          // Only set OS for devices that need it
+          const needsOS = devicesToPlace.some(d => requiresOS(d.type));
+          
           newGrid[row][col] = {
             id: null,
             equipmentType: selectedDeviceForPlacement.type,
-            os: ["Windows"],
+            os: needsOS ? ["Windows"] : [],
             deviceGroup
           };
           
@@ -718,23 +762,77 @@ export default function LabConfiguration() {
   };
 
   const renumberGrid = (grid: GridCell[][]) => {
-    let sequenceNumber = 1;
+    // Track sequence numbers per device type or linked group
+    const sequenceNumbers: { [key: string]: number } = {};
     
     // Go through grid horizontally (row by row, left to right)
     for (let row = 0; row < grid.length; row++) {
       for (let col = 0; col < grid[row].length; col++) {
         const cell = grid[row][col];
-        if (cell.deviceGroup) {
-          const assignedCode = `${assignedCodePrefix}/${sequenceNumber}`;
+        if (cell.deviceGroup && cell.deviceGroup.devices.length > 0) {
+          const devices = cell.deviceGroup.devices;
+          
+          // Determine if this is a linked group or standalone device
+          let prefixKey: string;
+          let prefix: string;
+          
+          if (devices.length > 1) {
+            // Multiple devices - find which linked group this belongs to
+            const groupIndex = linkedDeviceGroups.findIndex(group => {
+              const groupDeviceTypes = group.map(d => d.type).sort().join(',');
+              const cellDeviceTypes = devices.map(d => d.type).sort().join(',');
+              return groupDeviceTypes === cellDeviceTypes;
+            });
+            
+            if (groupIndex !== -1) {
+              prefixKey = `linked_group_${groupIndex}`;
+              prefix = codePrefixes[prefixKey] || '';
+            } else {
+              // Fallback to primary device type
+              const primaryDevice = devices[0];
+              prefixKey = primaryDevice.type;
+              prefix = codePrefixes[prefixKey] || '';
+            }
+          } else {
+            // Single device - use device type as prefix key
+            const primaryDevice = devices[0];
+            const deviceType = primaryDevice.type;
+            
+            // Check if this device type is part of any linked group
+            const isInLinkedGroup = linkedDeviceGroups.some(group => 
+              group.some(d => d.type === deviceType && d.brand === primaryDevice.brand && d.model === primaryDevice.model)
+            );
+            
+            if (isInLinkedGroup) {
+              // Find which linked group this device belongs to
+              const groupIndex = linkedDeviceGroups.findIndex(group => 
+                group.some(d => d.type === deviceType && d.brand === primaryDevice.brand && d.model === primaryDevice.model)
+              );
+              prefixKey = `linked_group_${groupIndex}`;
+              prefix = codePrefixes[prefixKey] || '';
+            } else {
+              // Standalone device
+              prefixKey = deviceType;
+              prefix = codePrefixes[deviceType] || '';
+            }
+          }
+          
+          // Initialize sequence number for this prefix key if not exists
+          if (!sequenceNumbers[prefixKey]) {
+            sequenceNumbers[prefixKey] = 1;
+          }
+          
+          // Create assigned code
+          const assignedCode = prefix ? `${prefix}/${sequenceNumbers[prefixKey]}` : `${sequenceNumbers[prefixKey]}`;
+          
           cell.deviceGroup.assignedCode = assignedCode;
-          cell.id = `C${String(sequenceNumber).padStart(3, "0")}`;
-          sequenceNumber++;
+          cell.id = `${devices[0].type.substring(0, 1)}${String(sequenceNumbers[prefixKey]).padStart(3, "0")}`;
+          sequenceNumbers[prefixKey]++;
         }
       }
     }
     
     setSeatingArrangement({ ...seatingArrangement, grid });
-    setNextComputerId(sequenceNumber);
   };
 
   const canPlaceDevice = (): boolean => {
@@ -832,10 +930,13 @@ export default function LabConfiguration() {
       }))
     };
     
+    // Only set OS for devices that need it
+    const needsOS = devicesToPlace.some(d => requiresOS(d.type));
+    
     newGrid[rowIdx][colIdx] = {
       id: null,
       equipmentType: selectedDeviceForPlacement.type,
-      os: ["Windows"],
+      os: needsOS ? ["Windows"] : [],
       deviceGroup
     };
     
@@ -953,15 +1054,19 @@ export default function LabConfiguration() {
     const newGrid = seatingArrangement.grid.map(row => 
       row.map(cell => {
         if (cell.deviceGroup) {
-          const updatedCell = { ...cell };
-          if (shouldAdd) {
-            if (!updatedCell.os.includes(osType)) {
-              updatedCell.os = [...updatedCell.os, osType];
+          // Only apply OS to devices that need it
+          const needsOS = cell.deviceGroup.devices.some(d => requiresOS(d.type));
+          if (needsOS) {
+            const updatedCell = { ...cell };
+            if (shouldAdd) {
+              if (!updatedCell.os.includes(osType)) {
+                updatedCell.os = [...updatedCell.os, osType];
+              }
+            } else {
+              updatedCell.os = updatedCell.os.filter(os => os !== osType);
             }
-          } else {
-            updatedCell.os = updatedCell.os.filter(os => os !== osType);
+            return updatedCell;
           }
-          return updatedCell;
         }
         return cell;
       })
@@ -972,7 +1077,9 @@ export default function LabConfiguration() {
   const toggleOS = (rowIdx: number, colIdx: number, os: string) => {
     const newGrid = [...seatingArrangement.grid];
     const cell = newGrid[rowIdx][colIdx];
-    if (cell.equipmentType === "PC" || cell.deviceGroup) {
+    // Only allow OS toggle if device needs OS
+    const needsOS = cell.deviceGroup?.devices.some(d => requiresOS(d.type));
+    if ((cell.equipmentType === "PC" || cell.deviceGroup) && needsOS) {
       if (cell.os.includes(os)) {
         cell.os = cell.os.filter((o) => o !== os);
       } else {
@@ -1385,21 +1492,6 @@ export default function LabConfiguration() {
                     </div>
                   </div>
 
-                  {/* Toolbox for Dragging */}
-                  <div className="bg-neutral-800 p-4 rounded-lg space-y-3">
-                    <h3 className="text-white font-semibold mb-3">Assigned Code Prefix</h3>
-                    <Input
-                      type="text"
-                      value={assignedCodePrefix}
-                      onChange={(e) => setAssignedCodePrefix(e.target.value)}
-                      placeholder="e.g., apsit/it/309"
-                      className="bg-neutral-700 text-white"
-                    />
-                    <p className="text-gray-400 text-xs">
-                      Devices will be assigned codes like: {assignedCodePrefix}/1, {assignedCodePrefix}/2, etc.
-                    </p>
-                  </div>
-
                   {/* Device Linking Section */}
                   <div className="bg-neutral-800 p-4 rounded-lg space-y-3">
                     <div className="flex justify-between items-center">
@@ -1438,6 +1530,72 @@ export default function LabConfiguration() {
                         ))}
                       </div>
                     )}
+                  </div>
+
+                  {/* Code Prefixes Section */}
+                  <div className="bg-neutral-800 p-4 rounded-lg space-y-3">
+                    <h3 className="text-white font-semibold mb-3">Assigned Code Prefixes</h3>
+                    
+                    {/* Linked Groups Prefixes */}
+                    {linkedDeviceGroups.length > 0 && (
+                      <div className="mb-4">
+                        <h4 className="text-cyan-400 font-semibold text-sm mb-2">Linked Device Groups</h4>
+                        <div className="space-y-2">
+                          {linkedDeviceGroups.map((group, groupIdx) => (
+                            <div key={groupIdx} className="bg-neutral-700 p-3 rounded-lg">
+                              <Label className="text-white text-sm font-semibold mb-2">
+                                Group {groupIdx + 1} ({group.map(d => d.type).join(' + ')})
+                              </Label>
+                              <Input
+                                type="text"
+                                value={codePrefixes[`linked_group_${groupIdx}`] || ''}
+                                onChange={(e) => setCodePrefixes(prev => ({ ...prev, [`linked_group_${groupIdx}`]: e.target.value }))}
+                                placeholder={`e.g., apsit/it/309/station`}
+                                className="bg-neutral-600 text-white mt-1"
+                              />
+                              <p className="text-gray-400 text-xs mt-1">
+                                Preview: {codePrefixes[`linked_group_${groupIdx}`] || '[prefix]'}/1, {codePrefixes[`linked_group_${groupIdx}`] || '[prefix]'}/2, etc.
+                              </p>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    
+                    {/* Standalone Device Prefixes */}
+                    <div>
+                      <h4 className="text-green-400 font-semibold text-sm mb-2">Standalone Devices</h4>
+                      <div className="space-y-2 max-h-64 overflow-y-auto">
+                        {Array.from(new Set(equipment.map(eq => eq.type))).filter(deviceType => {
+                          // Only show device types that are NOT in any linked group
+                          return !linkedDeviceGroups.some(group => 
+                            group.some(d => d.type === deviceType)
+                          );
+                        }).map((deviceType) => (
+                          <div key={deviceType} className="bg-neutral-700 p-3 rounded-lg">
+                            <Label className="text-white text-sm font-semibold mb-2">{deviceType}</Label>
+                            <Input
+                              type="text"
+                              value={codePrefixes[deviceType] || ''}
+                              onChange={(e) => setCodePrefixes(prev => ({ ...prev, [deviceType]: e.target.value }))}
+                              placeholder={`e.g., apsit/it/309/${deviceType.toLowerCase()}`}
+                              className="bg-neutral-600 text-white mt-1"
+                            />
+                            <p className="text-gray-400 text-xs mt-1">
+                              Preview: {codePrefixes[deviceType] || '[prefix]'}/1, {codePrefixes[deviceType] || '[prefix]'}/2, etc.
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                    
+                    {equipment.length === 0 && (
+                      <p className="text-gray-400 text-sm">Add equipment first to configure code prefixes.</p>
+                    )}
+                    
+                    <p className="text-gray-400 text-xs mt-3">
+                      💡 Linked device groups share a single prefix, while standalone devices have individual prefixes per type.
+                    </p>
                   </div>
 
                   <div className="bg-neutral-800 p-4 rounded-lg">
@@ -1626,7 +1784,10 @@ export default function LabConfiguration() {
                     <div className="flex flex-col items-center select-none">
                       {seatingArrangement.grid.map((row, rowIdx) => (
                         <div key={rowIdx} className="flex gap-1">
-                          {row.map((cell, colIdx) => (
+                          {row.map((cell, colIdx) => {
+                            const needsOS = cell.deviceGroup?.devices.some(d => requiresOS(d.type)) || false;
+                            
+                            return (
                             <div
                               key={colIdx}
                               onMouseDown={() => handleMouseDown(rowIdx, colIdx)}
@@ -1649,10 +1810,17 @@ export default function LabConfiguration() {
                                     {cell.deviceGroup.devices[0]?.type === "PC" && "🖥️"}
                                     {cell.deviceGroup.devices[0]?.type === "Laptop" && "💻"}
                                     {cell.deviceGroup.devices[0]?.type === "Monitor" && "🖥️"}
+                                    {cell.deviceGroup.devices[0]?.type === "AC" && "❄️"}
+                                    {cell.deviceGroup.devices[0]?.type === "Smart Board" && "📺"}
+                                    {cell.deviceGroup.devices[0]?.type === "Projector" && "📽️"}
+                                    {cell.deviceGroup.devices[0]?.type === "Router" && "📡"}
+                                    {cell.deviceGroup.devices[0]?.type === "Switch" && "🔌"}
+                                    {cell.deviceGroup.devices[0]?.type === "Server" && "🖥️"}
                                   </div>
                                   <div className="text-xs text-gray-200 text-center mb-1">
                                     {cell.deviceGroup.devices.length} devices
                                   </div>
+                                  {needsOS && (
                                   <div className="flex gap-1 flex-wrap justify-center">
                                     <button
                                       onClick={(e) => {
@@ -1694,13 +1862,15 @@ export default function LabConfiguration() {
                                       Oth
                                     </button>
                                   </div>
+                                  )}
                                 </>
                               )}
                               {cell.equipmentType === "Empty" && (
                                 <div className="text-gray-500 text-sm">Empty</div>
                               )}
                             </div>
-                          ))}
+                            );
+                          })}
                         </div>
                       ))}
                     </div>
@@ -1708,7 +1878,7 @@ export default function LabConfiguration() {
 
                   {/* Bulk OS Assignment Checkboxes */}
                   <div className="bg-gradient-to-r from-purple-900/50 to-blue-900/50 p-5 rounded-lg border-2 border-purple-500">
-                    <h4 className="text-white font-bold mb-4 text-lg">🔧 Bulk OS Assignment (applies to all stations)</h4>
+                    <h4 className="text-white font-bold mb-4 text-lg">🔧 Bulk OS Assignment (applies to PC/Laptop/Server only)</h4>
                     <div className="flex gap-8">
                       <label className="flex items-center gap-3 text-white cursor-pointer hover:text-cyan-400 transition group">
                         <input

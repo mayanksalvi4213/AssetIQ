@@ -1,9 +1,11 @@
 "use client";
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useId, useState } from "react";
+import { motion, AnimatePresence } from "motion/react";
 import { Menu, MenuItem, HoveredLink } from "@/components/ui/navbar-menu";
 import { LogoButton } from "@/components/ui/logo-button";
 import { useAuth } from "@/contexts/AuthContext";
-
+import { WobbleCard } from "@/components/ui/wobble-card";
+import { PlaceholdersAndVanishInput } from "@/components/ui/placeholders-and-vanish-input";
 interface Device {
   device_id: number;
   asset_id?: string;
@@ -190,85 +192,109 @@ export default function WarrantyExpiry() {
 
       {/* Search Bar */}
       <div className="w-full max-w-7xl mb-4">
-        <input
-          type="text"
-          placeholder="🔍 Search by device name, brand, model, asset ID, lab, or invoice..."
-          value={searchTerm}
+        <PlaceholdersAndVanishInput
+          placeholders={[
+            "🔍 Search by device name...",
+            "🔍 Search by brand or model...",
+            "🔍 Search by asset ID...",
+            "🔍 Search by lab name...",
+            "🔍 Search by invoice number...",
+          ]}
           onChange={(e) => setSearchTerm(e.target.value)}
-          className="w-full px-4 py-3 bg-neutral-800/90 border border-neutral-600 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+          onSubmit={(e) => e.preventDefault()}
         />
       </div>
 
       {/* Enhanced Summary Cards */}
       <div className="w-full max-w-7xl grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
-        <button
-          onClick={() => setFilterStatus('all')}
-          className={`p-4 rounded-xl transition cursor-pointer ${
-            filterStatus === 'all' 
-              ? 'bg-blue-600 ring-2 ring-blue-400' 
-              : 'bg-neutral-800/90 hover:bg-neutral-700/90'
-          }`}
-        >
-          <div className="text-4xl mb-2">📊</div>
-          <div className="text-xs text-gray-300 uppercase">Total Devices</div>
-          <div className="text-3xl font-bold text-white">{totalDevices}</div>
-        </button>
+        <div onClick={() => setFilterStatus('all')}>
+          <WobbleCard
+            containerClassName={`cursor-pointer ${
+              filterStatus === 'all' 
+                ? 'bg-blue-600 ring-2 ring-blue-400' 
+                : 'bg-neutral-800'
+            }`}
+            className="p-4"
+          >
+            <div className="w-full text-center">
+              <div className="text-4xl mb-2">📊</div>
+              <div className="text-xs text-gray-100 uppercase font-semibold">Total Devices</div>
+              <div className="text-3xl font-bold text-white">{totalDevices}</div>
+            </div>
+          </WobbleCard>
+        </div>
 
-        <button
-          onClick={() => setFilterStatus('expired')}
-          className={`p-4 rounded-xl transition cursor-pointer ${
-            filterStatus === 'expired' 
-              ? 'bg-red-600 ring-2 ring-red-400' 
-              : 'bg-neutral-800/90 hover:bg-neutral-700/90'
-          }`}
-        >
-          <div className="text-4xl mb-2">❌</div>
-          <div className="text-xs text-gray-300 uppercase">Expired</div>
-          <div className="text-3xl font-bold text-red-400">{expired}</div>
-          <div className="text-[10px] text-gray-400 mt-1">Action Required</div>
-        </button>
+        <div onClick={() => setFilterStatus('expired')}>
+          <WobbleCard
+            containerClassName={`cursor-pointer ${
+              filterStatus === 'expired' 
+                ? 'bg-red-600 ring-2 ring-red-400' 
+                : 'bg-neutral-800'
+            }`}
+            className="p-4"
+          >
+            <div className="w-full text-center">
+              <div className="text-4xl mb-2">❌</div>
+              <div className="text-xs text-gray-100 uppercase font-semibold">Expired</div>
+              <div className="text-3xl font-bold text-red-300">{expired}</div>
+              <div className="text-[10px] text-gray-200 mt-1">Action Required</div>
+            </div>
+          </WobbleCard>
+        </div>
 
-        <button
-          onClick={() => setFilterStatus('urgent')}
-          className={`p-4 rounded-xl transition cursor-pointer ${
-            filterStatus === 'urgent' 
-              ? 'bg-orange-600 ring-2 ring-orange-400' 
-              : 'bg-neutral-800/90 hover:bg-neutral-700/90'
-          }`}
-        >
-          <div className="text-4xl mb-2">🚨</div>
-          <div className="text-xs text-gray-300 uppercase">Urgent (≤30d)</div>
-          <div className="text-3xl font-bold text-orange-400">{expiring30}</div>
-          <div className="text-[10px] text-gray-400 mt-1">Renew Soon</div>
-        </button>
+        <div onClick={() => setFilterStatus('urgent')}>
+          <WobbleCard
+            containerClassName={`cursor-pointer ${
+              filterStatus === 'urgent' 
+                ? 'bg-orange-600 ring-2 ring-orange-400' 
+                : 'bg-neutral-800'
+            }`}
+            className="p-4"
+          >
+            <div className="w-full text-center">
+              <div className="text-4xl mb-2">🚨</div>
+              <div className="text-xs text-gray-100 uppercase font-semibold">Urgent (≤30d)</div>
+              <div className="text-3xl font-bold text-orange-300">{expiring30}</div>
+              <div className="text-[10px] text-gray-200 mt-1">Renew Soon</div>
+            </div>
+          </WobbleCard>
+        </div>
 
-        <button
-          onClick={() => setFilterStatus('warning')}
-          className={`p-4 rounded-xl transition cursor-pointer ${
-            filterStatus === 'warning' 
-              ? 'bg-yellow-600 ring-2 ring-yellow-400' 
-              : 'bg-neutral-800/90 hover:bg-neutral-700/90'
-          }`}
-        >
-          <div className="text-4xl mb-2">⚠️</div>
-          <div className="text-xs text-gray-300 uppercase">Warning (≤90d)</div>
-          <div className="text-3xl font-bold text-yellow-400">{expiring90}</div>
-          <div className="text-[10px] text-gray-400 mt-1">Plan Renewal</div>
-        </button>
+        <div onClick={() => setFilterStatus('warning')}>
+          <WobbleCard
+            containerClassName={`cursor-pointer ${
+              filterStatus === 'warning' 
+                ? 'bg-yellow-600 ring-2 ring-yellow-400' 
+                : 'bg-neutral-800'
+            }`}
+            className="p-4"
+          >
+            <div className="w-full text-center">
+              <div className="text-4xl mb-2">⚠️</div>
+              <div className="text-xs text-gray-100 uppercase font-semibold">Warning (≤90d)</div>
+              <div className="text-3xl font-bold text-yellow-300">{expiring90}</div>
+              <div className="text-[10px] text-gray-200 mt-1">Plan Renewal</div>
+            </div>
+          </WobbleCard>
+        </div>
 
-        <button
-          onClick={() => setFilterStatus('good')}
-          className={`p-4 rounded-xl transition cursor-pointer ${
-            filterStatus === 'good' 
-              ? 'bg-green-600 ring-2 ring-green-400' 
-              : 'bg-neutral-800/90 hover:bg-neutral-700/90'
-          }`}
-        >
-          <div className="text-4xl mb-2">✅</div>
-          <div className="text-xs text-gray-300 uppercase">Good (&gt;90d)</div>
-          <div className="text-3xl font-bold text-green-400">{good}</div>
-          <div className="text-[10px] text-gray-400 mt-1">No Action</div>
-        </button>
+        <div onClick={() => setFilterStatus('good')}>
+          <WobbleCard
+            containerClassName={`cursor-pointer ${
+              filterStatus === 'good' 
+                ? 'bg-green-600 ring-2 ring-green-400' 
+                : 'bg-neutral-800'
+            }`}
+            className="p-4"
+          >
+            <div className="w-full text-center">
+              <div className="text-4xl mb-2">✅</div>
+              <div className="text-xs text-gray-100 uppercase font-semibold">Good (&gt;90d)</div>
+              <div className="text-3xl font-bold text-green-300">{good}</div>
+              <div className="text-[10px] text-gray-200 mt-1">No Action</div>
+            </div>
+          </WobbleCard>
+        </div>
       </div>
 
       <div className="w-full max-w-7xl">
@@ -317,6 +343,7 @@ export default function WarrantyExpiry() {
                 {/* Lab Groups */}
                 {Object.entries(labGroups).map(([labName, deviceList]) => {
                   const isExpanded = expandedLabs.has(labName);
+                  const uniqueId = `lab-${labName.replace(/\s+/g, '-')}`;
                   
                   // Compute lab-level stats
                   let labExpired = 0;
@@ -333,11 +360,21 @@ export default function WarrantyExpiry() {
                   });
 
                   return (
-                    <div key={labName} className="mb-4 border border-neutral-700 rounded-lg overflow-hidden">
+                    <motion.div 
+                      key={labName}
+                      layoutId={uniqueId}
+                      className="mb-4 border border-neutral-700 rounded-lg overflow-hidden"
+                      initial={{ opacity: 0, y: 20 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ duration: 0.3 }}
+                    >
                       {/* Lab Header - Clickable */}
-                      <button
+                      <motion.button
+                        layout
                         onClick={() => toggleLab(labName)}
                         className="w-full px-4 py-3 bg-neutral-800 hover:bg-neutral-750 transition flex items-center justify-between text-left"
+                        whileHover={{ scale: 1.01 }}
+                        whileTap={{ scale: 0.99 }}
                       >
                         <div className="flex items-center gap-3">
                           <span className="text-2xl">{isExpanded ? '📂' : '📁'}</span>
@@ -376,13 +413,21 @@ export default function WarrantyExpiry() {
                             {isExpanded ? '▼' : '▶'}
                           </span>
                         </div>
-                      </button>
+                      </motion.button>
 
                       {/* Lab Content - Expandable */}
-                      {isExpanded && (
-                        <div className="p-4 bg-neutral-900">
+                      <AnimatePresence>
+                        {isExpanded && (
+                          <motion.div 
+                            initial={{ height: 0, opacity: 0 }}
+                            animate={{ height: "auto", opacity: 1 }}
+                            exit={{ height: 0, opacity: 0 }}
+                            transition={{ duration: 0.3, ease: "easeInOut" }}
+                            className="overflow-hidden"
+                          >
+                            <div className="p-4 bg-neutral-900">
                           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-                            {deviceList.map((d) => {
+                            {deviceList.map((d, idx) => {
                               const expiry = d.warranty_expiry ? new Date(d.warranty_expiry) : null;
                               const days = expiry ? Math.ceil((expiry.getTime() - now.getTime())/(1000*60*60*24)) : null;
                               const status = getDeviceStatus(d);
@@ -435,7 +480,14 @@ export default function WarrantyExpiry() {
                                 : 0;
 
                               return (
-                                <div key={d.device_id} className={`p-4 rounded-lg ${config.bg} relative overflow-hidden transition hover:shadow-lg`}>
+                                <motion.div 
+                                  key={d.device_id} 
+                                  className={`p-4 rounded-lg ${config.bg} relative overflow-hidden transition hover:shadow-lg`}
+                                  initial={{ opacity: 0, scale: 0.9 }}
+                                  animate={{ opacity: 1, scale: 1 }}
+                                  transition={{ delay: idx * 0.05, duration: 0.2 }}
+                                  whileHover={{ scale: 1.02, transition: { duration: 0.2 } }}
+                                >
                                   {/* Status Badge */}
                                   <div className="absolute top-2 right-2">
                                     <div className={`${config.badge} px-2 py-1 rounded-full text-[10px] font-bold flex items-center gap-1`}>
@@ -499,13 +551,15 @@ export default function WarrantyExpiry() {
                                       </div>
                                     </div>
                                   </div>
-                                </div>
+                                </motion.div>
                               );
                             })}
                           </div>
-                        </div>
-                      )}
-                    </div>
+                            </div>
+                          </motion.div>
+                        )}
+                      </AnimatePresence>
+                    </motion.div>
                   );
                 })}
               </>

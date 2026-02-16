@@ -1,4 +1,7 @@
 import re
+import json
+import os
+import requests
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 from dataclasses import dataclass
@@ -83,6 +86,16 @@ class EnhancedInvoiceExtractor:
             'Storage Device': ['hdd', 'ssd', 'hard drive', 'storage', 'disk', 'external drive', 'nas'],
             'Camera': ['camera', 'webcam', 'camcorder', 'cctv', 'surveillance'],
         }
+
+        # Local LLM configuration
+        self.local_llm_url = os.getenv("LOCAL_LLM_URL", "http://127.0.0.1:8080").rstrip("/")
+        self.local_llm_model = os.getenv("LOCAL_LLM_MODEL", "qwen2.5-3b-instruct-q4_k_m.gguf")
+        self.local_llm_timeout = int(os.getenv("LOCAL_LLM_TIMEOUT", "180"))
+        # Use more of the 4096 token context: ~2500 tokens = ~10000 chars
+        self.local_llm_max_tokens = int(os.getenv("LOCAL_LLM_MAX_TOKENS", "1024"))  # Increased for many items
+        self.local_llm_chunk_chars = int(os.getenv("LOCAL_LLM_CHUNK_CHARS", "8000"))  # Increased significantly
+        self.local_llm_max_item_lines = int(os.getenv("LOCAL_LLM_MAX_ITEM_LINES", "500"))  # More item lines
+        self.ai_only_mode = os.getenv("AI_ONLY_MODE", "false").lower() in ("1", "true", "yes")
     
     def extract_vendor_info(self, text: str) -> Dict:
         """Extract vendor information - works with multiple formats"""
@@ -210,9 +223,14 @@ class EnhancedInvoiceExtractor:
         for pattern in invoice_patterns:
             invoice_match = re.search(pattern, text, re.IGNORECASE)
             if invoice_match:
-                bill_details['bill_number'] = invoice_match.group(1).strip()
-                print(f"DEBUG: Found invoice number: {bill_details['bill_number']}")
-                break
+                candidate = invoice_match.group(1).strip()
+                # Basic validation: must contain at least one digit and be reasonably long
+                if len(candidate) >= 4 and re.search(r"\d", candidate):
+                    bill_details['bill_number'] = candidate
+                    print(f"DEBUG: Found invoice number: {bill_details['bill_number']}")
+                    break
+                else:
+                    print(f"DEBUG: Ignored weak invoice candidate: {candidate}")
         
         # Extract date - multiple formats
         date_patterns = [
@@ -866,6 +884,1120 @@ class EnhancedInvoiceExtractor:
         )
         
         return bill_info, raw_text
+
+    # =========================================
+    # Local LLM Extraction Pipeline - Production Architecture
+    # =========================================
+    def extract_bill_info_ai(self, raw_text: str) -> tuple[BillInfo, str]:
+        """
+        Extract bill info using local LLM with strict page-wise processing.
+        
+        Architecture:
+        1. Split bill by page markers (<<<)
+        2. Send each page independently to LLM (stateless API)
+        3. LLM returns strict JSON per page
+        4. Backend aggregates and validates results deterministically
+        5. Never rely on LLM for totals or cross-page memory
+        """
+        print("DEBUG: Starting AI-based extraction...")
+        
+        # Page-wise extraction (stateless LLM calls)
+        pages = self._split_pages(raw_text)
+        if not pages:
+            print("DEBUG: No page markers found, treating as single page")
+            pages = [raw_text]
+        
+        print(f"DEBUG: Split into {len(pages)} pages")
+        
+        page_results = []
+        for page_num, page_text in enumerate(pages, start=1):
+            print(f"DEBUG: Processing page {page_num}/{len(pages)}")
+            
+            # Extract page via LLM
+            page_json = self._extract_page_via_llm(page_text, page_num, len(pages))
+            
+            if page_json:
+                page_results.append(page_json)
+                print(f"DEBUG: Page {page_num} extracted successfully")
+            else:
+                print(f"DEBUG: Page {page_num} extraction failed or returned empty")
+        
+        if not page_results:
+            print("DEBUG: No results from AI extraction, falling back to rule-based")
+            if not self.ai_only_mode:
+                return self.extract_bill_info(raw_text)
+            else:
+                # AI-only mode but failed - return minimal structure
+                return self._create_empty_bill_info(), raw_text
+        
+        # Deterministic backend aggregation (NO LLM calculations)
+        aggregated = self._aggregate_page_results(page_results)
+        
+        # Build final BillInfo from aggregated data
+        bill_info = self._build_bill_info_from_aggregated(aggregated)
+        
+        print(f"DEBUG: Final extraction - Invoice: {bill_info.bill_number}, "
+              f"Vendor: {bill_info.vendor_name}, Items: {len(bill_info.assets)}, "
+              f"Tax: {bill_info.tax_amount}, Total: {bill_info.total_amount}")
+        
+        return bill_info, raw_text
+    
+    def _is_batch_only_page(self, page_text: str) -> bool:
+        """
+        STEP 0: PAGE TYPE CLASSIFICATION
+        Detect if page is BATCH_ONLY_PAGE (not ITEM_PAGE).
+        
+        BATCH_ONLY_PAGE:
+        - Contains ONLY "Batch :" rows or serial listings
+        - Each serial/batch may have "1.00 Pcs" or similar unit quantity
+        - NO item table with Description + Quantity columns
+        
+        ITEM_PAGE:
+        - Has table with Description + Quantity + Rate/Amount columns
+        - Quantity column shows item quantities (not batch counts)
+        """
+        lines = [l.strip() for l in page_text.split("\n") if l.strip()]
+
+        has_real_item = False
+        batch_rows = 0
+
+        for line in lines:
+            lower = line.lower()
+
+            # Detect batch rows explicitly
+            if "batch :" in lower or lower.startswith("batch "):
+                batch_rows += 1
+                continue
+
+            # Detect REAL item rows from item table:
+            # Must have: description (NOT "batch") + quantity pattern + amount/rate
+            qty_match = re.search(r"\b(\d+(\.\d+)?)\s*(pcs|nos|qty)\b", lower)
+            has_amount = bool(re.search(r"\b(rs\.?|₹|inr)\b|\d{3,}\.\d{2}", lower))
+
+            if qty_match and has_amount and "batch" not in lower:
+                has_real_item = True
+                break
+
+        # BATCH_ONLY_PAGE if many batch rows and ZERO real item table rows
+        is_batch_only = batch_rows >= 3 and not has_real_item
+
+        if is_batch_only:
+            print(f"DEBUG: PAGE TYPE = BATCH_ONLY_PAGE ({batch_rows} batch rows, no item table)")
+        else:
+            print(f"DEBUG: PAGE TYPE = ITEM_PAGE (has item table with Description + Quantity)")
+
+        return is_batch_only
+    
+    def _build_batch_only_prompt(self, page_text: str, page_num: int) -> dict:
+        """
+        Build prompt for extracting ONLY batch/serial numbers from a page.
+        Used when page contains only serials with no items.
+        """
+        system_message = """Extract ONLY serial numbers / batch codes from this page. Return ONLY valid JSON.
+
+OUTPUT FORMAT:
+{
+  "batches": ["SERIAL1", "SERIAL2", "SERIAL3", ...]
+}
+
+RULES:
+1. Extract ALL serial numbers, batch codes, or device identifiers
+2. Skip any text that is not a serial/batch identifier
+3. Return ONLY the JSON array of serials
+4. DO NOT extract item names, quantities, or prices"""
+
+        user_message = f"""PAGE {page_num} - Extract all serial/batch numbers:
+
+{page_text}"""
+
+        return {
+            "messages": [
+                {"role": "system", "content": system_message},
+                {"role": "user", "content": user_message}
+            ],
+            "temperature": 0.0,
+            "max_tokens": 512,
+            "stop": ["</s>", "<|im_end|>", "```"]
+        }
+    
+    def _extract_page_via_llm(self, page_text: str, page_num: int, total_pages: int) -> Optional[dict]:
+        """
+        Extract structured data from a single page using LLM.
+        Returns strict JSON matching schema or None.
+        """
+        # Send full page text (truncated to context limit)
+        # Don't filter aggressively - let LLM see everything
+        chunk = self._truncate(page_text, self.local_llm_chunk_chars)
+        
+        if not chunk or len(chunk.strip()) < 50:
+            print(f"DEBUG: Page {page_num} is too short, skipping")
+            return None
+        
+        print(f"DEBUG: Page {page_num} chunk length: {len(chunk)} chars")
+        
+        # STEP 0: PAGE TYPE CLASSIFICATION - Check for BATCH_ONLY_PAGE
+        is_batch_only = self._is_batch_only_page(chunk)
+        
+        if is_batch_only:
+            # STEP 4: BATCH_ONLY_PAGE - Extract ONLY serials, NO items
+            prompt = self._build_batch_only_prompt(chunk, page_num)
+            response_text = self._call_local_llm(prompt)
+            
+            if response_text:
+                parsed = self._extract_json_from_text(response_text)
+                if parsed and isinstance(parsed, dict) and "batches" in parsed:
+                    # Return batch-only result - NO line_items, NO metadata
+                    print(f"DEBUG: Page {page_num} - Extracted {len(parsed.get('batches', []))} serials from BATCH_ONLY_PAGE")
+                    return {
+                        "invoice_metadata": {},
+                        "line_items": [],
+                        "page_totals": {},
+                        "batches_only": parsed.get("batches", [])
+                    }
+            print(f"DEBUG: Page {page_num} BATCH_ONLY_PAGE extraction failed")
+            return None
+        
+        # STEP 2: ITEM_PAGE - Extract items from item table
+        prompt = self._build_page_extraction_prompt(chunk, page_num, total_pages)
+        
+        # Call LLM API
+        response_text = self._call_local_llm(prompt)
+        
+        if not response_text:
+            print(f"DEBUG: Page {page_num} - LLM returned empty response")
+            return None
+        
+        print(f"DEBUG: Page {page_num} LLM response: {response_text[:200]}...")
+        
+        # Parse strict JSON
+        parsed = self._extract_json_from_text(response_text)
+        
+        if not parsed:
+            print(f"DEBUG: Page {page_num} - Failed to parse JSON")
+            return None
+        
+        print(f"DEBUG: Page {page_num} parsed keys: {list(parsed.keys())}")
+        
+        if isinstance(parsed, dict):
+            # Validate schema
+            if self._validate_page_json(parsed, page_num):
+                items_count = len(parsed.get("line_items", []))
+                print(f"DEBUG: Page {page_num} - Valid JSON, {items_count} items")
+                return parsed
+            else:
+                print(f"DEBUG: Page {page_num} - JSON validation failed")
+        
+        return None
+    
+    def _build_batch_only_prompt(self, page_text: str, page_num: int) -> dict:
+        """
+        Build prompt for extracting ONLY batch/serial numbers from a page.
+        Used when page contains only serials with no items.
+        """
+        system_message = """Extract ONLY serial numbers / batch codes from this page. Return ONLY valid JSON.
+
+OUTPUT FORMAT:
+{
+  "batches": ["SERIAL1", "SERIAL2", "SERIAL3", ...]
+}
+
+RULES:
+1. Extract ALL serial numbers, batch codes, or device identifiers
+2. Skip any text that is not a serial/batch identifier
+3. Return ONLY the JSON array of serials
+4. DO NOT extract item names, quantities, or prices"""
+
+        user_message = f"""PAGE {page_num} - Extract all serial/batch numbers:
+
+{page_text}"""
+
+        return {
+            "messages": [
+                {"role": "system", "content": system_message},
+                {"role": "user", "content": user_message}
+            ],
+            "temperature": 0.0,
+            "max_tokens": 512,
+            "stop": ["</s>", "<|im_end|>", "```"]
+        }
+    
+    def _build_page_extraction_prompt(self, page_text: str, page_num: int, total_pages: int) -> dict:
+        """
+        Build prompt for LLM to extract page data in strict JSON format.
+        ONLY extracts from ITEM_PAGE (pages with item tables).
+        """
+        system_message = """You are a stateless invoice page parser. Classify page type then extract accordingly.
+
+PAGE TYPE CLASSIFICATION:
+• ITEM_PAGE: Has table with columns like Description/Item + Quantity + Rate/Price
+• BATCH_ONLY_PAGE: Only contains "Batch :" rows or serial numbers (already handled separately)
+
+OUTPUT FORMAT:
+{
+  "invoice_metadata": {"invoice_no": "", "invoice_date": "", "vendor_name": "", "vendor_gstin": ""},
+  "line_items": [
+    {
+      "material_description": "",
+      "brand": "",
+      "model": "",
+      "quantity_on_page": 0,
+      "has_explicit_quantity": true,
+      "unit_price": 0,
+      "total_amount": 0,
+      "hsn": ""
+    }
+  ],
+  "page_totals": {"subtotal": 0, "cgst": 0, "sgst": 0, "igst": 0, "grand_total": 0}
+}
+
+METADATA EXTRACTION (PRIORITY ON FIRST PAGE):
+- invoice_no: Extract from "Invoice No:", "Bill No:", "Receipt No:" fields
+- invoice_date: Extract from "Invoice Date:", "Date:", "Bill Date:" fields (format: DD-MM-YYYY or DD/MM/YYYY)
+- vendor_name: Company/business name at top of invoice
+- vendor_gstin: Extract GSTIN/GST No (15-character format: 22AAAAA0000A1Z5)
+
+CRITICAL EXTRACTION RULES (THIS IS AN ITEM_PAGE):
+1. ONLY extract rows from item table (with Description + Quantity columns)
+2. quantity_on_page = EXACT number printed in Quantity column for THIS row
+3. has_explicit_quantity = true ONLY if quantity is printed in item table
+4. has_explicit_quantity = false if quantity is missing/blank in table
+5. DO NOT extract items from:
+   - Batch rows ("Batch : XYZ")
+   - Serial number lists
+   - Specification lines ("Part no:", "Warranty:", "Model:")
+   - Continuation markers
+6. DO NOT infer quantity from:
+   - Counting serial numbers
+   - Batch row count
+   - Previous pages
+   - Item repetition
+7. Each line_item must have:
+   - Material description from Description column
+   - Quantity from Quantity column (or null if blank)
+   - Unit price from Rate column
+   - HSN from HSN column
+8. page_totals (ONLY if visible on THIS page - otherwise leave as 0):
+   - cgst: CGST amount printed (e.g., "CGST @ 9%: 37944.43")
+   - sgst: SGST amount printed (e.g., "SGST @ 9%: 37944.43")
+   - igst: IGST amount printed (e.g., "IGST @ 18%: 75888.86")
+   - grand_total: Final total amount printed (e.g., "Grand Total: 497777.72", "Total Amount: 497777.72")
+   - Extract EXACT amounts printed, do NOT calculate
+9. Return ONLY JSON - no explanations
+
+EXAMPLE:
+INPUT: "Dell Monitor E2216HV | 8473.60 | 55.00 Pcs | 9.00 | 466049.60"
+OUTPUT: {"material_description": "Dell Monitor E2216HV", "quantity_on_page": 55, "has_explicit_quantity": true, "unit_price": 8473.60, "total_amount": 466049.60}
+
+INPUT: "Batch : ABC123 | 1.00 Pcs"
+OUTPUT: (DO NOT extract this - it's a batch row, not an item)"""
+
+        user_message = f"""PAGE {page_num} of {total_pages} - Extract ONLY what appears on THIS page.
+
+PAGE TEXT:
+{page_text}"""
+
+        return {
+            "messages": [
+                {"role": "system", "content": system_message},
+                {"role": "user", "content": user_message}
+            ],
+            "temperature": 0.0,
+            "max_tokens": self.local_llm_max_tokens,
+            "stop": ["</s>", "<|im_end|>", "```"]
+        }
+    
+    def _validate_page_json(self, data: dict, page_num: int) -> bool:
+        """Validate that JSON matches expected schema."""
+        if not isinstance(data, dict):
+            return False
+        
+        # Check top-level keys
+        if "invoice_metadata" not in data or "line_items" not in data:
+            return False
+        
+        # Validate types
+        if not isinstance(data["invoice_metadata"], dict):
+            return False
+        if not isinstance(data["line_items"], list):
+            return False
+        
+        # Validate line items structure
+        for item in data["line_items"]:
+            if not isinstance(item, dict):
+                return False
+            # Check for required field (quantity_on_page instead of quantity)
+            if "material_description" not in item:
+                return False
+            # Ensure batches is a list if present
+            if "batches" in item and not isinstance(item["batches"], list):
+                return False
+        
+        return True
+    
+    def _aggregate_page_results(self, page_results: List[dict]) -> dict:
+        """
+        Aggregate results from all pages deterministically.
+        Backend logic - NO LLM involvement.
+        
+        Process:
+        1. Collect metadata (prefer first non-empty)
+        2. Merge items by normalized description + HSN
+        3. Sum quantities across pages for same item
+        4. Collect serial numbers from batch-only pages separately
+        5. Validate quantity vs serial count
+        6. Trust totals only from final page
+        """
+        aggregated = {
+            "invoice_metadata": {},
+            "line_items": [],
+            "tax_summary": {},
+            "all_batches": []  # Collect all serials from batch-only pages
+        }
+        
+        # 1. Collect metadata (prefer first non-empty value)
+        for page_data in page_results:
+            meta = page_data.get("invoice_metadata", {})
+            for key in ["invoice_no", "invoice_date", "vendor_name", "vendor_gstin"]:
+                if not aggregated["invoice_metadata"].get(key) and meta.get(key):
+                    aggregated["invoice_metadata"][key] = meta[key]
+        
+        # 1.5. Collect batches from batch-only pages
+        for page_data in page_results:
+            batches_only = page_data.get("batches_only", [])
+            if batches_only and isinstance(batches_only, list):
+                aggregated["all_batches"].extend(batches_only)
+                print(f"DEBUG: Collected {len(batches_only)} serials from batch-only page")
+        
+        # 2. Merge items by normalized description + HSN
+        item_map = {}  # Key: (normalized_desc, hsn) -> merged item data
+        
+        for page_num, page_data in enumerate(page_results, start=1):
+            for item in page_data.get("line_items", []):
+                if not isinstance(item, dict):
+                    continue
+                
+                # FIX 2: ENFORCE has_explicit_quantity (NO EXCEPTIONS)
+                # Default to FALSE if missing - only TRUE if explicitly set by LLM
+                has_explicit_qty = item.get("has_explicit_quantity", False)
+                if not has_explicit_qty:
+                    desc = item.get('material_description', 'unknown')[:50]
+                    print(f"DEBUG: DROPPING fake item (has_explicit_quantity=false): {desc}")
+                    continue
+                
+                # Normalize description for matching
+                desc = (item.get("material_description") or "").strip()
+                hsn = (item.get("hsn") or "").strip()
+                
+                if not desc:
+                    continue
+                
+                # Create normalized key (case-insensitive, whitespace-normalized)
+                norm_desc = " ".join(desc.lower().split())
+                merge_key = (norm_desc, hsn)
+                
+                # STEP 1: HARD ISOLATION - reset variables per item
+                # STEP 0: Handle null quantities (from batch-only pages)
+                qty_raw = item.get("quantity_on_page", item.get("quantity"))
+                qty_on_page = self._to_int(qty_raw) if qty_raw is not None else None
+                unit_price = self._to_float(item.get("unit_price"))
+                total_amount = self._to_float(item.get("total_amount"))
+                
+                if merge_key not in item_map:
+                    # First occurrence - create entry
+                    item_map[merge_key] = {
+                        "material_description": desc,  # Keep original casing
+                        "brand": item.get("brand", ""),
+                        "model": item.get("model", ""),
+                        "hsn": hsn,
+                        "unit_price": unit_price,
+                        "total_amount": total_amount,
+                        "quantity": qty_on_page,  # May be None
+                        "pages_seen": [page_num]
+                    }
+                else:
+                    # STEP 1 & 2: USE MAX of NON-NULL quantities
+                    # First valid explicit quantity wins
+                    existing_qty = item_map[merge_key]["quantity"]
+                    
+                    if existing_qty is None and qty_on_page is not None:
+                        # First valid quantity - use it
+                        item_map[merge_key]["quantity"] = qty_on_page
+                    elif existing_qty is not None and qty_on_page is not None:
+                        # Both valid - take max
+                        item_map[merge_key]["quantity"] = max(existing_qty, qty_on_page)
+                    # else: both None or new is None - keep existing
+                    
+                    item_map[merge_key]["pages_seen"].append(page_num)
+                    
+                    # Update pricing (prefer non-zero values)
+                    if unit_price > 0:
+                        item_map[merge_key]["unit_price"] = unit_price
+                    if total_amount > 0:
+                        item_map[merge_key]["total_amount"] = total_amount
+        
+        # 3. Validate and finalize items
+        for merge_key, item_data in item_map.items():
+            norm_desc, hsn = merge_key
+            
+            # STEP 2: Skip items with null quantity (no valid quantity found across all pages)
+            quantity = item_data["quantity"]
+            if quantity is None or quantity == 0:
+                desc_short = item_data['material_description'][:50]
+                print(f"DEBUG: SKIPPING item with null/zero quantity: {desc_short}")
+                continue
+            
+            # Calculate total_amount if missing (quantity * unit_price)
+            if item_data["total_amount"] == 0 and item_data["unit_price"] > 0:
+                item_data["total_amount"] = quantity * item_data["unit_price"]
+            
+            # Remove debug field
+            pages_seen = item_data.pop("pages_seen")
+            print(f"DEBUG: Merged item '{item_data['material_description']}' from pages {pages_seen}: "
+                  f"qty={quantity}")
+            
+            aggregated["line_items"].append(item_data)
+        
+        # FIX 4: SERIAL ↔ QUANTITY VALIDATION (GOLD FEATURE)
+        total_quantity = sum(item["quantity"] for item in aggregated["line_items"])
+        total_serials = len(aggregated["all_batches"])
+        
+        aggregated["requires_manual_review"] = False
+        aggregated["review_reason"] = ""
+        
+        # Only validate if serials exist (FIX 3: serials are optional)
+        if total_serials > 0 and total_quantity != total_serials:
+            print(f"WARNING: Serial ↔ Quantity mismatch - Items: {total_quantity}, Serials: {total_serials}")
+            aggregated["requires_manual_review"] = True
+            aggregated["review_reason"] = f"Serial count mismatch: {total_quantity} items vs {total_serials} serials"
+            # DO NOT FAIL PIPELINE - just flag for manual review
+        elif total_serials == 0:
+            print(f"DEBUG: No serials extracted (valid - serials are optional)")
+        
+        # 4. Trust totals only from FINAL page (GST & TOTAL RULE)
+        final_page_totals = {}
+        if page_results:
+            # Look for page_totals in final page result
+            final_page_totals = page_results[-1].get("page_totals", page_results[-1].get("tax_summary", {}))
+        
+        # TRUST printed GST values - do not recalculate
+        cgst = self._to_float(final_page_totals.get("cgst"))
+        sgst = self._to_float(final_page_totals.get("sgst"))
+        igst = self._to_float(final_page_totals.get("igst"))
+        grand_total = self._to_float(final_page_totals.get("grand_total"))
+        
+        # STRICTLY use printed values - NO calculations
+        total_tax = (cgst or 0.0) + (sgst or 0.0) + (igst or 0.0)
+        
+        print(f"DEBUG: Tax from PDF - CGST: {cgst}, SGST: {sgst}, IGST: {igst}, Total Tax: {total_tax}, Grand Total: {grand_total}")
+        
+        aggregated["tax_summary"] = {
+            "cgst": cgst,
+            "sgst": sgst,
+            "igst": igst,
+            "total_tax": total_tax,
+            "grand_total": grand_total
+        }
+        
+        print(f"DEBUG: Aggregated {len(aggregated['line_items'])} unique items from {len(page_results)} pages")
+        
+        return aggregated
+    
+    def _build_bill_info_from_aggregated(self, aggregated: dict) -> BillInfo:
+        """Build BillInfo object from aggregated page results."""
+        meta = aggregated.get("invoice_metadata", {})
+        line_items = aggregated.get("line_items", [])
+        tax_summary = aggregated.get("tax_summary", {})
+        all_batches = aggregated.get("all_batches", [])
+        requires_review = aggregated.get("requires_manual_review", False)
+        review_reason = aggregated.get("review_reason", "")
+        
+        # Parse date
+        bill_date_str = meta.get("invoice_date", "")
+        bill_date = self._parse_date(bill_date_str) if bill_date_str else ""
+        
+        # Due date (assume 7 days if not specified)
+        due_date = ""
+        if bill_date:
+            try:
+                date_obj = datetime.strptime(bill_date, "%Y-%m-%d")
+                due_date = (date_obj + timedelta(days=7)).strftime("%Y-%m-%d")
+            except:
+                pass
+        
+        # Build assets with serial number assignment
+        assets = []
+        
+        # FIX 3: SERIAL EXTRACTION IS OPTIONAL
+        # Determine if we have serials to assign (if not, create assets without serials)
+        if all_batches and len(all_batches) > 0:
+            # We have serials from batch-only pages - assign them sequentially
+            serial_index = 0
+            
+            for item in line_items:
+                if not isinstance(item, dict):
+                    continue
+                
+                # STEP 2: HARD ISOLATION - reset per-item variables
+                description = (item.get("material_description") or "").strip()
+                if not description:
+                    continue
+                
+                device_type = self._detect_device_type(description)
+                brand = item.get("brand", "")
+                model = item.get("model", "")
+                
+                if not brand or not model:
+                    extracted_brand, extracted_model = self._extract_brand_model(description)
+                    brand = brand or extracted_brand or ""
+                    model = model or extracted_model or ""
+                
+                category = self._classify_asset_category(description)
+                quantity = self._to_int(item.get("quantity", 1))
+                unit_price = self._to_float(item.get("unit_price"))
+                total_price = self._to_float(item.get("total_amount"))
+                hsn_code = item.get("hsn", "")
+                
+                # STEP 3: SERIAL ASSIGNMENT WITHOUT QUANTITY MUTATION
+                # Count available serials for this item
+                serials_for_item = min(quantity, len(all_batches) - serial_index)
+                
+                # Create individual assets for serials (1:1 mapping)
+                for i in range(serials_for_item):
+                    serial = str(all_batches[serial_index]).strip()
+                    serial_index += 1
+                    
+                    asset = ExtractedAsset(
+                        name=description,
+                        description=description,
+                        category=category,
+                        brand=brand,
+                        model=model,
+                        serial_number=serial,
+                        quantity=1,
+                        unit_price=unit_price,
+                        total_price=unit_price if unit_price > 0 else (total_price / quantity if quantity > 0 else 0),
+                        warranty_period="",
+                        hsn_code=hsn_code,
+                        device_type=device_type
+                    )
+                    assets.append(asset)
+                
+                # STEP 3: If quantity > serials, create ONE bulk asset for remainder
+                remaining_qty = quantity - serials_for_item
+                if remaining_qty > 0:
+                    asset = ExtractedAsset(
+                        name=description,
+                        description=description,
+                        category=category,
+                        brand=brand,
+                        model=model,
+                        serial_number="",  # No serial for bulk
+                        quantity=remaining_qty,
+                        unit_price=unit_price,
+                        total_price=unit_price * remaining_qty if unit_price > 0 else (total_price - (unit_price * serials_for_item)),
+                        warranty_period="",
+                        hsn_code=hsn_code,
+                        device_type=device_type
+                    )
+                    assets.append(asset)
+        else:
+            # FIX 3: No serials - create assets based on quantity (VALID scenario)
+            # Assets will have empty serial_number - this is acceptable
+            for item in line_items:
+                if not isinstance(item, dict):
+                    continue
+                
+                description = (item.get("material_description") or "").strip()
+                if not description:
+                    continue
+                
+                device_type = self._detect_device_type(description)
+                brand = item.get("brand", "")
+                model = item.get("model", "")
+                
+                if not brand or not model:
+                    extracted_brand, extracted_model = self._extract_brand_model(description)
+                    brand = brand or extracted_brand or ""
+                    model = model or extracted_model or ""
+                
+                category = self._classify_asset_category(description)
+                quantity = self._to_int(item.get("quantity", 1))
+                unit_price = self._to_float(item.get("unit_price"))
+                total_price = self._to_float(item.get("total_amount"))
+                hsn_code = item.get("hsn", "")
+                
+                # No serials available - create single asset with quantity
+                asset = ExtractedAsset(
+                    name=description,
+                    description=description,
+                    category=category,
+                    brand=brand,
+                    model=model,
+                    serial_number="",
+                    quantity=quantity,
+                    unit_price=unit_price,
+                    total_price=total_price,
+                    warranty_period="",
+                    hsn_code=hsn_code,
+                    device_type=device_type
+                )
+                assets.append(asset)
+        
+        # STRICTLY use printed values from PDF - NO calculations
+        # Tax amount (printed value from final page)
+        tax_amount = self._to_float(tax_summary.get("total_tax"), default=0.0)
+        
+        # Grand total (printed value from final page)
+        grand_total = self._to_float(tax_summary.get("grand_total"), default=0.0)
+        
+        print(f"DEBUG: Bill Date from PDF: '{bill_date_str}' -> Parsed: '{bill_date}'")
+        print(f"DEBUG: Tax Amount from PDF: {tax_amount}")
+        print(f"DEBUG: Grand Total from PDF: {grand_total}")
+        
+        if not bill_date:
+            print(f"WARNING: Bill date not extracted - check invoice_metadata in LLM response")
+        if grand_total == 0:
+            print(f"WARNING: Grand total is 0 - check page_totals.grand_total in LLM response")
+        
+        # Store review info in warranty_info if flagged
+        warranty_info = ""
+        if requires_review:
+            warranty_info = f"REVIEW REQUIRED: {review_reason}"
+            print(f"DEBUG: Bill flagged for manual review: {review_reason}")
+        
+        print(f"DEBUG: Final BillInfo - Date: {bill_date}, Invoice: {meta.get('invoice_no', '')}, Vendor: {meta.get('vendor_name', '')}, Assets: {len(assets)}, Tax: {tax_amount}, Total: {grand_total}")
+        
+        return BillInfo(
+            bill_number=meta.get("invoice_no", ""),
+            vendor_name=meta.get("vendor_name", ""),
+            vendor_gstin=meta.get("vendor_gstin", ""),
+            vendor_address="",
+            vendor_phone="",
+            vendor_email="",
+            bill_date=bill_date,
+            due_date=due_date,
+            total_amount=grand_total,
+            tax_amount=tax_amount,
+            discount=0.0,
+            warranty_info=warranty_info,
+            assets=assets
+        )
+    
+    def _create_empty_bill_info(self) -> BillInfo:
+        """Create empty BillInfo when AI extraction completely fails."""
+        return BillInfo(
+            bill_number="",
+            vendor_name="",
+            vendor_gstin="",
+            vendor_address="",
+            vendor_phone="",
+            vendor_email="",
+            bill_date="",
+            due_date="",
+            total_amount=0.0,
+            tax_amount=0.0,
+            discount=0.0,
+            warranty_info="",
+            assets=[]
+        )
+
+        if not ai_results:
+            return self.extract_bill_info(raw_text)
+
+        merged = self._merge_ai_results(ai_results)
+        bill_data = merged.get("bill", {}) if isinstance(merged, dict) else {}
+        items = merged.get("items", []) if isinstance(merged, dict) else []
+
+        assets = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+
+            description = (item.get("description") or "").strip()
+            if not description:
+                continue
+
+            quantity = self._to_int(item.get("quantity"), default=1)
+            unit_price = self._to_float(item.get("unit_price"), default=0.0)
+            total_price = self._to_float(item.get("total_price"), default=0.0)
+            if total_price == 0.0 and unit_price > 0 and quantity > 0:
+                total_price = unit_price * quantity
+
+            brand = item.get("brand") or None
+            model = item.get("model") or None
+            if not brand or not model:
+                inferred_brand, inferred_model = self._extract_brand_model(description)
+                brand = brand or inferred_brand
+                model = model or inferred_model
+
+            device_type = item.get("device_type") or self._detect_device_type(description)
+            category = self._classify_asset_category(description)
+
+            assets.append(
+                ExtractedAsset(
+                    name=description,
+                    description=description,
+                    category=category,
+                    brand=brand or "",
+                    model=model or "",
+                    serial_number=item.get("serial_number") or "",
+                    quantity=quantity,
+                    unit_price=unit_price,
+                    total_price=total_price,
+                    warranty_period=item.get("warranty_period") or "",
+                    hsn_code=item.get("hsn_code") or "",
+                    device_type=device_type or "Other",
+                )
+            )
+
+        bill_info = BillInfo(
+            bill_number=(bill_data.get("bill_number") or ("" if self.ai_only_mode else bill_details.get("bill_number")) or "").strip(),
+            vendor_name=(bill_data.get("vendor_name") or ("" if self.ai_only_mode else vendor_info.get("name")) or "").strip(),
+            vendor_gstin=(bill_data.get("vendor_gstin") or ("" if self.ai_only_mode else vendor_info.get("gstin")) or "").strip(),
+            vendor_address=(bill_data.get("vendor_address") or ("" if self.ai_only_mode else vendor_info.get("address")) or "").strip(),
+            vendor_phone=(bill_data.get("vendor_phone") or ("" if self.ai_only_mode else vendor_info.get("phone")) or "").strip(),
+            vendor_email=(bill_data.get("vendor_email") or ("" if self.ai_only_mode else vendor_info.get("email")) or "").strip(),
+            bill_date=(bill_data.get("bill_date") or ("" if self.ai_only_mode else bill_details.get("bill_date")) or "").strip(),
+            due_date=(bill_data.get("due_date") or ("" if self.ai_only_mode else bill_details.get("due_date")) or "").strip(),
+            total_amount=self._to_float(
+                bill_data.get("total_amount"),
+                default=(0.0 if self.ai_only_mode else self._to_float(bill_details.get("total_amount"), default=0.0)),
+            ),
+            tax_amount=self._to_float(
+                bill_data.get("tax_amount"),
+                default=(0.0 if self.ai_only_mode else self._to_float(bill_details.get("tax_amount"), default=0.0)),
+            ),
+            discount=self._to_float(
+                bill_data.get("discount"),
+                default=(0.0 if self.ai_only_mode else self._to_float(bill_details.get("discount"), default=0.0)),
+            ),
+            warranty_info=(bill_data.get("warranty_info") or "").strip(),
+            assets=assets,
+        )
+
+        # If AI-only mode is on, do not fallback; return whatever AI produced
+        if self.ai_only_mode:
+            return bill_info, raw_text
+
+        # If AI did not yield items, fall back to rule-based asset extraction
+        if not assets:
+            try:
+                assets = self.extract_assets(raw_text)
+                bill_info.assets = assets
+            except Exception as e:
+                print(f"Fallback asset extraction failed: {e}")
+
+        if not bill_info.bill_number and not bill_info.vendor_name and not bill_info.assets:
+            return self.extract_bill_info(raw_text)
+
+        return bill_info, raw_text
+
+    def _split_text_for_llm(self, text: str, max_chars: int = 1800) -> List[str]:
+        """Split text into chunks to fit local LLM context."""
+        if not text:
+            return []
+
+        if "<<<" in text:
+            pages = [p.strip() for p in text.split("<<<") if p.strip()]
+        else:
+            pages = [p.strip() for p in text.split("\n\n") if p.strip()]
+
+        chunks = []
+        current = ""
+        for page in pages:
+            if len(current) + len(page) + 2 <= max_chars:
+                current = f"{current}\n\n{page}".strip()
+            else:
+                if current:
+                    chunks.append(current)
+                current = page
+        if current:
+            chunks.append(current)
+
+        if not chunks:
+            chunks = [text[i:i + max_chars] for i in range(0, len(text), max_chars)]
+
+        return chunks
+
+    def _build_llm_prompt(self, chunk: str, chunk_index: int, chunk_count: int) -> Dict[str, str]:
+        system_prompt = (
+            "Extract invoice data. Return ONLY JSON (no markdown) with keys bill and items. "
+            "bill: bill_number, bill_date, due_date, vendor_name, vendor_gstin, vendor_address, "
+            "vendor_phone, vendor_email, total_amount, tax_amount (CGST+SGST or IGST), discount, warranty_info. "
+            "items: description, brand, model, quantity, unit_price, total_price, serial_number, "
+            "hsn_code, warranty_period, device_type. Use null when unknown. Numbers must be numeric. "
+            "IMPORTANT: Extract tax_amount by summing all CGST, SGST, or IGST values."
+        )
+
+        user_prompt = (
+            f"Invoice page {chunk_index}/{chunk_count}. Extract all fields present in this page. "
+            "If chunk 1, extract bill header (bill_number, vendor_name, total_amount, tax_amount, etc.). "
+            "For all chunks, extract items with description, quantity, unit_price, total_price. "
+            "Use null when unknown. Output JSON only.\n\n"
+            f"TEXT:\n{chunk}"
+        )
+
+        return {"system": system_prompt, "user": user_prompt}
+
+    def _split_pages(self, text: str) -> List[str]:
+        """Split invoice text by explicit page markers or heuristic breaks."""
+        if not text:
+            return []
+
+        # Preferred explicit separators
+        if "<<<" in text:
+            pages = [p.strip() for p in text.split("<<<") if p.strip()]
+        elif "--- Page" in text:
+            pages = [p.strip() for p in re.split(r"---\s*Page\s*\d+\s*---", text) if p.strip()]
+        elif "\f" in text:
+            pages = [p.strip() for p in text.split("\f") if p.strip()]
+        else:
+            # Fallback: chunk every ~1200 chars as a pseudo-page
+            pages = []
+            step = max(self.local_llm_chunk_chars, 900)
+            for i in range(0, len(text), step):
+                pages.append(text[i:i + step])
+
+        return pages
+
+    def _truncate(self, text: str, max_chars: int) -> str:
+        if not text:
+            return ""
+        if len(text) <= max_chars:
+            return text
+        return text[:max_chars]
+
+    def _select_item_text(self, text: str, max_lines: int = 400) -> str:
+        """Reduce raw text to likely line-item lines to keep LLM context small."""
+        if not text:
+            return ""
+
+        lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
+        item_lines = []
+
+        patterns = [
+            r"\|",  # table lines
+            r"\bHSN\b|\bSAC\b",
+            r"\bQty\b|\bQuantity\b",
+            r"\bRate\b|\bUnit\b|\bPrice\b",
+            r"₹|Rs\.?|INR",
+            r"\bCGST\b|\bSGST\b|\bIGST\b|\bTax\b|\bGST\b",
+            r"\bTotal\b|\bAmount\b|\bGrand\b",
+        ]
+
+        for line in lines:
+            if any(re.search(p, line, re.IGNORECASE) for p in patterns):
+                item_lines.append(line)
+            elif re.search(r"\d+\.\d{2}|\d{3,}", line) and len(line) <= 180:
+                item_lines.append(line)
+
+            if len(item_lines) >= max_lines:
+                break
+
+        return "\n".join(item_lines)
+
+    def _call_local_llm(self, payload: Dict) -> str:
+        """
+        Call local LLM API (llama.cpp server).
+        Accepts payload with 'messages' array (new format) or 'system'/'user' (legacy).
+        """
+        timeout = (10, self.local_llm_timeout)
+        
+        # Convert to messages format if needed
+        if "messages" in payload:
+            messages = payload["messages"]
+            temperature = payload.get("temperature", 0.1)
+            max_tokens = payload.get("max_tokens", self.local_llm_max_tokens)
+            stop = payload.get("stop", [])
+        else:
+            # Legacy format (system/user keys)
+            messages = [
+                {"role": "system", "content": payload.get("system", "")},
+                {"role": "user", "content": payload.get("user", "")}
+            ]
+            temperature = 0.1
+            max_tokens = self.local_llm_max_tokens
+            stop = []
+        
+        # Try chat completions endpoint (OpenAI-compatible)
+        for attempt in range(2):
+            try:
+                chat_url = f"{self.local_llm_url}/v1/chat/completions"
+                chat_payload = {
+                    "model": self.local_llm_model,
+                    "messages": messages,
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                    "stop": stop
+                }
+                chat_response = requests.post(chat_url, json=chat_payload, timeout=timeout)
+                if chat_response.ok:
+                    data = chat_response.json()
+                    choices = data.get("choices", [])
+                    if choices:
+                        message = choices[0].get("message", {})
+                        content = message.get("content", "")
+                        if content:
+                            return content.strip()
+            except Exception as e:
+                print(f"Local LLM chat endpoint attempt {attempt+1} failed: {e}")
+        
+        # Fallback to legacy completion endpoint
+        for attempt in range(2):
+            try:
+                completion_url = f"{self.local_llm_url}/completion"
+                prompt_text = "\n\n".join([m["content"] for m in messages if m.get("content")])
+                completion_payload = {
+                    "prompt": prompt_text,
+                    "temperature": temperature,
+                    "n_predict": max_tokens,
+                    "stop": stop
+                }
+                completion_response = requests.post(completion_url, json=completion_payload, timeout=timeout)
+                if completion_response.ok:
+                    data = completion_response.json()
+                    if isinstance(data, dict):
+                        if "content" in data:
+                            return data["content"].strip()
+                        choices = data.get("choices", [])
+                        if choices and "text" in choices[0]:
+                            return choices[0]["text"].strip()
+            except Exception as e:
+                print(f"Local LLM completion endpoint attempt {attempt+1} failed: {e}")
+        
+        return ""
+
+    def _extract_json_from_text(self, text: str) -> Optional[Dict]:
+        if not text:
+            return None
+        cleaned = re.sub(r"```(?:json)?", "", text, flags=re.IGNORECASE).strip().strip("`")
+        try:
+            return json.loads(cleaned)
+        except Exception:
+            pass
+
+        start = cleaned.find("{")
+        end = cleaned.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            snippet = cleaned[start:end + 1]
+            try:
+                return json.loads(snippet)
+            except Exception:
+                return None
+        return None
+
+    def _merge_ai_results(self, results: List[Dict]) -> Dict:
+        merged_bill = {
+            "bill_number": None,
+            "bill_date": None,
+            "due_date": None,
+            "vendor_name": None,
+            "vendor_gstin": None,
+            "vendor_address": None,
+            "vendor_phone": None,
+            "vendor_email": None,
+            "total_amount": None,
+            "tax_amount": None,
+            "discount": None,
+            "warranty_info": None,
+        }
+        merged_items = []
+        seen = set()
+
+        for result in results:
+            if not isinstance(result, dict):
+                continue
+            bill = result.get("bill", {}) or {}
+            items = result.get("items", []) or []
+
+            for key in merged_bill.keys():
+                if merged_bill[key] in (None, "", 0, 0.0):
+                    value = bill.get(key)
+                    if value not in (None, "", 0, 0.0):
+                        merged_bill[key] = value
+
+            # Merge numeric totals by max when present
+            for num_key in ["total_amount", "tax_amount", "discount"]:
+                current = self._to_float(merged_bill.get(num_key), default=0.0)
+                candidate = self._to_float(bill.get(num_key), default=0.0)
+                if candidate > current:
+                    merged_bill[num_key] = candidate
+
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                description = (item.get("description") or "").strip().lower()
+                model = (item.get("model") or "").strip().lower()
+                quantity = self._to_int(item.get("quantity"), default=1)
+                unit_price = self._to_float(item.get("unit_price"), default=0.0)
+                total_price = self._to_float(item.get("total_price"), default=0.0)
+                key = (description, model, quantity, unit_price, total_price)
+                if description and key not in seen:
+                    seen.add(key)
+                    merged_items.append(item)
+
+        return {"bill": merged_bill, "items": merged_items}
+
+    def _to_float(self, value, default: float = 0.0) -> float:
+        try:
+            if value is None or value == "":
+                return default
+            if isinstance(value, str):
+                value = value.replace(",", "").strip()
+            return float(value)
+        except Exception:
+            return default
+
+    def _to_int(self, value, default: int = 0) -> int:
+        try:
+            if value is None or value == "":
+                return default
+            if isinstance(value, str):
+                value = value.replace(",", "").strip()
+            return int(float(value))
+        except Exception:
+            return default
+    
+    def _normalize_description(self, description: str) -> str:
+        """
+        Normalize item description for consistent matching across pages.
+        Removes extra whitespace, converts to lowercase.
+        """
+        if not description:
+            return ""
+        # Convert to lowercase and normalize whitespace
+        normalized = " ".join(description.lower().split())
+        return normalized
+    
+    def _parse_date(self, date_str: str) -> str:
+        """
+        Parse various date formats and return YYYY-MM-DD.
+        Returns empty string if parsing fails.
+        """
+        if not date_str:
+            return ""
+        
+        date_formats = [
+            '%d/%m/%Y',
+            '%d-%m-%Y',
+            '%d.%m.%Y',
+            '%Y-%m-%d',
+            '%d/%m/%y',
+            '%d-%m-%y',
+            '%d %b %Y',
+            '%d %B %Y',
+            '%b %d, %Y',
+            '%B %d, %Y'
+        ]
+        
+        for fmt in date_formats:
+            try:
+                date_obj = datetime.strptime(date_str.strip(), fmt)
+                return date_obj.strftime("%Y-%m-%d")
+            except:
+                continue
+        
+        return ""
     
     def generate_qr_code(self, data: str) -> str:
         """

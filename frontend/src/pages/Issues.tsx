@@ -75,7 +75,8 @@ export default function Issues() {
   const { logout, user } = useAuth();
   const [labs, setLabs] = useState<LabListItem[]>([]);
   const [selectedLab, setSelectedLab] = useState<Lab | null>(null);
-  const [selectedDevice, setSelectedDevice] = useState<Device | null>(null);
+  const [selectedStation, setSelectedStation] = useState<Device[] | null>(null); // All devices at station
+  const [selectedDevice, setSelectedDevice] = useState<Device | null>(null); // Specific device for ticket
   const [showRaiseTicket, setShowRaiseTicket] = useState(false);
   const [loadingLabs, setLoadingLabs] = useState(false);
   const [loadingLabDetail, setLoadingLabDetail] = useState(false);
@@ -84,7 +85,7 @@ export default function Issues() {
     title: "",
     description: "",
     severity: "medium",
-    issueKey: "no-boot",
+    issueKey: "not-working",
   });
 
   // Search bar placeholders
@@ -101,15 +102,147 @@ export default function Issues() {
     console.log("Search submitted");
   };
 
-  const ISSUE_OPTIONS = [
-    { key: "no-boot", label: "PC not powering on / no boot", severity: "critical", active: false, description: "PC not powering on" },
-    { key: "os-crash", label: "OS not loading / blue screen", severity: "high", active: false, description: "OS not loading / BSOD" },
-    { key: "monitor", label: "Monitor not displaying", severity: "high", active: false, description: "Monitor not displaying output" },
-    { key: "keyboard", label: "Keyboard/Mouse not working", severity: "medium", active: true, description: "Keyboard or mouse not working" },
-    { key: "internet", label: "No Internet / network slow", severity: "low", active: true, description: "Internet / network issue" },
-    { key: "slow", label: "Slow performance", severity: "medium", active: true, description: "System running slow" },
-    { key: "other", label: "Other (specify)", severity: "medium", active: true, description: "" },
-  ] as const;
+  // Device-specific issue options
+  const getIssueOptionsForDevice = (deviceType: string) => {
+    const type = deviceType?.toLowerCase() || "";
+    
+    // PC and Laptop issues
+    if (type === "pc" || type === "laptop") {
+      return [
+        { key: "no-boot", label: "Not powering on / no boot", severity: "critical", active: false, description: `${deviceType} not powering on` },
+        { key: "os-crash", label: "OS not loading / blue screen", severity: "high", active: false, description: "OS not loading / BSOD" },
+        { key: "slow", label: "Slow performance", severity: "medium", active: true, description: "System running slow" },
+        { key: "internet", label: "No Internet / network issue", severity: "low", active: true, description: "Internet / network issue" },
+        { key: "overheating", label: "Overheating issues", severity: "medium", active: true, description: "Device overheating" },
+        { key: "other", label: "Other (specify)", severity: "medium", active: true, description: "" },
+      ];
+    }
+    
+    // Monitor issues
+    if (type === "monitor") {
+      return [
+        { key: "no-display", label: "Not displaying / black screen", severity: "high", active: false, description: "Monitor not displaying output" },
+        { key: "flickering", label: "Screen flickering", severity: "medium", active: true, description: "Screen flickering issue" },
+        { key: "dead-pixels", label: "Dead pixels / lines", severity: "low", active: true, description: "Dead pixels or lines on screen" },
+        { key: "brightness", label: "Brightness issues", severity: "low", active: true, description: "Brightness too low or high" },
+        { key: "color", label: "Color display problems", severity: "medium", active: true, description: "Color distortion or issues" },
+        { key: "other", label: "Other (specify)", severity: "medium", active: true, description: "" },
+      ];
+    }
+    
+    // Keyboard issues
+    if (type === "keyboard") {
+      return [
+        { key: "not-working", label: "Not detected / not working", severity: "high", active: false, description: "Keyboard not detected or working" },
+        { key: "keys-stuck", label: "Keys stuck or not responding", severity: "medium", active: true, description: "Some keys stuck or not responding" },
+        { key: "wireless", label: "Wireless connectivity issue", severity: "medium", active: true, description: "Wireless keyboard connection issue" },
+        { key: "typing", label: "Typing errors / double input", severity: "low", active: true, description: "Keys producing wrong or double input" },
+        { key: "other", label: "Other (specify)", severity: "medium", active: true, description: "" },
+      ];
+    }
+    
+    // Mouse issues
+    if (type === "mouse") {
+      return [
+        { key: "not-working", label: "Not detected / not working", severity: "high", active: false, description: "Mouse not detected or working" },
+        { key: "cursor", label: "Cursor not moving smoothly", severity: "medium", active: true, description: "Cursor movement issues" },
+        { key: "buttons", label: "Buttons not responding", severity: "medium", active: true, description: "Mouse buttons not responding" },
+        { key: "wireless", label: "Wireless connectivity issue", severity: "medium", active: true, description: "Wireless mouse connection issue" },
+        { key: "other", label: "Other (specify)", severity: "medium", active: true, description: "" },
+      ];
+    }
+    
+    // AC issues
+    if (type === "ac") {
+      return [
+        { key: "not-cooling", label: "Not cooling properly", severity: "high", active: false, description: "AC not cooling" },
+        { key: "noise", label: "Making unusual noise", severity: "medium", active: true, description: "AC making loud or unusual noise" },
+        { key: "leaking", label: "Water leaking", severity: "high", active: false, description: "AC leaking water" },
+        { key: "no-power", label: "Not turning on", severity: "critical", active: false, description: "AC not powering on" },
+        { key: "smell", label: "Bad smell / burning odor", severity: "high", active: false, description: "AC emitting bad smell" },
+        { key: "other", label: "Other (specify)", severity: "medium", active: true, description: "" },
+      ];
+    }
+    
+    // Smart Board and Projector issues
+    if (type === "smart board" || type === "projector") {
+      return [
+        { key: "no-display", label: "Not displaying", severity: "high", active: false, description: `${deviceType} not displaying` },
+        { key: "touch", label: "Touch not working", severity: "high", active: false, description: "Touch functionality not working" },
+        { key: "connection", label: "Connection issues", severity: "medium", active: true, description: "Connection with computer issues" },
+        { key: "image-quality", label: "Poor image quality", severity: "medium", active: true, description: "Blurry or poor image quality" },
+        { key: "calibration", label: "Calibration needed", severity: "low", active: true, description: "Touch calibration issues" },
+        { key: "other", label: "Other (specify)", severity: "medium", active: true, description: "" },
+      ];
+    }
+    
+    // Printer and Scanner issues
+    if (type === "printer" || type === "scanner") {
+      return [
+        { key: "paper-jam", label: "Paper jam", severity: "medium", active: true, description: "Paper jammed inside" },
+        { key: "not-working", label: "Not printing/scanning", severity: "high", active: false, description: `${deviceType} not functioning` },
+        { key: "quality", label: "Print/Scan quality issues", severity: "medium", active: true, description: "Poor print or scan quality" },
+        { key: "connection", label: "Connection issues", severity: "medium", active: true, description: "Connection problems" },
+        { key: "cartridge", label: "Ink/Toner issues", severity: "low", active: true, description: "Ink or toner related issues" },
+        { key: "other", label: "Other (specify)", severity: "medium", active: true, description: "" },
+      ];
+    }
+    
+    // UPS issues
+    if (type === "ups") {
+      return [
+        { key: "not-charging", label: "Not charging", severity: "high", active: false, description: "UPS battery not charging" },
+        { key: "backup-low", label: "Low backup time", severity: "medium", active: true, description: "UPS backup time very low" },
+        { key: "beeping", label: "Beeping continuously", severity: "medium", active: true, description: "UPS beeping continuously" },
+        { key: "not-switching", label: "Not switching to battery", severity: "high", active: false, description: "Not switching to battery mode" },
+        { key: "other", label: "Other (specify)", severity: "medium", active: true, description: "" },
+      ];
+    }
+    
+    // Router and Switch issues
+    if (type === "router" || type === "switch") {
+      return [
+        { key: "no-internet", label: "No Internet connection", severity: "critical", active: false, description: "No Internet connectivity" },
+        { key: "slow", label: "Slow connection", severity: "medium", active: true, description: "Very slow network connection" },
+        { key: "no-power", label: "Not powering on", severity: "critical", active: false, description: `${deviceType} not powering on` },
+        { key: "ports", label: "Ports not working", severity: "high", active: false, description: "One or more ports not working" },
+        { key: "dropping", label: "Connection dropping", severity: "medium", active: true, description: "Frequent connection drops" },
+        { key: "other", label: "Other (specify)", severity: "medium", active: true, description: "" },
+      ];
+    }
+    
+    // Server issues
+    if (type === "server") {
+      return [
+        { key: "not-booting", label: "Not booting", severity: "critical", active: false, description: "Server not booting up" },
+        { key: "slow", label: "Slow performance", severity: "high", active: false, description: "Server running very slow" },
+        { key: "service-down", label: "Service down", severity: "critical", active: false, description: "Server service not responding" },
+        { key: "connection", label: "Connection issues", severity: "high", active: false, description: "Cannot connect to server" },
+        { key: "storage", label: "Storage full", severity: "medium", active: true, description: "Server storage full" },
+        { key: "other", label: "Other (specify)", severity: "medium", active: true, description: "" },
+      ];
+    }
+    
+    // Webcam and Headset issues
+    if (type === "webcam" || type === "headset") {
+      return [
+        { key: "not-detected", label: "Not detected", severity: "high", active: false, description: `${deviceType} not detected by system` },
+        { key: "audio-video", label: "Audio/Video not working", severity: "high", active: false, description: "Audio or video functionality not working" },
+        { key: "quality", label: "Poor quality", severity: "medium", active: true, description: "Poor audio or video quality" },
+        { key: "connection", label: "Connection issues", severity: "medium", active: true, description: "Connection keeps dropping" },
+        { key: "other", label: "Other (specify)", severity: "medium", active: true, description: "" },
+      ];
+    }
+    
+    // Default/Other device types
+    return [
+      { key: "not-working", label: "Not working", severity: "high", active: false, description: `${deviceType} not working properly` },
+      { key: "performance", label: "Performance issues", severity: "medium", active: true, description: "Device performance issues" },
+      { key: "connection", label: "Connection issues", severity: "medium", active: true, description: "Connection problems" },
+      { key: "physical-damage", label: "Physical damage", severity: "high", active: false, description: "Physical damage to device" },
+      { key: "other", label: "Other (specify)", severity: "medium", active: true, description: "" },
+    ];
+  };
 
   const fetchLabs = async () => {
     try {
@@ -202,9 +335,14 @@ export default function Issues() {
     }
   };
 
+  const deviceIssueOptions = useMemo(
+    () => selectedDevice ? getIssueOptionsForDevice(selectedDevice.type) : [],
+    [selectedDevice]
+  );
+
   const selectedIssueOption = useMemo(
-    () => ISSUE_OPTIONS.find((o) => o.key === ticketForm.issueKey) || ISSUE_OPTIONS[0],
-    [ticketForm.issueKey]
+    () => deviceIssueOptions.find((o) => o.key === ticketForm.issueKey) || deviceIssueOptions[0],
+    [ticketForm.issueKey, deviceIssueOptions]
   );
 
   const handleRaiseTicket = async () => {
@@ -259,9 +397,11 @@ export default function Issues() {
       }
 
       // Reset form/modal
-      setTicketForm({ title: "", description: "", severity: "medium", issueKey: "no-boot" });
+      const defaultIssue = deviceIssueOptions[0]?.key || "not-working";
+      setTicketForm({ title: "", description: "", severity: "medium", issueKey: defaultIssue });
       setShowRaiseTicket(false);
       setSelectedDevice(null);
+      setSelectedStation(null);
       alert("Ticket raised and device status updated.");
     } catch (err) {
       console.error("Error raising issue", err);
@@ -304,6 +444,7 @@ export default function Issues() {
 
       alert(`Issue marked as ${newStatus}`);
       setSelectedDevice(null);
+      setSelectedStation(null);
     } catch (err) {
       console.error("Error updating issue status", err);
       alert((err as Error).message || "Error updating issue status");
@@ -445,8 +586,16 @@ export default function Issues() {
                           const deviceGroup = (cell as any).deviceGroup;
                           const devices: Device[] = deviceGroup?.devices || [];
                           const primaryDevice = devices.find((d) => d.type?.toLowerCase() === "pc") || devices[0];
+                          const stationId = cell.id || deviceGroup?.assignedCode;
                           const hasDevices = devices.length > 0;
-                          const isActive = primaryDevice ? primaryDevice.isActive : false;
+                          
+                          // Check if ANY device at this station has issues or is inactive
+                          const allIssues = devices.flatMap(d => d.issues || []);
+                          const openIssuesCount = allIssues.filter(issue => issue.status !== "resolved").length;
+                          const hasAnyIssue = openIssuesCount > 0;
+                          const hasAnyInactive = devices.some(d => d.isActive === false);
+                          
+                          const isActive = !hasAnyInactive && !hasAnyIssue;
                           const background = hasDevices
                             ? isActive
                               ? "bg-green-600 border-green-400 hover:bg-green-700"
@@ -468,7 +617,20 @@ export default function Issues() {
                           return (
                             <div
                               key={colIdx}
-                              onClick={() => primaryDevice && setSelectedDevice(primaryDevice)}
+                              onClick={() => {
+                                if (hasDevices && devices.length > 0) {
+                                  // Show all devices at this station
+                                  const allDevices = devices.map((d) => ({
+                                    ...d,
+                                    id: stationId,
+                                    assignedCode: deviceGroup?.assignedCode,
+                                    os: cell.os,
+                                    issues: d.issues || [],
+                                    isActive: d.isActive !== false
+                                  }));
+                                  setSelectedStation(allDevices);
+                                }
+                              }}
                               className={`
                                 w-24 h-24 rounded-lg border-2 flex flex-col items-center justify-center transition relative
                                 ${hasDevices ? "cursor-pointer" : ""}
@@ -477,9 +639,9 @@ export default function Issues() {
                             >
                               {hasDevices ? (
                                 <>
-                                  {primaryDevice?.issues?.length > 0 && (
+                                  {openIssuesCount > 0 && (
                                     <div className="absolute -top-1 -right-1 bg-red-500 text-white text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center">
-                                      {primaryDevice.issues.length}
+                                      {openIssuesCount}
                                     </div>
                                   )}
                                   <div className="text-white font-bold text-sm">
@@ -559,13 +721,111 @@ export default function Issues() {
           </motion.div>
         )}
 
-        {/* Device Issues Modal */}
+        {/* Station Devices Modal - Show all devices at selected station */}
+        {selectedStation && !selectedDevice && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 overflow-y-auto"
+            onClick={() => setSelectedStation(null)}
+          >
+            <motion.div
+              initial={{ scale: 0.9 }}
+              animate={{ scale: 1 }}
+              className="bg-neutral-900 p-6 rounded-xl shadow-lg w-full max-w-4xl m-4 max-h-[90vh] overflow-y-auto"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between mb-4 border-b border-gray-700 pb-4">
+                <div>
+                  <h3 className="text-xl font-bold">
+                    Station: {selectedStation[0]?.assignedCode || selectedStation[0]?.id}
+                  </h3>
+                  <p className="text-gray-400 text-sm">
+                    {selectedStation.length} device(s) at this station
+                  </p>
+                </div>
+                <button
+                  onClick={() => setSelectedStation(null)}
+                  className="text-gray-400 hover:text-white text-2xl"
+                >
+                  ✕
+                </button>
+              </div>
+
+              <div className="space-y-3">
+                {selectedStation.map((device) => {
+                  const totalIssues = device.issues?.length || 0;
+                  const openIssues = device.issues?.filter(i => i.status !== "resolved").length || 0;
+                  
+                  return (
+                    <div
+                      key={device.deviceId}
+                      className={`p-4 rounded-lg border-2 cursor-pointer transition ${
+                        device.isActive
+                          ? "bg-neutral-800 border-green-600 hover:bg-neutral-750"
+                          : "bg-neutral-800 border-red-600 hover:bg-neutral-750"
+                      }`}
+                      onClick={() => setSelectedDevice(device)}
+                    >
+                      <div className="flex items-center justify-between">
+                        <div className="flex-1">
+                          <div className="flex items-center gap-3">
+                            <h4 className="text-lg font-semibold">
+                              {device.type} {device.brand && `- ${device.brand}`} {device.model && `${device.model}`}
+                            </h4>
+                            {openIssues > 0 && (
+                              <div className="bg-red-500 text-white text-xs font-bold rounded-full px-2 py-1">
+                                {openIssues} Active Issue{openIssues > 1 ? "s" : ""}
+                              </div>
+                            )}
+                          </div>
+                          <div className="text-sm text-gray-400 mt-1">
+                            Device ID: {device.deviceId}
+                            {device.invoiceNumber && ` • Invoice: ${device.invoiceNumber}`}
+                          </div>
+                        </div>
+                        <div
+                          className={`px-3 py-1 rounded-full text-xs font-semibold ${
+                            device.isActive
+                              ? "bg-green-600 text-white"
+                              : "bg-red-600 text-white"
+                          }`}
+                        >
+                          {device.isActive ? "✓ Active" : "⚠ Inactive"}
+                        </div>
+                      </div>
+                      
+                      {totalIssues > 0 && (
+                        <div className="mt-2 text-xs text-gray-500">
+                          Total issues: {totalIssues} ({openIssues} open, {totalIssues - openIssues} resolved)
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+
+              <div className="mt-6 text-center text-sm text-gray-400">
+                Click on a device to view details and raise tickets
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+
+        {/* Device Issues Modal - Show specific device details */}
         {selectedDevice && !showRaiseTicket && (
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 overflow-y-auto"
-            onClick={() => setSelectedDevice(null)}
+            onClick={() => {
+              setSelectedDevice(null);
+              if (selectedStation) {
+                // Keep station modal open when closing device modal
+              } else {
+                setSelectedStation(null);
+              }
+            }}
           >
             <motion.div
               initial={{ scale: 0.9 }}
@@ -635,7 +895,6 @@ export default function Issues() {
 
               {/* Issues List */}
               <div className="mb-6">
-                <h4 className="font-semibold mb-3 text-lg">Active Issues</h4>
                 {selectedDevice.issues.length > 0 ? (
                   <div className="space-y-3">
                     {selectedDevice.issues.map((issue) => (
@@ -716,9 +975,23 @@ export default function Issues() {
                 >
                   🎫 Raise New Ticket
                 </HoverBorderGradient>
+                {selectedStation && (
+                  <button
+                    className="px-6 py-2 bg-neutral-700 hover:bg-neutral-600 rounded-full transition text-white"
+                    onClick={() => {
+                      setSelectedDevice(null);
+                      // Return to station view
+                    }}
+                  >
+                    ← Back to Station
+                  </button>
+                )}
                 <button
                   className="px-6 py-2 bg-neutral-700 hover:bg-neutral-600 rounded-full transition text-white"
-                  onClick={() => setSelectedDevice(null)}
+                  onClick={() => {
+                    setSelectedDevice(null);
+                    setSelectedStation(null);
+                  }}
                 >
                   Close
                 </button>
@@ -744,9 +1017,11 @@ export default function Issues() {
               <h3 className="text-xl font-bold mb-4">
                 🎫 Raise Support Ticket
               </h3>
+              <p className="text-gray-400 text-sm mb-2">
+                Station: <span className="text-white font-semibold">{selectedDevice.assignedCode || selectedDevice.id}</span>
+              </p>
               <p className="text-gray-400 text-sm mb-6">
-                Device: <span className="text-white font-semibold">{selectedDevice.id}</span> (
-                {selectedDevice.type})
+                Device: <span className="text-white font-semibold">{selectedDevice.type} {selectedDevice.brand && `- ${selectedDevice.brand}`} {selectedDevice.model && `${selectedDevice.model}`}</span> (ID: {selectedDevice.deviceId})
               </p>
 
               {/* Ticket Form */}
@@ -765,13 +1040,13 @@ export default function Issues() {
                         severity:
                           e.target.value === "other"
                             ? "medium"
-                            : (ISSUE_OPTIONS.find((o) => o.key === e.target.value)?.severity as TicketForm["severity"]) || "medium",
+                            : (deviceIssueOptions.find((o) => o.key === e.target.value)?.severity as TicketForm["severity"]) || "medium",
                         title: e.target.value === "other" ? "" : "",
                         description: "",
                       })
                     }
                   >
-                    {ISSUE_OPTIONS.map((opt) => (
+                    {deviceIssueOptions.map((opt) => (
                       <option key={opt.key} value={opt.key}>
                         {opt.label}
                       </option>

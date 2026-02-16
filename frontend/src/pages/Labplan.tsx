@@ -7,6 +7,7 @@ import { WobbleCard } from "@/components/ui/wobble-card";
 import { BackgroundGradient } from "@/components/ui/background-gradient";
 import { LogoButton } from "@/components/ui/logo-button";
 import { useAuth } from "@/contexts/AuthContext";
+import { QRCodeSVG } from "qrcode.react";
 
 interface GridCell {
   id: string | null;
@@ -63,6 +64,7 @@ export default function Labplan() {
   const [loadingBill, setLoadingBill] = useState(false);
   const [stationList, setStationList] = useState<any[]>([]);
   const [loadingStationList, setLoadingStationList] = useState(false);
+  const [showPrintQR, setShowPrintQR] = useState(false);
 
   // Fetch all labs on component mount
   useEffect(() => {
@@ -212,6 +214,57 @@ export default function Labplan() {
       return sum + price * qty;
     }, 0);
   }, [selectedLab]);
+
+  // Prepare QR codes for printing
+  const qrCodesToPrint = useMemo(() => {
+    if (!stationList || stationList.length === 0) return [];
+    
+    const qrList: any[] = [];
+    
+    stationList.forEach((station) => {
+      if (!station.devices || station.devices.length === 0) return;
+      
+      const allLinked = station.devices.every((d: any) => d.isLinked);
+      
+      if (allLinked && station.devices.length > 1) {
+        // Single QR code for linked group with all device details
+        const deviceDetails = station.devices.map((d: any) => {
+          return `${d.type}: ${d.brand} ${d.model}${d.specification ? ` (${d.specification})` : ''}`;
+        }).join(' | ');
+        
+        const qrValue = `Station: ${station.assignedCode}\nOS: ${station.os}\nDevices: ${deviceDetails}\nAsset Codes: ${station.devices.map((d: any) => d.assetCode).filter(Boolean).join(', ')}`;
+        
+        qrList.push({
+          assignedCode: station.assignedCode,
+          type: "Linked Group",
+          assetCode: station.devices.map((d: any) => d.assetCode).filter(Boolean).join(", "),
+          qrValue: qrValue,
+          displayInfo: deviceDetails
+        });
+      } else {
+        // Multiple QR codes for standalone devices with full specifications
+        station.devices.forEach((device: any) => {
+          if (!device.qrValue) return;
+          
+          const qrValue = `Station: ${station.assignedCode}\nDevice: ${device.type}\nBrand: ${device.brand}\nModel: ${device.model}\nSpecification: ${device.specification || 'N/A'}\nAsset Code: ${device.assetCode || 'N/A'}\nInvoice: ${device.invoiceNumber || 'N/A'}\nWarranty: ${device.warrantyYears || 'N/A'} years\nPrice: ₹${device.unitPrice || 0}`;
+          
+          qrList.push({
+            assignedCode: station.assignedCode,
+            type: device.type,
+            assetCode: device.assetCode,
+            qrValue: qrValue,
+            displayInfo: `${device.brand} ${device.model}${device.specification ? ` - ${device.specification}` : ''}`
+          });
+        });
+      }
+    });
+    
+    return qrList;
+  }, [stationList]);
+
+  const handlePrintQRCodes = () => {
+    setShowPrintQR(true);
+  };
 
   return (
     <div className="min-h-screen bg-neutral-950 text-white" style={{
@@ -373,29 +426,32 @@ export default function Labplan() {
                           const hasWindows = cell.os.includes("Windows");
                           const hasLinux = cell.os.includes("Linux");
                           
-                          // Check what devices are in this station
-                          let hasPC = false;
-                          let hasMonitor = false;
-                          let hasLaptop = false;
-                          let hasOther = false;
+                          // Determine emoji based on primary device type
+                          let emoji = "🔧"; // Default
                           
-                          if (hasDevices && cell.deviceGroup) {
-                            cell.deviceGroup.devices.forEach((device: any) => {
-                              const deviceType = device.type?.toLowerCase() || '';
-                              if (deviceType === 'pc') hasPC = true;
-                              else if (deviceType === 'monitor') hasMonitor = true;
-                              else if (deviceType === 'laptop') hasLaptop = true;
-                              else hasOther = true;
-                            });
+                          if (hasDevices && cell.deviceGroup && cell.deviceGroup.devices.length > 0) {
+                            // Get the first device type to determine the icon
+                            const primaryDevice = cell.deviceGroup.devices[0];
+                            const deviceType = primaryDevice.type?.toLowerCase() || '';
+                            
+                            // Assign appropriate emoji based on device type
+                            if (deviceType === 'laptop') emoji = "💻";
+                            else if (deviceType === 'pc') emoji = "🖥️";
+                            else if (deviceType === 'monitor') emoji = "🖥️";
+                            else if (deviceType === 'ac') emoji = "❄️";
+                            else if (deviceType === 'smart board') emoji = "📺";
+                            else if (deviceType === 'projector') emoji = "📽️";
+                            else if (deviceType === 'printer') emoji = "🖨️";
+                            else if (deviceType === 'scanner') emoji = "📠";
+                            else if (deviceType === 'ups') emoji = "🔋";
+                            else if (deviceType === 'router') emoji = "📡";
+                            else if (deviceType === 'switch') emoji = "🔌";
+                            else if (deviceType === 'server') emoji = "🗄️";
+                            else if (deviceType === 'keyboard') emoji = "⌨️";
+                            else if (deviceType === 'mouse') emoji = "🖱️";
+                            else if (deviceType === 'webcam') emoji = "📷";
+                            else if (deviceType === 'headset') emoji = "🎧";
                           }
-                          
-                          // Determine emoji based on devices
-                          let emoji = "";
-                          if (hasLaptop) emoji = "💻";
-                          else if (hasPC && hasMonitor) emoji = "🖥️";
-                          else if (hasPC) emoji = "⚙️";
-                          else if (hasMonitor) emoji = "🖥️";
-                          else if (hasOther) emoji = "🔧";
                           
                           return (
                             <div
@@ -466,6 +522,12 @@ export default function Labplan() {
                     <h3 className="text-xl font-bold">Station Details</h3>
                     <div className="flex gap-3">
                       <button
+                        onClick={handlePrintQRCodes}
+                        className="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-lg transition flex items-center gap-2"
+                      >
+                        🖨️ Print QR Codes
+                      </button>
+                      <button
                         onClick={exportToExcel}
                         className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg transition flex items-center gap-2"
                       >
@@ -495,6 +557,7 @@ export default function Labplan() {
                             <th className="px-6 py-4 font-bold text-white">Station</th>
                             <th className="px-6 py-4 font-bold text-white">OS</th>
                             <th className="px-6 py-4 font-bold text-white">Devices</th>
+                            <th className="px-6 py-4 font-bold text-white">QR Code</th>
                             <th className="px-6 py-4 font-bold text-white">Status</th>
                           </tr>
                         </thead>
@@ -574,6 +637,47 @@ export default function Labplan() {
                                 ) : (
                                   <span className="text-gray-500">No devices assigned</span>
                                 )}
+                              </td>
+                              <td className="px-6 py-4">
+                                {(() => {
+                                  if (!station.devices || station.devices.length === 0) {
+                                    return <span className="text-gray-500 text-xs">No QR</span>;
+                                  }
+                                  
+                                  const allLinked = station.devices.every((d: any) => d.isLinked);
+                                  
+                                  if (allLinked && station.devices.length > 1) {
+                                    // Single QR code for linked group
+                                    const deviceDetails = station.devices.map((d: any) => {
+                                      return `${d.type}: ${d.brand} ${d.model}${d.specification ? ` (${d.specification})` : ''}`;
+                                    }).join(' | ');
+                                    
+                                    const qrValue = `Station: ${station.assignedCode}\nOS: ${station.os}\nDevices: ${deviceDetails}\nAsset Codes: ${station.devices.map((d: any) => d.assetCode).filter(Boolean).join(', ')}`;
+                                    
+                                    return (
+                                      <div className="flex flex-col items-center bg-white p-2 rounded">
+                                        <QRCodeSVG value={qrValue} size={80} />
+                                        <span className="text-xs text-black mt-1">Linked Group</span>
+                                      </div>
+                                    );
+                                  } else {
+                                    // Multiple QR codes for standalone devices
+                                    return (
+                                      <div className="space-y-2">
+                                        {station.devices.map((device: any, qrIdx: number) => {
+                                          const qrValue = `Station: ${station.assignedCode}\nDevice: ${device.type}\nBrand: ${device.brand}\nModel: ${device.model}\nSpecification: ${device.specification || 'N/A'}\nAsset Code: ${device.assetCode || 'N/A'}\nInvoice: ${device.invoiceNumber || 'N/A'}\nWarranty: ${device.warrantyYears || 'N/A'} years\nPrice: ₹${device.unitPrice || 0}`;
+                                          
+                                          return (
+                                            <div key={qrIdx} className="flex flex-col items-center bg-white p-2 rounded">
+                                              <QRCodeSVG value={qrValue} size={80} />
+                                              <span className="text-xs text-black mt-1">{device.type}</span>
+                                            </div>
+                                          );
+                                        })}
+                                      </div>
+                                    );
+                                  }
+                                })()}
                               </td>
                               <td className="px-6 py-4">
                                 {station.devices && station.devices.length > 0 ? (
@@ -852,6 +956,110 @@ export default function Labplan() {
               </button>
             </motion.div>
           </motion.div>
+        )}
+
+        {/* ✅ Print QR Codes Modal */}
+        {showPrintQR && (
+          <>
+            {/* Screen View */}
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 print:hidden"
+              onClick={() => setShowPrintQR(false)}
+            >
+              <motion.div
+                initial={{ scale: 0.9 }}
+                animate={{ scale: 1 }}
+                className="bg-white p-8 rounded-xl shadow-lg w-[90vw] h-[90vh] overflow-y-auto"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="flex items-center justify-between mb-6">
+                  <div>
+                    <h2 className="text-2xl font-bold text-black">
+                      {selectedLab?.labName} - QR Codes
+                    </h2>
+                    <p className="text-gray-600">Preview before printing</p>
+                  </div>
+                  <div className="flex gap-3">
+                    <button
+                      onClick={() => window.print()}
+                      className="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-lg transition"
+                    >
+                      🖨️ Print
+                    </button>
+                    <button
+                      onClick={() => setShowPrintQR(false)}
+                      className="px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white rounded-lg transition"
+                    >
+                      Close
+                    </button>
+                  </div>
+                </div>
+                
+                <div className="grid grid-cols-3 gap-6">
+                  {qrCodesToPrint.map((qr, idx) => (
+                    <div key={idx} className="border-2 border-gray-300 p-4 rounded-lg flex flex-col items-center bg-gray-50">
+                      <QRCodeSVG value={qr.qrValue} size={150} />
+                      <div className="mt-3 text-center">
+                        <p className="font-bold text-lg text-black">{qr.assignedCode}</p>
+                        <p className="text-sm text-gray-700">{qr.type}</p>
+                        {qr.assetCode && (
+                          <p className="text-xs text-gray-600 font-mono mt-1">{qr.assetCode}</p>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </motion.div>
+            </motion.div>
+
+            {/* Print View */}
+            <div className="hidden print:block">
+              <style>
+                {`
+                  @media print {
+                    body * {
+                      visibility: hidden;
+                    }
+                    .print-qr-container, .print-qr-container * {
+                      visibility: visible;
+                    }
+                    .print-qr-container {
+                      position: absolute;
+                      left: 0;
+                      top: 0;
+                      width: 100%;
+                    }
+                    @page {
+                      margin: 0.5in;
+                    }
+                  }
+                `}
+              </style>
+              <div className="print-qr-container p-8 bg-white">
+                <h1 className="text-3xl font-bold text-black mb-2">
+                  {selectedLab?.labName} - QR Codes
+                </h1>
+                <p className="text-gray-700 mb-8">Scan these QR codes to identify each station/device</p>
+                
+                <div className="grid grid-cols-3 gap-6">
+                  {qrCodesToPrint.map((qr, idx) => (
+                    <div key={idx} className="border-2 border-black p-4 rounded-lg flex flex-col items-center">
+                      <QRCodeSVG value={qr.qrValue} size={150} />
+                      <div className="mt-3 text-center">
+                        <p className="font-bold text-lg text-black">{qr.assignedCode}</p>
+                        <p className="text-sm text-gray-700">{qr.type}</p>
+                        {qr.assetCode && (
+                          <p className="text-xs text-gray-600 font-mono mt-1">{qr.assetCode}</p>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </>
         )}
       </div>
     </div>

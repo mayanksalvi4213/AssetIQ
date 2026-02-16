@@ -127,7 +127,7 @@ def extract_text_with_llm_whisperer(file_content: bytes, api_key: str) -> str:
         raise Exception(f"Failed to extract text from PDF: {str(e)}")
 
 
-def poll_llm_whisperer_status(whisper_hash: str, api_key: str, max_attempts: int = 30) -> str:
+def poll_llm_whisperer_status(whisper_hash: str, api_key: str, max_attempts: int = 15) -> str:
     """
     Poll the LLM Whisperer API v2 for processing status, then retrieve the text
     """
@@ -300,19 +300,25 @@ def enhanced_ocr_scan():
         if not raw_text or len(raw_text.strip()) == 0:
             return jsonify({"error": "No text could be extracted from the PDF"}), 400
         
-        # STEP 2: Parse the extracted text using enhanced extractor
+        # STEP 2: Parse the extracted text using local LLM pipeline (fallback to rules)
         print("Parsing bill information...")
-        print(f"Raw text preview (first 500 chars): {raw_text[:500]}")
+        print(f"Raw text preview (first 1000 chars): {raw_text[:1000]}")
         try:
-            bill_info, _ = extractor.extract_bill_info(raw_text)
-        except Exception as parse_error:
-            print(f"Parse error details: {parse_error}")
-            print(traceback.format_exc())
-            return jsonify({
-                "error": f"Parsing Error: {str(parse_error)}",
-                "raw_text": raw_text[:500],
-                "details": "Could not parse the extracted text"
-            }), 500
+            bill_info, _ = extractor.extract_bill_info_ai(raw_text)
+            if not bill_info.bill_number and not bill_info.vendor_name and not bill_info.assets:
+                raise ValueError("AI extraction returned empty data")
+        except Exception as ai_error:
+            print(f"AI extraction failed, falling back to rules: {ai_error}")
+            try:
+                bill_info, _ = extractor.extract_bill_info(raw_text)
+            except Exception as parse_error:
+                print(f"Parse error details: {parse_error}")
+                print(traceback.format_exc())
+                return jsonify({
+                    "error": f"Parsing Error: {str(parse_error)}",
+                    "raw_text": raw_text[:500],
+                    "details": "Could not parse the extracted text"
+                }), 500
         
         # Validate extraction
         if not bill_info.bill_number and not bill_info.vendor_name:
@@ -353,7 +359,7 @@ def enhanced_ocr_scan():
         # Create bill record with fallback
         bill = None
         try:
-            from models import Bill
+            from models.bill import Bill
             bill = Bill.create_bill(bill_data, user_id)
             print(f"Created bill record with ID: {bill.id}")
         except Exception as db_error:
@@ -1588,7 +1594,8 @@ def get_lab_station_list(lab_id):
                 d.unit_price,
                 d.warranty_years,
                 d.purchase_date,
-                d.is_active
+                d.is_active,
+                d.qr_value
             FROM lab_stations ls
             LEFT JOIN lab_grid_cells lgc ON ls.station_id = lgc.station_id
             LEFT JOIN lab_station_devices lsd ON ls.station_id = lsd.station_id
@@ -1683,6 +1690,7 @@ def get_lab_station_list(lab_id):
                     'isLinked': row['is_linked'],
                     'linkedGroupId': row['linked_group_id'],
                     'isActive': row['is_active'],
+                    'qrValue': row['qr_value'],
                     'issues': issues_map.get(device_id, [])
                 }
                 stations_map[station_id]['devices'].append(device_data)
@@ -3071,6 +3079,93 @@ def reject_transfer(transfer_id):
         print(f"Error rejecting transfer: {str(e)}")
         traceback.print_exc()
         return jsonify({'success': False, 'error': str(e)}), 500
+
+# -----------------------------
+# Get Open Issues Count
+# -----------------------------
+@app.route("/get_open_issues_count", methods=["GET"])
+def get_open_issues_count():
+    """
+    Get count of devices with open issues (status = 'open')
+    """
+    try:
+        conn = db.get_connection()
+        if not conn:
+            return jsonify({"error": "Database connection failed"}), 500
+        
+        cursor = conn.cursor()
+        
+        # Count distinct devices with open issues
+        cursor.execute("""
+            SELECT COUNT(DISTINCT device_id) as open_issues_count
+            FROM device_issues
+            WHERE LOWER(status) = 'open'
+        """)
+        
+        result = cursor.fetchone()
+        count = result['open_issues_count'] if result else 0
+        
+        cursor.close()
+        conn.close()
+        
+        return jsonify({
+            "success": True,
+            "count": count
+        })
+    
+    except Exception as e:
+        print(f"Error fetching open issues count: {str(e)}")
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+# -----------------------------
+# Get Inactive Devices Count (excluding devices with only resolved issues)
+# -----------------------------
+@app.route("/get_inactive_devices_count", methods=["GET"])
+def get_inactive_devices_count():
+    """
+    Get count of inactive devices that are assigned to labs and have open issues
+    Only counts devices that are actually deployed, not unassigned inventory
+    """
+    try:
+        conn = db.get_connection()
+        if not conn:
+            return jsonify({"error": "Database connection failed"}), 500
+        
+        cursor = conn.cursor()
+        
+        # Count devices that are:
+        # 1. Assigned to a lab (not in unassigned inventory)
+        # 2. AND have is_active = FALSE
+        # 3. AND have at least one non-resolved issue
+        cursor.execute("""
+            SELECT COUNT(DISTINCT d.device_id) as inactive_count
+            FROM devices d
+            WHERE d.is_active = FALSE
+            AND d.assigned_code IS NOT NULL
+            AND d.assigned_code != ''
+            AND EXISTS (
+                SELECT 1 FROM device_issues di 
+                WHERE di.device_id = d.device_id 
+                AND LOWER(di.status) != 'resolved'
+            )
+        """)
+        
+        result = cursor.fetchone()
+        count = result['inactive_count'] if result else 0
+        
+        cursor.close()
+        conn.close()
+        
+        return jsonify({
+            "success": True,
+            "count": count
+        })
+    
+    except Exception as e:
+        print(f"Error fetching inactive devices count: {str(e)}")
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
 
 # -----------------------------
 # Run App

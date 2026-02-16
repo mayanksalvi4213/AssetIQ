@@ -77,11 +77,7 @@ export default function Dashboard() {
         const devices = devicesData.devices || [];
         const totalAssets = devices.length;
         const workingAssets = devices.filter((d: any) => d.is_active).length;
-        const offlineAssets = devices.filter((d: any) => !d.is_active).length;
         
-        // Maintenance is offline devices (devices that are not active)
-        const maintenanceAssets = offlineAssets;
-
         // Calculate warranty statistics
         const today = new Date();
         const thirtyDaysFromNow = new Date(today);
@@ -109,15 +105,42 @@ export default function Dashboard() {
         setStats({
           totalAssets,
           workingAssets,
-          maintenanceAssets,
-          offlineAssets,
+          maintenanceAssets: 0, // Will be updated from open issues endpoint
+          offlineAssets: 0, // Will be updated from inactive devices endpoint
           totalLabs: labsData.success ? labsData.labs.length : 0,
-          openIssues: 0, // Will be updated from issues query
+          openIssues: 0, // Will be updated from open issues endpoint
           pendingTransfers: 0, // Will be updated from transfers endpoint
           warrantyExpiring30Days: expiring30,
           warrantyExpiring90Days: expiring90,
           expiredWarranty: expired,
         });
+      }
+
+      // Fetch open issues count for both maintenanceAssets and openIssues
+      try {
+        const issuesResponse = await fetch("http://localhost:5000/get_open_issues_count");
+        const issuesData = await issuesResponse.json();
+        if (issuesData.success) {
+          const openIssuesCount = issuesData.count;
+          setStats(prev => ({ 
+            ...prev, 
+            maintenanceAssets: openIssuesCount,
+            openIssues: openIssuesCount 
+          }));
+        }
+      } catch (err) {
+        console.error("Error fetching open issues:", err);
+      }
+
+      // Fetch inactive devices count (excluding devices with only resolved issues)
+      try {
+        const inactiveResponse = await fetch("http://localhost:5000/get_inactive_devices_count");
+        const inactiveData = await inactiveResponse.json();
+        if (inactiveData.success) {
+          setStats(prev => ({ ...prev, offlineAssets: inactiveData.count }));
+        }
+      } catch (err) {
+        console.error("Error fetching inactive devices:", err);
       }
 
       // Fetch pending transfers count
