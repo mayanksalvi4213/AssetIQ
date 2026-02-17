@@ -87,15 +87,23 @@ class EnhancedInvoiceExtractor:
             'Camera': ['camera', 'webcam', 'camcorder', 'cctv', 'surveillance'],
         }
 
-        # Local LLM configuration
+        # Local LLM configuration - OPTIMIZED FOR SPEED
         self.local_llm_url = os.getenv("LOCAL_LLM_URL", "http://127.0.0.1:8080").rstrip("/")
         self.local_llm_model = os.getenv("LOCAL_LLM_MODEL", "qwen2.5-3b-instruct-q4_k_m.gguf")
-        self.local_llm_timeout = int(os.getenv("LOCAL_LLM_TIMEOUT", "180"))
-        # Use more of the 4096 token context: ~2500 tokens = ~10000 chars
-        self.local_llm_max_tokens = int(os.getenv("LOCAL_LLM_MAX_TOKENS", "1024"))  # Increased for many items
-        self.local_llm_chunk_chars = int(os.getenv("LOCAL_LLM_CHUNK_CHARS", "8000"))  # Increased significantly
+        # REDUCED timeout from 180s to 30s - fail fast and use rule-based extraction
+        self.local_llm_timeout = int(os.getenv("LOCAL_LLM_TIMEOUT", "30"))
+        # REDUCED max_tokens from 1024 to 512 - faster generation
+        self.local_llm_max_tokens = int(os.getenv("LOCAL_LLM_MAX_TOKENS", "512"))
+        # REDUCED chunk from 8000 to 4000 - faster processing
+        self.local_llm_chunk_chars = int(os.getenv("LOCAL_LLM_CHUNK_CHARS", "4000"))
         self.local_llm_max_item_lines = int(os.getenv("LOCAL_LLM_MAX_ITEM_LINES", "500"))  # More item lines
+        # AI mode disabled by default - rule-based is faster and more reliable
         self.ai_only_mode = os.getenv("AI_ONLY_MODE", "false").lower() in ("1", "true", "yes")
+        # SKIP AI completely if enabled - use only fast rule-based extraction
+        self.skip_ai = os.getenv("SKIP_AI_EXTRACTION", "false").lower() in ("1", "true", "yes")
+        
+        if self.skip_ai:
+            print("INFO: AI extraction is DISABLED - using only rule-based extraction for speed")
     
     def extract_vendor_info(self, text: str) -> Dict:
         """Extract vendor information - works with multiple formats"""
@@ -133,19 +141,22 @@ class EnhancedInvoiceExtractor:
                     vendor_info['name'] = line_clean
                     break
         
-        # Extract GSTIN - multiple patterns (handles ## masked digits)
+        # Extract GSTIN - multiple patterns (handles ## masked digits, spaces, dots)
         gstin_patterns = [
-            r'GSTIN[/:\s]*([0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1})',
-            r'GST[:\s]*([0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1})',
-            r'UIN[:\s]*([0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1})',
-            r'([0-9]{2}[A-Z#]{5}[0-9#]{4}[A-Z#]{1}[1-9A-Z#]{1}Z[0-9A-Z#]{1})',  # Handles masked GSTIN
+            r'GSTIN[/:\s]*([0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1})',  # Standard
+            r'GST\s*(?:No|Number)?[.:\s]*([0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1})',  # GST No:
+            r'UIN[:\s]*([0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1})',  # UIN
+            r'([0-9]{2}[A-Z#]{5}[0-9#]{4}[A-Z#]{1}[1-9A-Z#]{1}Z[0-9A-Z#]{1})',  # Masked GSTIN with ##
+            r'([0-9]{2}\s?[A-Z]{5}\s?[0-9]{4}\s?[A-Z]{1}\s?[1-9A-Z]{1}\s?Z\s?[0-9A-Z]{1})',  # With spaces
             r'([0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}[A-Z]{1}[0-9A-Z]{1})'  # Alternative format
         ]
         
         for pattern in gstin_patterns:
             gstin_match = re.search(pattern, text, re.IGNORECASE)
             if gstin_match:
-                vendor_info['gstin'] = gstin_match.group(1)
+                # Remove any spaces from the matched GSTIN
+                vendor_info['gstin'] = gstin_match.group(1).replace(' ', '')
+                print(f"DEBUG: Found GSTIN: {vendor_info['gstin']}")
                 break
         
         # Extract phone - various formats
@@ -337,42 +348,95 @@ class EnhancedInvoiceExtractor:
                 bill_details['total_amount'] = max(all_amounts)
                 print(f"DEBUG: Found total amount (max): {bill_details['total_amount']}")
         
-        # Extract tax amounts
-        tax_patterns = [
-            r'(?:Total Tax|Tax Amount)[:\s]*(?:₹|Rs\.?)?[\s]*([\d,]+\.?\d*)',
-            r'CGST[:\s]*(?:₹|Rs\.?)?[\s]*([\d,]+\.?\d*)',
-            r'SGST[:\s]*(?:₹|Rs\.?)?[\s]*([\d,]+\.?\d*)',
-            r'IGST[:\s]*(?:₹|Rs\.?)?[\s]*([\d,]+\.?\d*)',
-            r'GST[:\s]*(?:₹|Rs\.?)?[\s]*([\d,]+\.?\d*)'
+        # Extract tax amounts - ENHANCED patterns for various invoice formats
+        # Handles: "CGST @ 9%: 1234.56", "CGST(9%): 1234.56", "C.G.S.T: 1234.56", tables, etc.
+        
+        # More flexible patterns that handle percentage rates and various separators
+        cgst_patterns = [
+            r'C\.?G\.?S\.?T\.?\s*@?\s*\d+\.?\d*%?\s*[:\|]?\s*(?:₹|Rs\.?|INR)?\s*([\d,]+\.?\d*)',  # CGST @ 9%: 1234.56
+            r'C\.?G\.?S\.?T\.?\s*\(?\d+\.?\d*%?\)?\s*[:\|]?\s*(?:₹|Rs\.?|INR)?\s*([\d,]+\.?\d*)',  # CGST(9%): 1234.56
+            r'Central\s+GST[:\s]*(?:₹|Rs\.?|INR)?\s*([\d,]+\.?\d*)',  # Central GST: 1234.56
+            r'CGST[:\|\s]+(?:₹|Rs\.?|INR)?\s*([\d,]+\.?\d*)',  # CGST: 1234.56 or CGST | 1234.56
+        ]
+        
+        sgst_patterns = [
+            r'S\.?G\.?S\.?T\.?\s*@?\s*\d+\.?\d*%?\s*[:\|]?\s*(?:₹|Rs\.?|INR)?\s*([\d,]+\.?\d*)',  # SGST @ 9%: 1234.56
+            r'S\.?G\.?S\.?T\.?\s*\(?\d+\.?\d*%?\)?\s*[:\|]?\s*(?:₹|Rs\.?|INR)?\s*([\d,]+\.?\d*)',  # SGST(9%): 1234.56
+            r'State\s+GST[:\s]*(?:₹|Rs\.?|INR)?\s*([\d,]+\.?\d*)',  # State GST: 1234.56
+            r'SGST[:\|\s]+(?:₹|Rs\.?|INR)?\s*([\d,]+\.?\d*)',  # SGST: 1234.56 or SGST | 1234.56
+        ]
+        
+        igst_patterns = [
+            r'I\.?G\.?S\.?T\.?\s*@?\s*\d+\.?\d*%?\s*[:\|]?\s*(?:₹|Rs\.?|INR)?\s*([\d,]+\.?\d*)',  # IGST @ 18%: 1234.56
+            r'I\.?G\.?S\.?T\.?\s*\(?\d+\.?\d*%?\)?\s*[:\|]?\s*(?:₹|Rs\.?|INR)?\s*([\d,]+\.?\d*)',  # IGST(18%): 1234.56
+            r'Integrated\s+GST[:\s]*(?:₹|Rs\.?|INR)?\s*([\d,]+\.?\d*)',  # Integrated GST: 1234.56
+            r'IGST[:\|\s]+(?:₹|Rs\.?|INR)?\s*([\d,]+\.?\d*)',  # IGST: 1234.56 or IGST | 1234.56
+        ]
+        
+        total_tax_patterns = [
+            r'(?:Total\s+Tax|Tax\s+Amount|Total\s+GST)[:\s]*(?:₹|Rs\.?|INR)?\s*([\d,]+\.?\d*)',
+            r'GST\s+Amount[:\s]*(?:₹|Rs\.?|INR)?\s*([\d,]+\.?\d*)',
         ]
         
         # Try total tax first
-        total_tax_match = re.search(tax_patterns[0], text, re.IGNORECASE)
-        if total_tax_match:
-            bill_details['tax_amount'] = float(total_tax_match.group(1).replace(',', ''))
-            print(f"DEBUG: Found tax amount: {bill_details['tax_amount']}")
-        else:
+        total_tax_found = False
+        for pattern in total_tax_patterns:
+            total_tax_match = re.search(pattern, text, re.IGNORECASE)
+            if total_tax_match:
+                bill_details['tax_amount'] = float(total_tax_match.group(1).replace(',', ''))
+                print(f"DEBUG: Found total tax amount: {bill_details['tax_amount']}")
+                total_tax_found = True
+                break
+        
+        if not total_tax_found:
             # Sum CGST + SGST or use IGST
             cgst = sgst = igst = 0.0
             
-            cgst_matches = re.findall(tax_patterns[1], text, re.IGNORECASE)
-            if cgst_matches:
-                cgst = sum(float(m.replace(',', '')) for m in cgst_matches)
+            # Try all CGST patterns
+            for pattern in cgst_patterns:
+                cgst_matches = re.findall(pattern, text, re.IGNORECASE)
+                if cgst_matches:
+                    cgst = sum(float(m.replace(',', '')) for m in cgst_matches)
+                    print(f"DEBUG: Found CGST: {cgst} using pattern: {pattern[:50]}")
+                    break
             
-            sgst_matches = re.findall(tax_patterns[2], text, re.IGNORECASE)
-            if sgst_matches:
-                sgst = sum(float(m.replace(',', '')) for m in sgst_matches)
+            # Try all SGST patterns
+            for pattern in sgst_patterns:
+                sgst_matches = re.findall(pattern, text, re.IGNORECASE)
+                if sgst_matches:
+                    sgst = sum(float(m.replace(',', '')) for m in sgst_matches)
+                    print(f"DEBUG: Found SGST: {sgst} using pattern: {pattern[:50]}")
+                    break
             
-            igst_matches = re.findall(tax_patterns[3], text, re.IGNORECASE)
-            if igst_matches:
-                igst = sum(float(m.replace(',', '')) for m in igst_matches)
+            # Try all IGST patterns
+            for pattern in igst_patterns:
+                igst_matches = re.findall(pattern, text, re.IGNORECASE)
+                if igst_matches:
+                    igst = sum(float(m.replace(',', '')) for m in igst_matches)
+                    print(f"DEBUG: Found IGST: {igst} using pattern: {pattern[:50]}")
+                    break
             
             if cgst > 0 or sgst > 0:
                 bill_details['tax_amount'] = cgst + sgst
-                print(f"DEBUG: Found tax amount: CGST={cgst}, SGST={sgst}, Total={bill_details['tax_amount']}")
+                print(f"DEBUG: Calculated tax amount: CGST={cgst} + SGST={sgst} = Total={bill_details['tax_amount']}")
             elif igst > 0:
                 bill_details['tax_amount'] = igst
-                print(f"DEBUG: Found tax amount: IGST={igst}")
+                print(f"DEBUG: Using IGST as tax amount: {igst}")
+            else:
+                print("DEBUG: No tax amounts found with any pattern")
+                # Last resort: look for any line with both "CGST" and a number
+                fallback_cgst = re.search(r'CGST.*?([\d,]+\.?\d{2})', text, re.IGNORECASE | re.DOTALL)
+                fallback_sgst = re.search(r'SGST.*?([\d,]+\.?\d{2})', text, re.IGNORECASE | re.DOTALL)
+                fallback_igst = re.search(r'IGST.*?([\d,]+\.?\d{2})', text, re.IGNORECASE | re.DOTALL)
+                
+                if fallback_cgst or fallback_sgst:
+                    cgst_fb = float(fallback_cgst.group(1).replace(',', '')) if fallback_cgst else 0.0
+                    sgst_fb = float(fallback_sgst.group(1).replace(',', '')) if fallback_sgst else 0.0
+                    bill_details['tax_amount'] = cgst_fb + sgst_fb
+                    print(f"DEBUG: Fallback tax extraction: CGST={cgst_fb}, SGST={sgst_fb}, Total={bill_details['tax_amount']}")
+                elif fallback_igst:
+                    bill_details['tax_amount'] = float(fallback_igst.group(1).replace(',', ''))
+                    print(f"DEBUG: Fallback IGST extraction: {bill_details['tax_amount']}")
         
         # Extract discount
         discount_patterns = [
@@ -901,6 +965,11 @@ class EnhancedInvoiceExtractor:
         """
         print("DEBUG: Starting AI-based extraction...")
         
+        # OPTIMIZATION: Skip AI extraction if disabled via environment variable
+        if self.skip_ai:
+            print("DEBUG: AI extraction is disabled, using rule-based extraction")
+            return self.extract_bill_info(raw_text)
+        
         # Page-wise extraction (stateless LLM calls)
         pages = self._split_pages(raw_text)
         if not pages:
@@ -909,8 +978,20 @@ class EnhancedInvoiceExtractor:
         
         print(f"DEBUG: Split into {len(pages)} pages")
         
+        # Track total extraction time
+        import time
+        extraction_start = time.time()
+        max_total_time = 120  # 2 minutes max for entire extraction
+        
         page_results = []
         for page_num, page_text in enumerate(pages, start=1):
+            # Check if we've exceeded total time budget
+            elapsed_total = time.time() - extraction_start
+            if elapsed_total > max_total_time:
+                print(f"WARNING: Total extraction time exceeded {max_total_time}s, "
+                      f"falling back to rule-based extraction")
+                return self.extract_bill_info(raw_text)
+            
             print(f"DEBUG: Processing page {page_num}/{len(pages)}")
             
             # Extract page via LLM
@@ -1024,9 +1105,12 @@ RULES:
         """
         Extract structured data from a single page using LLM.
         Returns strict JSON matching schema or None.
+        OPTIMIZED: Tracks time and fails fast if LLM is too slow.
         """
-        # Send full page text (truncated to context limit)
-        # Don't filter aggressively - let LLM see everything
+        import time
+        start_time = time.time()
+        
+        # Send reduced page text (truncated to smaller context for speed)
         chunk = self._truncate(page_text, self.local_llm_chunk_chars)
         
         if not chunk or len(chunk.strip()) < 50:
@@ -1060,11 +1144,21 @@ RULES:
         # STEP 2: ITEM_PAGE - Extract items from item table
         prompt = self._build_page_extraction_prompt(chunk, page_num, total_pages)
         
-        # Call LLM API
-        response_text = self._call_local_llm(prompt)
+        # Call LLM API with timeout tracking
+        try:
+            response_text = self._call_local_llm(prompt)
+            elapsed = time.time() - start_time
+            print(f"DEBUG: Page {page_num} - LLM took {elapsed:.1f}s")
+            
+            # If LLM is taking too long, warn and fail fast
+            if elapsed > 45:
+                print(f"WARNING: Page {page_num} - LLM too slow ({elapsed:.1f}s), consider using rule-based extraction")
+        except Exception as e:
+            print(f"DEBUG: Page {page_num} - LLM call failed: {e}")
+            response_text = None
         
         if not response_text:
-            print(f"DEBUG: Page {page_num} - LLM returned empty response")
+            print(f"DEBUG: Page {page_num} - LLM returned empty response, will fallback to rule-based")
             return None
         
         print(f"DEBUG: Page {page_num} LLM response: {response_text[:200]}...")
@@ -1800,8 +1894,10 @@ PAGE TEXT:
         """
         Call local LLM API (llama.cpp server).
         Accepts payload with 'messages' array (new format) or 'system'/'user' (legacy).
+        OPTIMIZED: Uses aggressive timeouts to prevent slow processing.
         """
-        timeout = (10, self.local_llm_timeout)
+        # Connection timeout: 5s, Read timeout: reduced to 30s (was 180s)
+        timeout = (5, self.local_llm_timeout)
         
         # Convert to messages format if needed
         if "messages" in payload:
