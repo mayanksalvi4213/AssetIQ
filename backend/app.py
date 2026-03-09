@@ -32,17 +32,31 @@ LLM_WHISPERER_API_KEY = os.getenv("LLM_WHISPERER_API_KEY")
 # Import models and services
 from models.user import User
 from models.bill import Bill, Asset
-from enhanced_extractor import EnhancedInvoiceExtractor
+from ocr_bridge import OcrRegexExtractor
 from config.database import db
 from utils.jwt_utils import decode_token
+
+# LLM fallback availability check
+try:
+    from llm_fallback import is_llm_available
+except ImportError:
+    def is_llm_available():
+        return False
 
 app = Flask(__name__)
 CORS(app)
 
 pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
-# Initialize enhanced extractor
-extractor = EnhancedInvoiceExtractor()
+# Initialize OCR regex extractor (uses classifier + regex templates)
+extractor = OcrRegexExtractor()
+
+
+@app.route("/llm-status", methods=["GET"])
+def llm_status():
+    """Check if the local LLM server is reachable."""
+    available = is_llm_available()
+    return jsonify({"available": available, "model": "qwen2.5-3b-instruct", "port": 8080})
 
 # -----------------------------
 # Authentication Middleware
@@ -259,18 +273,26 @@ def enhanced_ocr_scan():
         raw_text = None
         
         if is_image:
-            # For images, use OCR directly
-            print("Processing image file with OCR...")
+            # For images, try LLM Whisperer first (gives table-structured output),
+            # fall back to pytesseract if unavailable
+            print("Processing image file with LLM Whisperer (table mode)...")
             try:
-                image = Image.open(request.files["file"].stream)
-                raw_text = pytesseract.image_to_string(image, lang="eng")
-                print(f"Successfully extracted {len(raw_text)} characters from image")
-            except Exception as ocr_error:
-                return jsonify({
-                    "error": f"Failed to extract text from image",
-                    "ocr_error": str(ocr_error),
-                    "details": "Could not extract text from image file"
-                }), 500
+                raw_text = extract_text_with_llm_whisperer(file_content, LLM_WHISPERER_API_KEY)
+                print(f"Successfully extracted {len(raw_text)} characters from image via LLM Whisperer")
+            except Exception as api_error:
+                print(f"LLM Whisperer failed for image: {api_error}")
+                print("Falling back to pytesseract for image...")
+                try:
+                    file.stream.seek(0)
+                    image = Image.open(file.stream)
+                    raw_text = pytesseract.image_to_string(image, lang="eng")
+                    print(f"Successfully extracted {len(raw_text)} characters from image via pytesseract")
+                except Exception as ocr_error:
+                    return jsonify({
+                        "error": f"Failed to extract text from image",
+                        "ocr_error": str(ocr_error),
+                        "details": "Could not extract text from image file"
+                    }), 500
         else:
             # For PDFs, use LLM Whisperer with OCR fallback
             print("Extracting text with LLM Whisperer...")
@@ -300,31 +322,29 @@ def enhanced_ocr_scan():
         if not raw_text or len(raw_text.strip()) == 0:
             return jsonify({"error": "No text could be extracted from the PDF"}), 400
         
-        # STEP 2: Parse the extracted text using local LLM pipeline (fallback to rules)
-        print("Parsing bill information...")
+        # STEP 2: Parse extracted text using classifier + regex templates
+        print("Parsing bill information via OCR regex pipeline...")
         print(f"Raw text preview (first 1000 chars): {raw_text[:1000]}")
+
+        # Check if user wants LLM fallback (default: yes if available)
+        use_llm = request.form.get("use_llm", "true").lower() != "false"
+
         try:
-            bill_info, _ = extractor.extract_bill_info_ai(raw_text)
-            if not bill_info.bill_number and not bill_info.vendor_name and not bill_info.assets:
-                raise ValueError("AI extraction returned empty data")
-        except Exception as ai_error:
-            print(f"AI extraction failed, falling back to rules: {ai_error}")
-            try:
-                bill_info, _ = extractor.extract_bill_info(raw_text)
-            except Exception as parse_error:
-                print(f"Parse error details: {parse_error}")
-                print(traceback.format_exc())
-                return jsonify({
-                    "error": f"Parsing Error: {str(parse_error)}",
-                    "raw_text": raw_text[:500],
-                    "details": "Could not parse the extracted text"
-                }), 500
+            bill_info, _ = extractor.extract_bill_info(raw_text, use_llm_fallback=use_llm)
+        except Exception as parse_error:
+            print(f"Parse error details: {parse_error}")
+            print(traceback.format_exc())
+            return jsonify({
+                "error": f"Parsing Error: {str(parse_error)}",
+                "raw_text": raw_text,
+                "details": "Could not parse the extracted text"
+            }), 500
         
         # Validate extraction
         if not bill_info.bill_number and not bill_info.vendor_name:
             return jsonify({
                 "error": "Could not extract essential bill information",
-                "raw_text": raw_text[:1000],
+                "raw_text": raw_text,
                 "hint": "The invoice format may not be recognized. Please check the raw text."
             }), 400
         
@@ -339,39 +359,10 @@ def enhanced_ocr_scan():
             print(f"First asset - Name: {first_asset.name[:50]}...")
             print(f"First asset - Category: {first_asset.category}, Quantity: {first_asset.quantity}")
         
-        # Create bill record
-        bill_data = {
-            'bill_number': bill_info.bill_number or "UNKNOWN",
-            'vendor_name': bill_info.vendor_name or "UNKNOWN",
-            'vendor_gstin': bill_info.vendor_gstin,
-            'vendor_address': bill_info.vendor_address,
-            'vendor_phone': bill_info.vendor_phone,
-            'vendor_email': bill_info.vendor_email,
-            'bill_date': bill_info.bill_date,
-            'due_date': bill_info.due_date,
-            'total_amount': float(bill_info.total_amount) if bill_info.total_amount else 0.0,
-            'tax_amount': float(bill_info.tax_amount) if bill_info.tax_amount else 0.0,
-            'discount': float(bill_info.discount) if bill_info.discount else 0.0,
-            'warranty_info': bill_info.warranty_info,
-            'raw_text': raw_text
-        }
+        # Display-only bill object (no database save during scan)
+        bill_id = f"preview-{datetime.now().strftime('%Y%m%d%H%M%S')}"
         
-        # Create bill record with fallback
-        bill = None
-        try:
-            from models.bill import Bill
-            bill = Bill.create_bill(bill_data, user_id)
-            print(f"Created bill record with ID: {bill.id}")
-        except Exception as db_error:
-            print(f"Database error creating bill: {db_error}")
-            bill = type('obj', (object,), {
-                'id': f"demo-bill-{datetime.now().strftime('%Y%m%d%H%M%S')}",
-                'bill_number': bill_info.bill_number,
-                'vendor_name': bill_info.vendor_name,
-                'total_amount': bill_info.total_amount
-            })
-        
-        # Create asset records - one for each individual unit
+        # Build asset records for display only - one for each individual unit
         created_assets = []
         asset_counter = 1  # Start from 1 for sequential numbering
         
@@ -383,21 +374,15 @@ def enhanced_ocr_scan():
             
             # Create individual assets - one for each quantity
             quantity = extracted_asset.quantity
-            print(f"Creating {quantity} individual assets for: {extracted_asset.name}")
+            print(f"Building {quantity} individual assets for display: {extracted_asset.name}")
             
             for unit_idx in range(quantity):
                 try:
-                    # Generate unique asset ID for each unit
+                    # Generate unique asset ID for each unit (display only)
                     if asset_id_prefix:
-                        # Use custom prefix with sequential numbering
                         asset_id = f"{asset_id_prefix}{asset_counter}"
                     else:
-                        # Use default asset ID generation
-                        try:
-                            from models.bill import Asset
-                            asset_id = Asset.get_next_asset_id(extracted_asset.category)
-                        except:
-                            asset_id = f"{extracted_asset.category[:3].upper()}{datetime.now().strftime('%Y%m%d%H%M%S')}{asset_counter}"
+                        asset_id = f"{extracted_asset.category[:3].upper()}{datetime.now().strftime('%Y%m%d%H%M%S')}{asset_counter}"
                     
                     asset_counter += 1
                     
@@ -406,67 +391,38 @@ def enhanced_ocr_scan():
                     
                     # Generate QR code with invoice number + vendor name + device code
                     qr_code_data = f"{bill_info.bill_number}|{bill_info.vendor_name}|{asset_id}"
-                    
                     qr_code_image = extractor.generate_qr_code(qr_code_data)
                     
-                    # Create asset record for this individual unit
-                    asset_data = {
-                        'asset_id': asset_id,
-                        'bill_id': str(bill.id),
-                        'name': extracted_asset.name,
-                        'description': extracted_asset.description,
-                        'category': extracted_asset.category,
-                        'brand': extracted_asset.brand,
-                        'model': extracted_asset.model,
-                        'serial_number': unit_serial_number,
-                        'quantity': 1,  # Each asset represents 1 unit
-                        'unit_price': extracted_asset.unit_price,
-                        'total_price': extracted_asset.unit_price,  # Price for 1 unit
-                        'warranty_period': extracted_asset.warranty_period,
-                        'device_type': extracted_asset.device_type,  # Auto-detected device type
-                        'qr_code_data': qr_code_image,
-                        'status': 'active'
-                    }
-                    
-                    # Try database creation with fallback
-                    asset = None
-                    try:
-                        from models.bill import Asset
-                        asset = Asset.create_asset(asset_data)
-                    except Exception as db_error:
-                        print(f"Database error creating asset: {db_error}")
-                        asset = type('obj', (object,), asset_data)
-                        asset.asset_id = asset_id
-                    
                     created_assets.append({
-                        "asset_id": getattr(asset, 'asset_id', asset_id),
-                        "name": getattr(asset, 'name', extracted_asset.name),
-                        "category": getattr(asset, 'category', extracted_asset.category),
+                        "asset_id": asset_id,
+                        "name": extracted_asset.name,
+                        "category": extracted_asset.category,
                         "quantity": 1,
-                        "unit_price": getattr(asset, 'unit_price', extracted_asset.unit_price),
-                        "total_price": getattr(asset, 'unit_price', extracted_asset.unit_price),
-                        "qr_code": getattr(asset, 'qr_code_data', qr_code_image),
-                        "brand": getattr(asset, 'brand', extracted_asset.brand),
-                        "model": getattr(asset, 'model', extracted_asset.model),
+                        "unit_price": extracted_asset.unit_price,
+                        "total_price": extracted_asset.unit_price,
+                        "qr_code": qr_code_image,
+                        "brand": extracted_asset.brand,
+                        "model": extracted_asset.model,
                         "serial_number": unit_serial_number,
-                        "warranty_period": getattr(asset, 'warranty_period', extracted_asset.warranty_period),
-                        "device_type": getattr(asset, 'device_type', extracted_asset.device_type)  # Include auto-detected device type
+                        "warranty_period": extracted_asset.warranty_period,
+                        "device_type": extracted_asset.device_type
                     })
                     
-                    print(f"Created asset {unit_idx + 1}/{quantity}: {asset_id} - {extracted_asset.name} (S/N: {unit_serial_number})")
+                    print(f"Built asset {unit_idx + 1}/{quantity}: {asset_id} - {extracted_asset.name} (S/N: {unit_serial_number})")
                     
                 except Exception as e:
-                    print(f"Error creating asset unit {unit_idx + 1}/{quantity}: {e}")
+                    print(f"Error building asset unit {unit_idx + 1}/{quantity}: {e}")
                     print(traceback.format_exc())
                     continue
         
-        print(f"Total assets created: {len(created_assets)}")
+        print(f"Total assets built for display: {len(created_assets)}")
         
         return jsonify({
             "success": True,
             "message": f"Successfully processed bill and created {len(created_assets)} assets",
+            "llm_enhanced": getattr(bill_info, 'llm_enhanced', False),
             "bill_info": {
-                "id": getattr(bill, 'id', 'demo-bill'),
+                "id": bill_id,
                 "bill_number": bill_info.bill_number,
                 "vendor_name": bill_info.vendor_name,
                 "vendor_gstin": bill_info.vendor_gstin,
@@ -481,7 +437,7 @@ def enhanced_ocr_scan():
                 "warranty_info": bill_info.warranty_info
             },
             "assets": created_assets,
-            "raw_text": raw_text[:1000] + "..." if len(raw_text) > 1000 else raw_text
+            "raw_text": raw_text
         })
         
     except Exception as e:
@@ -911,6 +867,30 @@ def save_devices():
         invoice_number = data.get("invoiceNumber", "").strip()
         vendor_name = data.get("vendorName", "").strip()
         devices = data.get("devices", [])
+        order_no = data.get("orderNo", "").strip()
+        order_date = data.get("orderDate", "").strip()
+        central_store_no = data.get("centralStoreNo", "").strip()
+        central_store_date = data.get("centralStoreDate", "").strip()
+        remarks = data.get("remarks", "").strip()
+
+        # Convert DD/MM/YYYY to YYYY-MM-DD for database
+        db_order_date = None
+        if order_date:
+            try:
+                parts = order_date.split('/')
+                if len(parts) == 3:
+                    db_order_date = f"{parts[2]}-{parts[1]}-{parts[0]}"
+            except:
+                db_order_date = None
+
+        db_central_store_date = None
+        if central_store_date:
+            try:
+                parts = central_store_date.split('/')
+                if len(parts) == 3:
+                    db_central_store_date = f"{parts[2]}-{parts[1]}-{parts[0]}"
+            except:
+                db_central_store_date = None
         
         if not invoice_number or not vendor_name:
             return jsonify({"error": "Invoice Number and Vendor Name are required"}), 400
@@ -1064,11 +1044,13 @@ def save_devices():
                     """
                     INSERT INTO devices 
                     (asset_code, type_id, brand, model, specification, unit_price, purchase_date, 
-                     bill_id, dept, warranty_years, is_active, invoice_number, qr_value)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                     bill_id, dept, warranty_years, is_active, invoice_number, qr_value,
+                     order_no, order_date, central_store_no, central_store_date, remarks)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (generated_asset_code, type_id, brand, model_no, material_desc, unit_price, 
-                     bill_date, bill_id, dept, warranty_years, False, invoice_number, generated_qr_value)
+                     bill_date, bill_id, dept, warranty_years, False, invoice_number, generated_qr_value,
+                     order_no, db_order_date, central_store_no, db_central_store_date, remarks)
                 )
                 
                 print(f"✅ Inserted device with asset_code: {generated_asset_code}, dept: '{dept}'")
@@ -2178,6 +2160,72 @@ def reactivate_device():
 
 
 # -----------------------------
+# Update Device Type
+# -----------------------------
+@app.route("/update_device_type", methods=["POST"])
+def update_device_type():
+    """
+    Update the type_id of a device.
+    Expects JSON: { deviceId, newTypeId }
+    """
+    try:
+        data = request.get_json(force=True)
+        device_id = data.get("deviceId")
+        new_type_id = data.get("newTypeId")
+
+        if not device_id or new_type_id is None:
+            return jsonify({"success": False, "error": "deviceId and newTypeId are required"}), 400
+
+        new_type_id = int(new_type_id)
+        if new_type_id < 1 or new_type_id > 17:
+            return jsonify({"success": False, "error": "Invalid type_id"}), 400
+
+        conn = db.get_connection()
+        if not conn:
+            return jsonify({"success": False, "error": "Database connection failed"}), 500
+
+        cursor = conn.cursor()
+
+        # Verify device exists
+        cursor.execute("SELECT device_id, type_id FROM devices WHERE device_id = %s", (device_id,))
+        device_row = cursor.fetchone()
+        if not device_row:
+            cursor.close()
+            conn.close()
+            return jsonify({"success": False, "error": "Device not found"}), 404
+
+        old_type_id = device_row['type_id']
+
+        # Update type_id
+        cursor.execute("UPDATE devices SET type_id = %s WHERE device_id = %s", (new_type_id, device_id))
+        conn.commit()
+
+        # Get new type name
+        cursor.execute("SELECT name FROM equipment_types WHERE type_id = %s", (new_type_id,))
+        type_row = cursor.fetchone()
+        new_type_name = type_row['name'] if type_row else 'Unknown'
+
+        cursor.close()
+        conn.close()
+
+        print(f"Device {device_id} type changed from {old_type_id} to {new_type_id} ({new_type_name})")
+
+        return jsonify({
+            "success": True,
+            "message": f"Device type updated to {new_type_name}",
+            "deviceId": device_id,
+            "oldTypeId": old_type_id,
+            "newTypeId": new_type_id,
+            "newTypeName": new_type_name
+        })
+
+    except Exception as e:
+        print(f"Error updating device type: {str(e)}")
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+# -----------------------------
 # Save Lab Configuration
 # -----------------------------
 @app.route("/save_lab", methods=["POST"])
@@ -2464,6 +2512,7 @@ def get_all_devices():
                 d.purchase_date,
                 d.unit_price,
                 d.is_active,
+                d.warranty_years,
                 CASE 
                     WHEN d.purchase_date IS NOT NULL AND d.warranty_years > 0 
                     THEN d.purchase_date + (d.warranty_years || ' years')::interval
@@ -3166,6 +3215,733 @@ def get_inactive_devices_count():
         print(f"Error fetching inactive devices count: {str(e)}")
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
+
+# =============================
+# LAB LAYOUT BLUEPRINT APIs
+# =============================
+
+# -----------------------------
+# Get Station Types
+# -----------------------------
+@app.route("/get_station_types", methods=["GET"])
+def get_station_types():
+    """Return all available station types for the layout designer."""
+    try:
+        conn = db.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            """SELECT station_type_id, name, name AS label, icon, color, description, allowed_device_types
+               FROM station_types ORDER BY station_type_id"""
+        )
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        return jsonify({"success": True, "stationTypes": rows})
+    except Exception as e:
+        print(f"Error fetching station types: {e}")
+        traceback.print_exc()
+        return jsonify({"error": str(e), "success": False}), 500
+
+
+# -----------------------------
+# Get Labs For Layout Editor
+# -----------------------------
+@app.route("/get_labs_for_layout", methods=["GET"])
+def get_labs_for_layout():
+    """Return list of labs with layout station counts."""
+    try:
+        conn = db.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            """SELECT l.lab_id, l.lab_name, l.rows, l.columns, l.layout_id,
+                      COALESCE((
+                          SELECT COUNT(*) FROM lab_layout_cells lc
+                          WHERE lc.layout_id = l.layout_id
+                            AND lc.station_type_id IS NOT NULL
+                      ), 0) AS station_count
+               FROM labs l
+               ORDER BY l.lab_id"""
+        )
+        labs = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        return jsonify({"success": True, "labs": labs})
+    except Exception as e:
+        print(f"Error fetching labs for layout: {e}")
+        traceback.print_exc()
+        return jsonify({"error": str(e), "success": False}), 500
+
+
+# -----------------------------
+# Get Lab Layout (by lab_id)
+# -----------------------------
+@app.route("/get_lab_layout/<lab_id>", methods=["GET"])
+def get_lab_layout(lab_id):
+    """Return a lab with its layout grid cells."""
+    try:
+        conn = db.get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """SELECT lab_id, lab_name, rows, columns, layout_id
+               FROM labs WHERE lab_id = %s""",
+            (lab_id,)
+        )
+        lab = cursor.fetchone()
+        if not lab:
+            return jsonify({"error": "Lab not found", "success": False}), 404
+
+        layout_id = lab['layout_id']
+        rows_count = lab['rows'] or 6
+        cols_count = lab['columns'] or 6
+
+        # Build empty grid
+        grid = [[None for _ in range(cols_count)] for _ in range(rows_count)]
+
+        if layout_id:
+            cursor.execute(
+                """SELECT lc.cell_id, lc.row_number, lc.column_number,
+                          lc.station_type_id, lc.label AS station_label,
+                          lc.is_empty, lc.os_windows, lc.os_linux, lc.os_other, lc.notes,
+                          st.name AS station_type_name, st.name AS station_type_label,
+                          st.icon, st.color
+                   FROM lab_layout_cells lc
+                   LEFT JOIN station_types st ON lc.station_type_id = st.station_type_id
+                   WHERE lc.layout_id = %s
+                   ORDER BY lc.row_number, lc.column_number""",
+                (layout_id,)
+            )
+            cells = cursor.fetchall()
+
+            for cell in cells:
+                r, c = cell['row_number'], cell['column_number']
+                if 0 <= r < rows_count and 0 <= c < cols_count:
+                    os_list = []
+                    if cell['os_windows']:
+                        os_list.append("Windows")
+                    if cell['os_linux']:
+                        os_list.append("Linux")
+                    if cell['os_other']:
+                        os_list.append("Other")
+                    grid[r][c] = {
+                        "cellId": cell['cell_id'],
+                        "stationTypeId": cell['station_type_id'],
+                        "stationTypeName": cell['station_type_name'] or 'empty',
+                        "stationTypeLabel": cell['station_type_label'] or 'Empty',
+                        "icon": cell['icon'] or '⬜',
+                        "color": cell['color'] or '#6b7280',
+                        "stationLabel": cell['station_label'],
+                        "os": os_list,
+                        "notes": cell['notes']
+                    }
+
+        # Fill gaps with empty
+        for r in range(rows_count):
+            for c_idx in range(cols_count):
+                if grid[r][c_idx] is None:
+                    grid[r][c_idx] = {
+                        "cellId": None,
+                        "stationTypeId": None,
+                        "stationTypeName": "empty",
+                        "stationTypeLabel": "Empty",
+                        "icon": "⬜",
+                        "color": "#6b7280",
+                        "stationLabel": None,
+                        "os": [],
+                        "notes": None
+                    }
+
+        cursor.close()
+        conn.close()
+
+        return jsonify({
+            "success": True,
+            "layout": {
+                "labId": lab['lab_id'],
+                "labName": lab['lab_name'],
+                "rows": rows_count,
+                "columns": cols_count,
+                "layoutId": layout_id,
+                "grid": grid
+            }
+        })
+    except Exception as e:
+        print(f"Error fetching lab layout: {e}")
+        traceback.print_exc()
+        return jsonify({"error": str(e), "success": False}), 500
+
+
+# -----------------------------
+# Save Lab Layout
+# -----------------------------
+@app.route("/save_lab_layout", methods=["POST"])
+def save_lab_layout():
+    """Create or update a lab and its layout blueprint."""
+    try:
+        data = request.json
+        lab_number = data.get("labNumber", "").strip()
+        lab_name = data.get("labName", "").strip()
+        rows = data.get("rows", 6)
+        columns = data.get("columns", 6)
+        grid = data.get("grid", [])
+
+        if not lab_number:
+            return jsonify({"error": "Lab number is required"}), 400
+        if not lab_name:
+            return jsonify({"error": "Lab name is required"}), 400
+
+        conn = db.get_connection()
+        cursor = conn.cursor()
+
+        try:
+            # Check if lab exists
+            cursor.execute("SELECT id, layout_id FROM labs WHERE lab_id = %s", (lab_number,))
+            existing_lab = cursor.fetchone()
+
+            if existing_lab:
+                layout_id = existing_lab['layout_id']
+                # Update lab dimensions and name
+                cursor.execute(
+                    "UPDATE labs SET lab_name = %s, rows = %s, columns = %s WHERE lab_id = %s",
+                    (lab_name, rows, columns, lab_number)
+                )
+
+                if layout_id:
+                    # Update existing layout template
+                    cursor.execute(
+                        """UPDATE lab_layout_templates
+                           SET layout_name = %s, rows = %s, columns = %s, updated_at = now()
+                           WHERE layout_id = %s""",
+                        (f"{lab_number} - {lab_name}", rows, columns, layout_id)
+                    )
+                    cursor.execute("DELETE FROM lab_layout_cells WHERE layout_id = %s", (layout_id,))
+                else:
+                    # Create new layout template for existing lab
+                    cursor.execute(
+                        """INSERT INTO lab_layout_templates (layout_name, rows, columns)
+                           VALUES (%s, %s, %s) RETURNING layout_id""",
+                        (f"{lab_number} - {lab_name}", rows, columns)
+                    )
+                    layout_id = cursor.fetchone()['layout_id']
+                    cursor.execute("UPDATE labs SET layout_id = %s WHERE lab_id = %s", (layout_id, lab_number))
+            else:
+                # Create new layout template
+                cursor.execute(
+                    """INSERT INTO lab_layout_templates (layout_name, rows, columns)
+                       VALUES (%s, %s, %s) RETURNING layout_id""",
+                    (f"{lab_number} - {lab_name}", rows, columns)
+                )
+                layout_id = cursor.fetchone()['layout_id']
+
+                # Create new lab
+                cursor.execute(
+                    """INSERT INTO labs (lab_id, lab_name, rows, columns, layout_id)
+                       VALUES (%s, %s, %s, %s, %s)""",
+                    (lab_number, lab_name, rows, columns, layout_id)
+                )
+
+            # Insert layout cells
+            station_count = 0
+            for row_idx, row_data in enumerate(grid):
+                for col_idx, cell in enumerate(row_data):
+                    if cell is None:
+                        continue
+                    station_type_id = cell.get("stationTypeId")
+                    station_label = cell.get("stationLabel")
+                    os_list = cell.get("os", [])
+                    notes = cell.get("notes")
+                    is_empty = station_type_id is None
+
+                    cursor.execute(
+                        """INSERT INTO lab_layout_cells
+                           (layout_id, row_number, column_number, station_type_id,
+                            label, is_empty, os_windows, os_linux, os_other, notes)
+                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                        (layout_id, row_idx, col_idx, station_type_id,
+                         station_label, is_empty,
+                         "Windows" in os_list, "Linux" in os_list, "Other" in os_list,
+                         notes)
+                    )
+                    if station_type_id is not None:
+                        station_count += 1
+
+            conn.commit()
+            return jsonify({
+                "success": True,
+                "message": f"Lab '{lab_name}' (Lab {lab_number}) layout saved successfully",
+                "labId": lab_number,
+                "stationCount": station_count
+            })
+        except Exception as db_err:
+            conn.rollback()
+            raise db_err
+        finally:
+            cursor.close()
+            conn.close()
+
+    except Exception as e:
+        print(f"Error saving lab layout: {e}")
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+# -----------------------------
+# Delete Lab Layout (clears layout cells, keeps lab)
+# -----------------------------
+@app.route("/delete_lab_layout/<lab_id>", methods=["DELETE"])
+def delete_lab_layout(lab_id):
+    """Delete the layout cells for a lab (keeps the lab itself)."""
+    try:
+        conn = db.get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("SELECT layout_id FROM labs WHERE lab_id = %s", (lab_id,))
+        lab = cursor.fetchone()
+        if not lab or not lab['layout_id']:
+            cursor.close()
+            conn.close()
+            return jsonify({"error": "No layout found for this lab", "success": False}), 404
+
+        layout_id = lab['layout_id']
+        cursor.execute("DELETE FROM lab_layout_cells WHERE layout_id = %s", (layout_id,))
+        cursor.execute("DELETE FROM lab_layout_templates WHERE layout_id = %s", (layout_id,))
+        cursor.execute("UPDATE labs SET layout_id = NULL WHERE lab_id = %s", (lab_id,))
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return jsonify({"success": True, "message": "Layout cleared successfully"})
+    except Exception as e:
+        print(f"Error deleting lab layout: {e}")
+        traceback.print_exc()
+        return jsonify({"error": str(e), "success": False}), 500
+
+
+# -----------------------------
+# Auto-Assign Devices Based on Layout
+# -----------------------------
+@app.route("/auto_assign_devices", methods=["POST"])
+def auto_assign_devices():
+    """
+    Auto-assign devices to a lab based on its layout blueprint.
+    - Each station type defines which device types it accepts.
+    - One station may hold at most ONE device of each type.
+    - Each device gets a unique code: {prefix}/{number}.
+    - Numbers are per (lab, device_type) and NEVER go backwards.
+    - Assignment order: row-by-row, left to right (top-to-bottom).
+    """
+    try:
+        data = request.json
+        lab_number = data.get("labNumber", "").strip()
+        equipment_list = data.get("equipment", [])
+        code_prefixes = data.get("codePrefixes", {})  # {device_type_name: prefix}
+        linked_groups = data.get("linkedDeviceGroups", [])
+        os_selection = data.get("osSelection", {})  # {device_type_name: {windows, linux, other}}
+
+        if not lab_number:
+            return jsonify({"error": "Lab number is required"}), 400
+        if not equipment_list:
+            return jsonify({"error": "No equipment to assign"}), 400
+
+        conn = db.get_connection()
+        cursor = conn.cursor()
+
+        try:
+            # ── Validate lab & layout ───────────────────────────────
+            cursor.execute(
+                "SELECT lab_id, lab_name, rows, columns, layout_id FROM labs WHERE lab_id = %s",
+                (lab_number,)
+            )
+            lab = cursor.fetchone()
+            if not lab:
+                return jsonify({"error": "Lab not found"}), 404
+            if not lab['layout_id']:
+                return jsonify({"error": "Lab has no layout blueprint. Design one first."}), 400
+
+            layout_id = lab['layout_id']
+            lab_name = lab['lab_name']
+
+            # ── Equipment-type id ↔ name maps ──────────────────────
+            cursor.execute("SELECT type_id, name FROM equipment_types")
+            type_rows = cursor.fetchall()
+            type_id_to_name = {r['type_id']: r['name'] for r in type_rows}
+            type_name_to_id = {r['name']: r['type_id'] for r in type_rows}
+
+            # ── Fetch layout cells ordered L→R, T→B ────────────────
+            cursor.execute("""
+                SELECT lc.row_number, lc.column_number, lc.station_type_id,
+                       lc.is_empty,
+                       st.name AS station_type_name,
+                       st.allowed_device_types
+                FROM lab_layout_cells lc
+                LEFT JOIN station_types st
+                       ON lc.station_type_id = st.station_type_id
+                WHERE lc.layout_id = %s
+                ORDER BY lc.row_number, lc.column_number
+            """, (layout_id,))
+            layout_cells = cursor.fetchall()
+
+            if not layout_cells:
+                return jsonify({"error": "Layout has no cells. Design the layout first."}), 400
+
+            # ── Save existing device→code mapping before reset ───
+            cursor.execute(
+                """SELECT device_id, assigned_code FROM devices
+                   WHERE lab_id = %s AND assigned_code IS NOT NULL
+                         AND assigned_code != ''""",
+                (lab_number,)
+            )
+            previous_codes = {r['device_id']: r['assigned_code']
+                              for r in cursor.fetchall()}
+
+            # ── Reset existing assignments (counters are NOT reset) ─
+            cursor.execute(
+                """UPDATE devices
+                   SET lab_id = NULL, assigned_code = NULL,
+                       qr_value = NULL, is_active = FALSE
+                   WHERE lab_id = %s""",
+                (lab_number,)
+            )
+            cursor.execute("DELETE FROM lab_grid_cells WHERE lab_id = %s", (lab_number,))
+            cursor.execute(
+                """DELETE FROM lab_station_devices
+                   WHERE station_id IN
+                         (SELECT station_id FROM lab_stations WHERE lab_id = %s)""",
+                (lab_number,)
+            )
+            cursor.execute("DELETE FROM lab_stations WHERE lab_id = %s", (lab_number,))
+            cursor.execute("DELETE FROM lab_equipment_pool WHERE lab_id = %s", (lab_number,))
+
+            # ── Populate equipment pool table ───────────────────────
+            for eq in equipment_list:
+                cursor.execute(
+                    """INSERT INTO lab_equipment_pool
+                       (lab_id, equipment_type, brand, model, specification,
+                        quantity_added, invoice_number, bill_id)
+                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""",
+                    (lab_number, eq.get('type'), eq.get('brand'),
+                     eq.get('model'), eq.get('specification'),
+                     eq.get('quantity'), eq.get('invoiceNumber'),
+                     eq.get('billId'))
+                )
+
+            # ── Remaining-quantity tracker ───────────────────────────
+            remaining = {}
+            for eq in equipment_list:
+                key = (eq.get('type', ''), eq.get('brand', ''),
+                       eq.get('model', ''), eq.get('billId'))
+                remaining[key] = remaining.get(key, 0) + eq.get('quantity', 0)
+
+            used_device_ids = set()
+            station_counter = 0
+            devices_assigned = 0
+
+            # ── In-memory counter for device codes (does NOT touch device_code_counters table) ──
+            _type_counters = {}
+            def get_next_number(device_type):
+                _type_counters[device_type] = _type_counters.get(device_type, 0) + 1
+                return _type_counters[device_type]
+
+            # ── Helper: find an unassigned device row ───────────────
+            def find_device(dtype, brand, model, bill_id, inv_no):
+                not_in_clause = ""
+                params = [dtype, brand, model, bill_id, inv_no]
+                if used_device_ids:
+                    ph = ','.join(['%s'] * len(used_device_ids))
+                    not_in_clause = f" AND device_id NOT IN ({ph})"
+                    params.extend(list(used_device_ids))
+                cursor.execute(f"""
+                    SELECT device_id, specification FROM devices
+                    WHERE type_id = (SELECT type_id FROM equipment_types
+                                     WHERE name = %s LIMIT 1)
+                      AND brand IS NOT DISTINCT FROM %s
+                      AND model IS NOT DISTINCT FROM %s
+                      AND bill_id IS NOT DISTINCT FROM %s
+                      AND invoice_number IS NOT DISTINCT FROM %s
+                      AND (assigned_code IS NULL OR assigned_code = '')
+                      {not_in_clause}
+                    ORDER BY device_id ASC LIMIT 1
+                """, params)
+                return cursor.fetchone()
+
+            # ── Helper: assign one device to a station ──────────────
+            def assign_device(device_rec, dtype, brand, model,
+                              inv_no, bill_id, station_id):
+                nonlocal devices_assigned
+                did = device_rec['device_id']
+
+                # Reuse old code if this exact device was already
+                # assigned in this lab — avoids bumping the counter
+                if did in previous_codes:
+                    device_code = previous_codes[did]
+                else:
+                    next_num = get_next_number(dtype)
+                    prefix = code_prefixes.get(dtype, '')
+                    device_code = (f"{prefix}/{next_num}" if prefix
+                                   else f"{dtype}/{next_num}")
+
+                cursor.execute(
+                    """UPDATE devices
+                       SET lab_id=%s, is_active=TRUE,
+                           qr_value=%s, assigned_code=%s
+                       WHERE device_id=%s""",
+                    (lab_number, device_code, device_code, did)
+                )
+                cursor.execute(
+                    """INSERT INTO lab_station_devices
+                       (station_id, device_id, device_type, brand, model,
+                        specification, invoice_number, bill_id,
+                        is_linked, linked_group_id)
+                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                    (station_id, did, dtype, brand, model,
+                     device_rec.get('specification'), inv_no, bill_id,
+                     False, None)
+                )
+                devices_assigned += 1
+                used_device_ids.add(did)
+                return device_code
+
+            # ── Helper: try to place one device of a given type ─────
+            def try_assign_type(type_name, station_id):
+                """Pick the first available equipment row of *type_name*,
+                   find a matching DB device, and assign it."""
+                for eq in equipment_list:
+                    if eq.get('type') != type_name:
+                        continue
+                    ek = (eq.get('type', ''), eq.get('brand', ''),
+                          eq.get('model', ''), eq.get('billId'))
+                    if remaining.get(ek, 0) <= 0:
+                        continue
+                    rec = find_device(
+                        eq.get('type'), eq.get('brand'),
+                        eq.get('model'), eq.get('billId'),
+                        eq.get('invoiceNumber'))
+                    if rec:
+                        remaining[ek] -= 1
+                        assign_device(rec, type_name,
+                                      eq.get('brand'), eq.get('model'),
+                                      eq.get('invoiceNumber'),
+                                      eq.get('billId'), station_id)
+                        return True
+                return False
+
+            # ── Walk every layout cell ──────────────────────────────
+            for cell in layout_cells:
+                row_idx = cell['row_number']
+                col_idx = cell['column_number']
+                st_id   = cell['station_type_id']
+                is_empty = cell.get('is_empty', True)
+                station_name = cell.get('station_type_name') or ''
+
+                # Empty / passage → just record grid cell
+                if is_empty or st_id is None or station_name in ('passage', 'empty'):
+                    cursor.execute(
+                        """INSERT INTO lab_grid_cells
+                           (lab_id, row_number, column_number,
+                            assigned_code, equipment_type,
+                            os_windows, os_linux, os_other,
+                            is_empty, station_id)
+                           VALUES (%s,%s,%s,NULL,%s,
+                                   FALSE,FALSE,FALSE,TRUE,NULL)""",
+                        (lab_number, row_idx, col_idx,
+                         station_name or 'Empty')
+                    )
+                    continue
+
+                # Resolve allowed device-type names for this station
+                raw_allowed = cell.get('allowed_device_types') or []
+                # allowed_device_types is already TEXT[] of type names
+                allowed_names = [t for t in raw_allowed if t]
+
+                # Create station row
+                station_counter += 1
+                station_code = f"{lab_number}/ST-{station_counter}"
+                cursor.execute(
+                    """INSERT INTO lab_stations
+                       (lab_id, assigned_code, row_number, column_number)
+                       VALUES (%s,%s,%s,%s) RETURNING station_id""",
+                    (lab_number, station_code, row_idx, col_idx)
+                )
+                station_id = cursor.fetchone()['station_id']
+
+                # For each allowed device type → assign at most ONE
+                any_assigned = False
+                for type_name in allowed_names:
+                    if try_assign_type(type_name, station_id):
+                        any_assigned = True
+                        print(f"  ✅ Assigned {type_name} to station {station_code}")
+
+                # Record grid cell — resolve OS flags from osSelection for assigned types
+                primary_type = allowed_names[0] if allowed_names else station_name
+                os_win = False
+                os_lin = False
+                os_oth = False
+                for tn in allowed_names:
+                    os_data = os_selection.get(tn, {})
+                    if os_data.get('windows'):
+                        os_win = True
+                    if os_data.get('linux'):
+                        os_lin = True
+                    if os_data.get('other'):
+                        os_oth = True
+                cursor.execute(
+                    """INSERT INTO lab_grid_cells
+                       (lab_id, row_number, column_number,
+                        assigned_code, equipment_type,
+                        os_windows, os_linux, os_other,
+                        is_empty, station_id)
+                       VALUES (%s,%s,%s,%s,%s,
+                               %s,%s,%s,%s,%s)""",
+                    (lab_number, row_idx, col_idx,
+                     station_code, primary_type,
+                     os_win, os_lin, os_oth,
+                     not any_assigned, station_id)
+                )
+
+            # ── Update quantity_assigned in pool ────────────────────
+            cursor.execute("""
+                UPDATE lab_equipment_pool lep
+                SET quantity_assigned = (
+                    SELECT COUNT(*)
+                    FROM lab_station_devices lsd
+                    JOIN lab_stations ls ON lsd.station_id = ls.station_id
+                    WHERE ls.lab_id = lep.lab_id
+                      AND lsd.device_type = lep.equipment_type
+                      AND COALESCE(lsd.brand,'') = COALESCE(lep.brand,'')
+                      AND COALESCE(lsd.model,'') = COALESCE(lep.model,'')
+                      AND lsd.bill_id IS NOT DISTINCT FROM lep.bill_id
+                )
+                WHERE lab_id = %s
+            """, (lab_number,))
+
+            conn.commit()
+            return jsonify({
+                "success": True,
+                "message": f"Devices assigned to lab '{lab_name}' ({lab_number})",
+                "stations_created": station_counter,
+                "devices_assigned": devices_assigned
+            })
+
+        except Exception as db_err:
+            conn.rollback()
+            raise db_err
+        finally:
+            cursor.close()
+            conn.close()
+
+    except Exception as e:
+        print(f"Error auto-assigning devices: {e}")
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+# -----------------------------
+# Get Device Code Counters for a Lab
+# -----------------------------
+@app.route("/get_device_counters/<lab_id>", methods=["GET"])
+def get_device_counters(lab_id):
+    """Return the current numbering counters for each device type in a lab."""
+    try:
+        conn = db.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT device_type, last_number FROM device_code_counters WHERE lab_id = %s",
+            (lab_id,)
+        )
+        rows = cursor.fetchall()
+        counters = {r['device_type']: r['last_number'] for r in rows}
+        cursor.close()
+        conn.close()
+        return jsonify({"success": True, "counters": counters})
+    except Exception as e:
+        print(f"Error fetching counters: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+# -----------------------------
+# Reset Lab Assignments
+# -----------------------------
+@app.route("/reset_lab_assignments/<lab_id>", methods=["POST"])
+def reset_lab_assignments(lab_id):
+    """Clear all device assignments from a lab without touching counters."""
+    try:
+        conn = db.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                """UPDATE devices
+                   SET lab_id = NULL, assigned_code = NULL,
+                       qr_value = NULL, is_active = FALSE
+                   WHERE lab_id = %s""",
+                (lab_id,)
+            )
+            cursor.execute("DELETE FROM lab_grid_cells WHERE lab_id = %s", (lab_id,))
+            cursor.execute(
+                """DELETE FROM lab_station_devices
+                   WHERE station_id IN
+                         (SELECT station_id FROM lab_stations WHERE lab_id = %s)""",
+                (lab_id,)
+            )
+            cursor.execute("DELETE FROM lab_stations WHERE lab_id = %s", (lab_id,))
+            cursor.execute("DELETE FROM lab_equipment_pool WHERE lab_id = %s", (lab_id,))
+            conn.commit()
+            return jsonify({"success": True, "message": f"All assignments cleared for lab {lab_id}"})
+        except Exception as db_err:
+            conn.rollback()
+            raise db_err
+        finally:
+            cursor.close()
+            conn.close()
+    except Exception as e:
+        print(f"Error resetting lab assignments: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+# -----------------------------
+# Save Lab Configuration (equipment pool, prefixes, linked groups — no auto-assign)
+# -----------------------------
+@app.route("/save_lab_config", methods=["POST"])
+def save_lab_config():
+    """Save the equipment pool and code prefixes for a lab without running auto-assign."""
+    try:
+        data = request.json
+        lab_id = data.get("labNumber", "").strip()
+        equipment_list = data.get("equipment", [])
+
+        if not lab_id:
+            return jsonify({"error": "Lab number is required"}), 400
+
+        conn = db.get_connection()
+        cursor = conn.cursor()
+        try:
+            # Clear and repopulate equipment pool
+            cursor.execute("DELETE FROM lab_equipment_pool WHERE lab_id = %s", (lab_id,))
+            for eq in equipment_list:
+                cursor.execute(
+                    """INSERT INTO lab_equipment_pool
+                       (lab_id, equipment_type, brand, model, specification,
+                        quantity_added, invoice_number, bill_id)
+                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""",
+                    (lab_id, eq.get('type'), eq.get('brand'),
+                     eq.get('model'), eq.get('specification'),
+                     eq.get('quantity'), eq.get('invoiceNumber'),
+                     eq.get('billId'))
+                )
+            conn.commit()
+            return jsonify({
+                "success": True,
+                "message": f"Configuration saved for lab {lab_id}",
+                "equipment_count": len(equipment_list)
+            })
+        except Exception as db_err:
+            conn.rollback()
+            raise db_err
+        finally:
+            cursor.close()
+            conn.close()
+    except Exception as e:
+        print(f"Error saving lab config: {e}")
+        return jsonify({"error": str(e)}), 500
+
 
 # -----------------------------
 # Run App

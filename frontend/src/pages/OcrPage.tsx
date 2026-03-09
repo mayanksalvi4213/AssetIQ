@@ -22,6 +22,7 @@ interface Asset {
   brand?: string;
   model?: string;
   device_type?: string; // Auto-detected device type
+  warranty?: string; // Warranty information
 }
 
 interface BillInfo {
@@ -43,6 +44,7 @@ interface BillInfo {
 interface ScanResult {
   success: boolean;
   message: string;
+  llm_enhanced?: boolean;
   bill_info: BillInfo;
   assets: Asset[];
   raw_text: string;
@@ -97,6 +99,11 @@ const OcrPage: React.FC = () => {
   const [normalizedInvoice, setNormalizedInvoice] = useState<NormalizedInvoice | null>(null);
   const [isNormalizing, setIsNormalizing] = useState(false);
 
+  // OCR Edit Mode states
+  const [isEditMode, setIsEditMode] = useState(false);
+  const [editableBillInfo, setEditableBillInfo] = useState<BillInfo | null>(null);
+  const [editableAssets, setEditableAssets] = useState<Asset[]>([]);
+
   // Manual entry states
   const [showManualEntry, setShowManualEntry] = useState(false);
   const [manualDevices, setManualDevices] = useState<ManualDevice[]>([
@@ -122,8 +129,10 @@ const OcrPage: React.FC = () => {
   const [manualTaxAmount, setManualTaxAmount] = useState(0);
   const [manualGstin, setManualGstin] = useState("");
   const [manualBillDate, setManualBillDate] = useState("");
-  const [manualOrderNoAndDate, setManualOrderNoAndDate] = useState("");
-  const [manualCentralStoreInwardNoAndDate, setManualCentralStoreInwardNoAndDate] = useState("");
+  const [manualOrderNo, setManualOrderNo] = useState("");
+  const [manualOrderDate, setManualOrderDate] = useState("");
+  const [manualCentralStoreNo, setManualCentralStoreNo] = useState("");
+  const [manualCentralStoreDate, setManualCentralStoreDate] = useState("");
   const [manualRemarks, setManualRemarks] = useState("");
   const [manualScanResult, setManualScanResult] = useState<ScanResult | null>(null);
 
@@ -222,6 +231,9 @@ const OcrPage: React.FC = () => {
 
       const data: ScanResult = await response.json();
       setScanResult(data);
+      setEditableBillInfo(data.bill_info);
+      setEditableAssets(data.assets);
+      setIsEditMode(false);
       setLoading(false);
     } catch (error) {
       console.error("Error during scan:", error);
@@ -316,7 +328,12 @@ const OcrPage: React.FC = () => {
       const devicesPayload = {
         invoiceNumber: manualDevices[0].invoiceNo,
         vendorName: manualDevices[0].vendorName,
-        devices: manualDevices
+        devices: manualDevices,
+        orderNo: manualOrderNo,
+        orderDate: manualOrderDate,
+        centralStoreNo: manualCentralStoreNo,
+        centralStoreDate: manualCentralStoreDate,
+        remarks: manualRemarks
       };
 
       console.log("Sending devices payload:", JSON.stringify(devicesPayload, null, 2));
@@ -336,6 +353,141 @@ const OcrPage: React.FC = () => {
       alert(`✅ ${billData.message}\n✅ ${devicesData.message}`);
     } catch (error) {
       console.error("Error saving registry:", error);
+      alert((error as Error).message || "Error saving registry");
+    }
+  };
+
+  const handleSaveOcrRegister = async (overwrite: boolean = false) => {
+    // Validate that scanResult exists
+    if (!scanResult || !scanResult.bill_info) {
+      alert("No scan result available to save.");
+      return;
+    }
+
+    // Validate required fields
+    if (!scanResult.bill_info.bill_number || !scanResult.bill_info.vendor_name) {
+      alert("Invoice Number and Vendor Name are required to save the bill.");
+      return;
+    }
+
+    if (!scanResult.bill_info.bill_date) {
+      alert("Bill Date is required to save the bill.");
+      return;
+    }
+
+    // Validate that there are assets
+    if (!scanResult.assets || scanResult.assets.length === 0) {
+      alert("No assets found to save.");
+      return;
+    }
+
+    try {
+      const token = localStorage.getItem("token");
+      const headers: HeadersInit = {
+        "Content-Type": "application/json",
+      };
+
+      if (token) {
+        headers["Authorization"] = `Bearer ${token}`;
+      }
+
+      // STEP 1: Save bill information
+      // Convert date to DD/MM/YYYY format expected by backend
+      let formattedBillDate = scanResult.bill_info.bill_date;
+      if (formattedBillDate) {
+        // Check if date is in YYYY-MM-DD format and convert to DD/MM/YYYY
+        if (formattedBillDate.includes('-')) {
+          const parts = formattedBillDate.split('-');
+          if (parts.length === 3 && parts[0].length === 4) {
+            // Format: YYYY-MM-DD -> DD/MM/YYYY
+            formattedBillDate = `${parts[2]}/${parts[1]}/${parts[0]}`;
+          }
+        }
+      }
+
+      const billPayload = {
+        invoiceNumber: scanResult.bill_info.bill_number,
+        vendorName: scanResult.bill_info.vendor_name,
+        billDate: formattedBillDate,
+        gstin: scanResult.bill_info.vendor_gstin || "",
+        stockEntry: "",
+        taxAmount: scanResult.bill_info.tax_amount || 0,
+        totalAmount: scanResult.bill_info.total_amount || 0,
+        overwrite: overwrite
+      };
+
+      console.log("Saving OCR bill:", billPayload);
+
+      const billResponse = await fetch("http://127.0.0.1:5000/save_bill", {
+        method: "POST",
+        headers,
+        body: JSON.stringify(billPayload),
+      });
+
+      const billData = await billResponse.json();
+      console.log("OCR bill save response:", billResponse.status, billData);
+
+      if (billResponse.status === 409 && billData.duplicate) {
+        // Bill already exists, ask for confirmation
+        const confirmOverwrite = window.confirm(
+          `${billData.message}\n\nDo you want to overwrite it?`
+        );
+        
+        if (confirmOverwrite) {
+          // Retry with overwrite flag
+          await handleSaveOcrRegister(true);
+        }
+        return;
+      }
+
+      if (!billResponse.ok) {
+        throw new Error(billData.error || "Failed to save bill");
+      }
+
+      // STEP 2: Transform OCR assets to match manual entry format
+      // Use editableAssets if in edit mode, otherwise use scanResult.assets
+      const assetsToSave = editableAssets.length > 0 ? editableAssets : scanResult.assets;
+      const transformedDevices = assetsToSave.map((asset, index) => ({
+        id: (index + 1).toString(),
+        deviceType: asset.device_type || asset.category || "Other",
+        customDeviceType: "",
+        dept: "", // OCR doesn't capture department, will need to be filled later
+        invoiceNo: scanResult.bill_info.bill_number,
+        vendorName: scanResult.bill_info.vendor_name,
+        materialDescription: asset.name,
+        modelNo: asset.model || "",
+        brand: asset.brand || "",
+        warranty: asset.warranty || scanResult.bill_info.warranty_info || "",
+        quantity: asset.quantity || 1,
+        amountPerPcs: asset.unit_price || 0,
+        totalAmount: asset.total_price || 0,
+        identityNumber: asset.asset_id || ""
+      }));
+
+      // STEP 3: Save devices information
+      const devicesPayload = {
+        invoiceNumber: scanResult.bill_info.bill_number,
+        vendorName: scanResult.bill_info.vendor_name,
+        devices: transformedDevices
+      };
+
+      console.log("Sending OCR devices payload:", JSON.stringify(devicesPayload, null, 2));
+
+      const devicesResponse = await fetch("http://127.0.0.1:5000/save_devices", {
+        method: "POST",
+        headers,
+        body: JSON.stringify(devicesPayload),
+      });
+
+      const devicesData = await devicesResponse.json();
+
+      if (!devicesResponse.ok) {
+        throw new Error(devicesData.error || "Failed to save devices");
+      }
+
+      alert(`✅ ${billData.message}\n✅ ${devicesData.message}`);
+    } catch (error) {
+      console.error("Error saving OCR registry:", error);
       alert((error as Error).message || "Error saving registry");
     }
   };
@@ -543,6 +695,7 @@ const OcrPage: React.FC = () => {
           <MenuItem setActive={setActive} active={active} item="Lab Management">
             <div className="flex flex-col space-y-2 text-sm p-2">
               <HoveredLink href="/lab-plan">Lab Floor Plans</HoveredLink>
+              <HoveredLink href="/lab-layout">Lab Layout Designer</HoveredLink>
               <HoveredLink href="/lab-configuration">Lab Configuration</HoveredLink>
             </div>
           </MenuItem>
@@ -965,32 +1118,74 @@ const OcrPage: React.FC = () => {
                   />
                 </div>
 
-                {/* Order No. and Date */}
+                {/* Order No. */}
                 <div>
-                  <Label htmlFor="orderNoAndDate" className="text-gray-900 font-semibold">
-                    Order No. and Date <span className="text-red-600">*</span>
+                  <Label htmlFor="orderNo" className="text-gray-900 font-semibold">
+                    Order No. <span className="text-red-600">*</span>
                   </Label>
                   <Input
-                    id="orderNoAndDate"
+                    id="orderNo"
                     type="text"
-                    placeholder="e.g., ORD-2024-001, 15/01/2024"
-                    value={manualOrderNoAndDate}
-                    onChange={(e) => setManualOrderNoAndDate(e.target.value)}
+                    placeholder="e.g., ORD-2024-001"
+                    value={manualOrderNo}
+                    onChange={(e) => setManualOrderNo(e.target.value)}
                     className="mt-1 bg-white border-2 border-gray-300 text-gray-900 placeholder-gray-500 font-medium"
                   />
                 </div>
 
-                {/* Central Store Inward No. and Date */}
+                {/* Order Date */}
                 <div>
-                  <Label htmlFor="centralStoreInwardNoAndDate" className="text-gray-900 font-semibold">
-                    Central Store Inward No. and Date <span className="text-red-600">*</span>
+                  <Label htmlFor="orderDate" className="text-gray-900 font-semibold">
+                    Order Date <span className="text-red-600">*</span>
                   </Label>
                   <Input
-                    id="centralStoreInwardNoAndDate"
+                    id="orderDate"
                     type="text"
-                    placeholder="e.g., CSI-2024-001, 20/01/2024"
-                    value={manualCentralStoreInwardNoAndDate}
-                    onChange={(e) => setManualCentralStoreInwardNoAndDate(e.target.value)}
+                    placeholder="DD/MM/YYYY"
+                    value={manualOrderDate}
+                    onChange={(e) => {
+                      let value = e.target.value.replace(/[^0-9]/g, '');
+                      if (value.length >= 2) value = value.slice(0, 2) + '/' + value.slice(2);
+                      if (value.length >= 5) value = value.slice(0, 5) + '/' + value.slice(5, 9);
+                      setManualOrderDate(value);
+                    }}
+                    maxLength={10}
+                    className="mt-1 bg-white border-2 border-gray-300 text-gray-900 placeholder-gray-500 font-medium"
+                  />
+                </div>
+
+                {/* Central Store Inward No. */}
+                <div>
+                  <Label htmlFor="centralStoreNo" className="text-gray-900 font-semibold">
+                    Central Store Inward No. <span className="text-red-600">*</span>
+                  </Label>
+                  <Input
+                    id="centralStoreNo"
+                    type="text"
+                    placeholder="e.g., CSI-2024-001"
+                    value={manualCentralStoreNo}
+                    onChange={(e) => setManualCentralStoreNo(e.target.value)}
+                    className="mt-1 bg-white border-2 border-gray-300 text-gray-900 placeholder-gray-500 font-medium"
+                  />
+                </div>
+
+                {/* Central Store Inward Date */}
+                <div>
+                  <Label htmlFor="centralStoreDate" className="text-gray-900 font-semibold">
+                    Central Store Inward Date <span className="text-red-600">*</span>
+                  </Label>
+                  <Input
+                    id="centralStoreDate"
+                    type="text"
+                    placeholder="DD/MM/YYYY"
+                    value={manualCentralStoreDate}
+                    onChange={(e) => {
+                      let value = e.target.value.replace(/[^0-9]/g, '');
+                      if (value.length >= 2) value = value.slice(0, 2) + '/' + value.slice(2);
+                      if (value.length >= 5) value = value.slice(0, 5) + '/' + value.slice(5, 9);
+                      setManualCentralStoreDate(value);
+                    }}
+                    maxLength={10}
                     className="mt-1 bg-white border-2 border-gray-300 text-gray-900 placeholder-gray-500 font-medium"
                   />
                 </div>
@@ -1190,8 +1385,10 @@ const OcrPage: React.FC = () => {
                     setManualTaxAmount(0);
                     setManualGstin("");
                     setManualBillDate("");
-                    setManualOrderNoAndDate("");
-                    setManualCentralStoreInwardNoAndDate("");
+                    setManualOrderNo("");
+                    setManualOrderDate("");
+                    setManualCentralStoreNo("");
+                    setManualCentralStoreDate("");
                     setManualRemarks("");
                     setManualScanResult(null);
                   }}
@@ -1264,60 +1461,398 @@ const OcrPage: React.FC = () => {
         <div className="w-full max-w-6xl mb-6 relative z-20">
           {/* Success Message */}
           <div className="mb-6 p-4 bg-green-600/20 border border-green-500 rounded-lg">
-            <h3 className="text-green-400 text-lg font-semibold mb-2">
-              ✅ {scanResult.message}
-            </h3>
+            <div className="flex items-center gap-3 mb-2">
+              <h3 className="text-green-400 text-lg font-semibold">
+                ✅ {scanResult.message}
+              </h3>
+              {scanResult.llm_enhanced && (
+                <span className="px-2 py-0.5 text-xs font-medium rounded-full bg-purple-600/30 border border-purple-500 text-purple-300">
+                  🤖 AI Enhanced
+                </span>
+              )}
+            </div>
             <p className="text-gray-300">
               Extracted {scanResult.assets.length} assets from the bill
+              {scanResult.llm_enhanced && (
+                <span className="text-purple-400 ml-1">
+                  — AI filled missing fields
+                </span>
+              )}
             </p>
           </div>
 
           {/* Bill Information */}
           <div className="mb-6 p-6 rounded-lg border border-gray-600 bg-gray-800/50">
-            <h3 className="text-gray-200 text-xl font-semibold mb-4">
-              📄 Bill Information
-            </h3>
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-gray-200 text-xl font-semibold">
+                📄 Bill Information
+              </h3>
+              <button
+                onClick={() => setIsEditMode(!isEditMode)}
+                className={`px-4 py-2 rounded-lg font-semibold transition-all ${
+                  isEditMode
+                    ? "bg-green-600 hover:bg-green-700 text-white"
+                    : "bg-blue-600 hover:bg-blue-700 text-white"
+                }`}
+              >
+                {isEditMode ? "✓ Done Editing" : "✏️ Edit Details"}
+              </button>
+            </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
-                <p className="text-gray-400 text-sm">Vendor Name</p>
-                <p className="text-gray-200 font-medium">{scanResult.bill_info.vendor_name || "N/A"}</p>
+                <p className="text-gray-400 text-sm mb-1">Vendor Name</p>
+                {isEditMode && editableBillInfo ? (
+                  <Input
+                    value={editableBillInfo.vendor_name}
+                    onChange={(e) => setEditableBillInfo({ ...editableBillInfo, vendor_name: e.target.value })}
+                    className="bg-gray-700 text-white border-gray-600"
+                  />
+                ) : (
+                  <p className="text-gray-200 font-medium">{editableBillInfo?.vendor_name || "N/A"}</p>
+                )}
               </div>
               <div>
-                <p className="text-gray-400 text-sm">Bill Number</p>
-                <p className="text-gray-200 font-medium">{scanResult.bill_info.bill_number || "N/A"}</p>
+                <p className="text-gray-400 text-sm mb-1">Bill Number</p>
+                {isEditMode && editableBillInfo ? (
+                  <Input
+                    value={editableBillInfo.bill_number}
+                    onChange={(e) => setEditableBillInfo({ ...editableBillInfo, bill_number: e.target.value })}
+                    className="bg-gray-700 text-white border-gray-600"
+                  />
+                ) : (
+                  <p className="text-gray-200 font-medium">{editableBillInfo?.bill_number || "N/A"}</p>
+                )}
               </div>
               <div>
-                <p className="text-gray-400 text-sm">GSTIN</p>
-                <p className="text-gray-200 font-medium">{scanResult.bill_info.vendor_gstin || "N/A"}</p>
+                <p className="text-gray-400 text-sm mb-1">GSTIN</p>
+                {isEditMode && editableBillInfo ? (
+                  <Input
+                    value={editableBillInfo.vendor_gstin}
+                    onChange={(e) => setEditableBillInfo({ ...editableBillInfo, vendor_gstin: e.target.value })}
+                    className="bg-gray-700 text-white border-gray-600"
+                  />
+                ) : (
+                  <p className="text-gray-200 font-medium">{editableBillInfo?.vendor_gstin || "N/A"}</p>
+                )}
               </div>
               <div>
-                <p className="text-gray-400 text-sm">Bill Date</p>
-                <p className="text-gray-200 font-medium">{scanResult.bill_info.bill_date || "N/A"}</p>
+                <p className="text-gray-400 text-sm mb-1">Bill Date</p>
+                {isEditMode && editableBillInfo ? (
+                  <Input
+                    value={editableBillInfo.bill_date}
+                    onChange={(e) => setEditableBillInfo({ ...editableBillInfo, bill_date: e.target.value })}
+                    placeholder="DD/MM/YYYY"
+                    className="bg-gray-700 text-white border-gray-600"
+                  />
+                ) : (
+                  <p className="text-gray-200 font-medium">{editableBillInfo?.bill_date || "N/A"}</p>
+                )}
               </div>
               <div>
-                <p className="text-gray-400 text-sm">Total Amount</p>
-                <p className="text-green-400 font-semibold">{formatCurrency(scanResult.bill_info.total_amount)}</p>
+                <p className="text-gray-400 text-sm mb-1">Total Amount</p>
+                {isEditMode && editableBillInfo ? (
+                  <Input
+                    type="number"
+                    step="0.01"
+                    value={editableBillInfo.total_amount}
+                    onChange={(e) => setEditableBillInfo({ ...editableBillInfo, total_amount: parseFloat(e.target.value) || 0 })}
+                    className="bg-gray-700 text-white border-gray-600"
+                  />
+                ) : (
+                  <p className="text-green-400 font-semibold">{formatCurrency(editableBillInfo?.total_amount)}</p>
+                )}
               </div>
               <div>
-                <p className="text-gray-400 text-sm">Tax Amount</p>
-                <p className="text-gray-200 font-medium">{formatCurrency(scanResult.bill_info.tax_amount)}</p>
+                <p className="text-gray-400 text-sm mb-1">Tax Amount</p>
+                {isEditMode && editableBillInfo ? (
+                  <Input
+                    type="number"
+                    step="0.01"
+                    value={editableBillInfo.tax_amount}
+                    onChange={(e) => setEditableBillInfo({ ...editableBillInfo, tax_amount: parseFloat(e.target.value) || 0 })}
+                    className="bg-gray-700 text-white border-gray-600"
+                  />
+                ) : (
+                  <p className="text-gray-200 font-medium">{formatCurrency(editableBillInfo?.tax_amount)}</p>
+                )}
               </div>
             </div>
-            {scanResult.bill_info.vendor_address && (
+            {editableBillInfo?.vendor_address && (
               <div className="mt-4">
-                <p className="text-gray-400 text-sm">Vendor Address</p>
-                <p className="text-gray-200">{scanResult.bill_info.vendor_address}</p>
+                <p className="text-gray-400 text-sm mb-1">Vendor Address</p>
+                {isEditMode ? (
+                  <Input
+                    value={editableBillInfo.vendor_address}
+                    onChange={(e) => setEditableBillInfo({ ...editableBillInfo, vendor_address: e.target.value })}
+                    className="bg-gray-700 text-white border-gray-600"
+                  />
+                ) : (
+                  <p className="text-gray-200">{editableBillInfo.vendor_address}</p>
+                )}
+              </div>
+            )}
+            {isEditMode && (
+              <div className="mt-4 p-3 bg-yellow-900/30 border border-yellow-700 rounded-lg">
+                <p className="text-yellow-300 text-sm">
+                  ⚠️ You are in edit mode. Make your corrections and click "Done Editing" when finished.
+                </p>
               </div>
             )}
           </div>
 
-          {/* Assets Registry */}
+          {/* Edit Panel - Centralized Editing Interface (Grouped) */}
+          {isEditMode && (
+            <div className="mb-6 p-6 rounded-lg border-2 border-yellow-500 bg-gradient-to-br from-yellow-900/20 to-orange-900/20">
+              <div className="flex justify-between items-center mb-4">
+                <div>
+                  <h3 className="text-yellow-400 text-2xl font-bold flex items-center gap-2">
+                    ✏️ Edit Assets (Grouped)
+                  </h3>
+                  <p className="text-yellow-300 text-sm mt-1">
+                    Similar devices are grouped together - edit quantity/price collectively
+                  </p>
+                </div>
+                <button
+                  onClick={() => {
+                    const newAsset: Asset = {
+                      asset_id: `ASSET-${Date.now()}`,
+                      name: "New Asset",
+                      category: "Unknown",
+                      quantity: 1,
+                      unit_price: 0,
+                      total_price: 0,
+                      qr_code: "",
+                      brand: "",
+                      model: "",
+                      device_type: ""
+                    };
+                    setEditableAssets([...editableAssets, newAsset]);
+                  }}
+                  className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg font-semibold transition flex items-center gap-2"
+                >
+                  <IconPlus size={18} />
+                  Add Asset
+                </button>
+              </div>
+
+              {/* Editable Assets Table - Grouped by similar properties */}
+              <div className="overflow-x-auto">
+                <table className="w-full border border-yellow-700 rounded-lg">
+                  <thead className="bg-yellow-900/40">
+                    <tr>
+                      <th className="px-3 py-2 text-left text-yellow-200 text-sm font-semibold">#</th>
+                      <th className="px-3 py-2 text-left text-yellow-200 text-sm font-semibold">Asset Name</th>
+                      <th className="px-3 py-2 text-left text-yellow-200 text-sm font-semibold">Brand</th>
+                      <th className="px-3 py-2 text-left text-yellow-200 text-sm font-semibold">Model</th>
+                      <th className="px-3 py-2 text-left text-yellow-200 text-sm font-semibold">Warranty</th>
+                      <th className="px-3 py-2 text-left text-yellow-200 text-sm font-semibold">Total Qty</th>
+                      <th className="px-3 py-2 text-left text-yellow-200 text-sm font-semibold">Unit Price (₹)</th>
+                      <th className="px-3 py-2 text-left text-yellow-200 text-sm font-semibold">Line Total (₹)</th>
+                      <th className="px-3 py-2 text-center text-yellow-200 text-sm font-semibold">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody className="bg-gray-800/50">
+                    {(() => {
+                      // Group assets by name, brand, model, warranty, and unit_price
+                      const groupedAssets = editableAssets.reduce((groups: any[], asset, originalIndex) => {
+                        const key = `${asset.name}|${asset.brand}|${asset.model}|${asset.warranty}|${asset.unit_price}`;
+                        const existingGroup = groups.find(g => g.key === key);
+                        
+                        if (existingGroup) {
+                          existingGroup.indices.push(originalIndex);
+                          existingGroup.totalQty += asset.quantity;
+                        } else {
+                          groups.push({
+                            key,
+                            name: asset.name,
+                            brand: asset.brand,
+                            model: asset.model,
+                            warranty: asset.warranty,
+                            unit_price: asset.unit_price,
+                            totalQty: asset.quantity,
+                            indices: [originalIndex],
+                            category: asset.category,
+                            device_type: asset.device_type
+                          });
+                        }
+                        return groups;
+                      }, []);
+
+                      return groupedAssets.map((group, groupIndex) => {
+                        const lineTotal = group.totalQty * (group.unit_price || 0);
+                        
+                        return (
+                          <tr key={groupIndex} className="border-t border-yellow-700/30">
+                            <td className="px-3 py-3 text-gray-300 text-sm font-medium">{groupIndex + 1}</td>
+                            <td className="px-3 py-3">
+                              <Input
+                                value={group.name}
+                                onChange={(e) => {
+                                  const updated = [...editableAssets];
+                                  group.indices.forEach((idx: number) => {
+                                    updated[idx] = { ...updated[idx], name: e.target.value };
+                                  });
+                                  setEditableAssets(updated);
+                                }}
+                                className="bg-gray-700 text-white border-gray-600 text-sm h-9"
+                                placeholder="Asset name"
+                              />
+                            </td>
+                            <td className="px-3 py-3">
+                              <Input
+                                value={group.brand || ""}
+                                onChange={(e) => {
+                                  const updated = [...editableAssets];
+                                  group.indices.forEach((idx: number) => {
+                                    updated[idx] = { ...updated[idx], brand: e.target.value };
+                                  });
+                                  setEditableAssets(updated);
+                                }}
+                                className="bg-gray-700 text-white border-gray-600 text-sm h-9"
+                                placeholder="Brand"
+                              />
+                            </td>
+                            <td className="px-3 py-3">
+                              <Input
+                                value={group.model || ""}
+                                onChange={(e) => {
+                                  const updated = [...editableAssets];
+                                  group.indices.forEach((idx: number) => {
+                                    updated[idx] = { ...updated[idx], model: e.target.value };
+                                  });
+                                  setEditableAssets(updated);
+                                }}
+                                className="bg-gray-700 text-white border-gray-600 text-sm h-9"
+                                placeholder="Model"
+                              />
+                            </td>
+                            <td className="px-3 py-3">
+                              <Input
+                                value={group.warranty || ""}
+                                onChange={(e) => {
+                                  const updated = [...editableAssets];
+                                  group.indices.forEach((idx: number) => {
+                                    updated[idx] = { ...updated[idx], warranty: e.target.value };
+                                  });
+                                  setEditableAssets(updated);
+                                }}
+                                className="bg-gray-700 text-white border-gray-600 text-sm h-9"
+                                placeholder="e.g., 3 Years, 5 Years Onsite"
+                              />
+                            </td>
+                            <td className="px-3 py-3">
+                              <Input
+                                type="number"
+                                min="1"
+                                value={group.totalQty}
+                                onChange={(e) => {
+                                  const newTotalQty = parseInt(e.target.value) || 1;
+                                  const updated = [...editableAssets];
+                                  
+                                  // Distribute quantity across all assets in the group
+                                  const qtyPerAsset = Math.floor(newTotalQty / group.indices.length);
+                                  const remainder = newTotalQty % group.indices.length;
+                                  
+                                  group.indices.forEach((idx: number, position: number) => {
+                                    const qty = qtyPerAsset + (position < remainder ? 1 : 0);
+                                    updated[idx] = { 
+                                      ...updated[idx], 
+                                      quantity: qty,
+                                      total_price: (updated[idx].unit_price || 0) * qty
+                                    };
+                                  });
+                                  setEditableAssets(updated);
+                                }}
+                                className="bg-gray-700 text-white border-gray-600 text-sm h-9 w-20"
+                              />
+                              <span className="text-xs text-gray-400 ml-1">
+                                ({group.indices.length} items)
+                              </span>
+                            </td>
+                            <td className="px-3 py-3">
+                              <Input
+                                type="number"
+                                step="0.01"
+                                min="0"
+                                value={group.unit_price || 0}
+                                onChange={(e) => {
+                                  const newPrice = parseFloat(e.target.value) || 0;
+                                  const updated = [...editableAssets];
+                                  
+                                  group.indices.forEach((idx: number) => {
+                                    updated[idx] = { 
+                                      ...updated[idx], 
+                                      unit_price: newPrice,
+                                      total_price: newPrice * updated[idx].quantity
+                                    };
+                                  });
+                                  setEditableAssets(updated);
+                                }}
+                                className="bg-gray-700 text-white border-gray-600 text-sm h-9 w-28"
+                              />
+                            </td>
+                            <td className="px-3 py-3">
+                              <span className="text-green-400 font-semibold text-sm">
+                                {formatCurrency(lineTotal)}
+                              </span>
+                            </td>
+                            <td className="px-3 py-3 text-center">
+                              <button
+                                onClick={() => {
+                                  if (editableAssets.length <= group.indices.length) {
+                                    alert("Cannot remove all assets. At least one asset is required.");
+                                    return;
+                                  }
+                                  if (window.confirm(`Remove all ${group.indices.length} "${group.name}" items?`)) {
+                                    const updated = editableAssets.filter((_, i) => !group.indices.includes(i));
+                                    setEditableAssets(updated);
+                                  }
+                                }}
+                                className="text-red-500 hover:text-red-700 bg-red-900/20 p-2 rounded-lg transition"
+                                title="Remove all items in this group"
+                              >
+                                <IconTrash size={16} />
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      });
+                    })()}
+                  </tbody>
+                </table>
+              </div>
+              
+              {/* Summary */}
+              <div className="mt-4 p-4 bg-yellow-900/20 border border-yellow-700 rounded-lg">
+                <div className="flex justify-between items-center">
+                  <span className="text-yellow-300 font-semibold">Total Individual Assets:</span>
+                  <span className="text-yellow-200 font-bold">{editableAssets.length}</span>
+                </div>
+                <div className="flex justify-between items-center mt-2">
+                  <span className="text-yellow-300 font-semibold">Total Items (Sum of All Quantities):</span>
+                  <span className="text-yellow-200 font-bold">
+                    {editableAssets.reduce((sum, asset) => sum + asset.quantity, 0)}
+                  </span>
+                </div>
+                <div className="flex justify-between items-center mt-2">
+                  <span className="text-yellow-300 font-semibold">Grand Total:</span>
+                  <span className="text-green-400 font-bold text-lg">
+                    {formatCurrency(editableAssets.reduce((sum, asset) => sum + (asset.total_price || 0), 0))}
+                  </span>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Assets Display - Read-only view */}
           <div className="mb-6 p-6 rounded-lg border border-gray-600 bg-gray-800/50">
-            <h3 className="text-gray-200 text-xl font-semibold mb-4">
-              🏷️ Asset Registry ({scanResult.assets.length} items)
-            </h3>
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-gray-200 text-xl font-semibold">
+                🏷️ Asset Registry ({editableAssets.length} items)
+              </h3>
+            </div>
             <div className="grid gap-4">
-              {scanResult.assets.map((asset, index) => (
+              {editableAssets.map((asset, index) => (
                 <div
                   key={index}
                   className="border border-gray-700 rounded-lg p-4 bg-gray-900/50"
@@ -1371,20 +1906,24 @@ const OcrPage: React.FC = () => {
 
                     {/* QR Code */}
                     <div className="flex flex-col items-center gap-2">
-                      <div className="bg-white p-2 rounded-lg">
-                        <img 
-                          src={asset.qr_code} 
-                          alt={`QR code for ${asset.asset_id}`}
-                          className="w-20 h-20"
-                        />
-                      </div>
-                      <button
-                        onClick={() => downloadQRCode(asset)}
-                        className="flex items-center gap-1 text-blue-400 hover:text-blue-300 text-xs"
-                      >
-                        <IconDownload size={12} />
-                        Download QR
-                      </button>
+                      {asset.qr_code && (
+                        <>
+                          <div className="bg-white p-2 rounded-lg">
+                            <img 
+                              src={asset.qr_code} 
+                              alt={`QR code for ${asset.asset_id}`}
+                              className="w-20 h-20"
+                            />
+                          </div>
+                          <button
+                            onClick={() => downloadQRCode(asset)}
+                            className="flex items-center gap-1 text-blue-400 hover:text-blue-300 text-xs"
+                          >
+                            <IconDownload size={12} />
+                            Download QR
+                          </button>
+                        </>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -1398,10 +1937,7 @@ const OcrPage: React.FC = () => {
               as="button"
               containerClassName="rounded-full"
               className="px-6 py-2 bg-blue-600 text-white font-semibold"
-              onClick={() => {
-                alert("✅ Register saved successfully!");
-                // You can add actual save logic here (e.g., download PDF, save to database, etc.)
-              }}
+              onClick={() => handleSaveOcrRegister(false)}
             >
               💾 Save Register
             </HoverBorderGradient>
@@ -1423,6 +1959,9 @@ const OcrPage: React.FC = () => {
                 setFile(null);
                 setScanResult(null);
                 setNormalizedInvoice(null);
+                setEditableBillInfo(null);
+                setEditableAssets([]);
+                setIsEditMode(false);
               }}
             >
               Scan Another Bill
@@ -1544,12 +2083,11 @@ const OcrPage: React.FC = () => {
               <h3 className="text-gray-200 text-lg font-semibold mb-3">
                 Raw Extracted Text:
               </h3>
-              <textarea
-                className="w-full h-64 p-4 rounded-lg border border-gray-700 bg-gray-800 text-gray-200 text-sm"
-                value={scanResult.raw_text}
-                readOnly
-                placeholder="Raw extracted text will appear here..."
-              />
+              <pre
+                className="w-full max-h-[600px] overflow-auto p-4 rounded-lg border border-gray-700 bg-gray-800 text-gray-200 text-sm whitespace-pre-wrap break-words"
+              >
+                {scanResult.raw_text || "No raw text available."}
+              </pre>
             </div>
           )}
         </div>

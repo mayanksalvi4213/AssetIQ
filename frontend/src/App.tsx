@@ -18,6 +18,7 @@ import WarrantyExpiry from "./pages/WarrantyExpiry.tsx";
 import Issues from "./pages/Issues.tsx";
 import Documents from "./pages/Documents.tsx";
 import Transfers from "./pages/Transfers.tsx";
+import LabLayout from "./pages/LabLayout.tsx";
 
 const App: React.FC = () => {
   return (
@@ -47,6 +48,11 @@ const App: React.FC = () => {
           <Route path="/lab-plan" element={
             <ProtectedRoute allowedRoles={['HOD', 'Lab Incharge']}>
               <LabFloorPlan />
+            </ProtectedRoute>
+          } />
+          <Route path="/lab-layout" element={
+            <ProtectedRoute allowedRoles={['HOD', 'Lab Incharge']}>
+              <LabLayout />
             </ProtectedRoute>
           } />
           

@@ -288,6 +288,7 @@ export default function Labplan() {
           <MenuItem setActive={setActive} active={active} item="Lab Management">
             <div className="flex flex-col space-y-2 text-sm p-2">
               <HoveredLink href="/lab-plan">Lab Floor Plans</HoveredLink>
+              <HoveredLink href="/lab-layout">Lab Layout Designer</HoveredLink>
               <HoveredLink href="/lab-configuration">Lab Configuration</HoveredLink>
             </div>
           </MenuItem>

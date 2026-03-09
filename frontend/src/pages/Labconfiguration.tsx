@@ -1,15 +1,15 @@
 "use client";
-import React, { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { motion } from "motion/react";
 import { BackgroundGradient } from "@/components/ui/background-gradient";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { HoverBorderGradient } from "@/components/ui/hover-border-gradient";
-import { Menu, MenuItem, HoveredLink } from "@/components/ui/navbar-menu"; // ✅ navbar
-import { cn } from "@/lib/utils";
+import { Menu, MenuItem, HoveredLink } from "@/components/ui/navbar-menu";
 import { LogoButton } from "@/components/ui/logo-button";
 import { useAuth } from "@/contexts/AuthContext";
 
+// ── Types ────────────────────────────────────────────────────────────
 interface Equipment {
   type: string;
   quantity: number;
@@ -22,1139 +22,500 @@ interface Equipment {
   billId?: number;
 }
 
-interface GridCell {
-  id: string | null; // e.g., "C001" or null for empty
-  equipmentType: string; // "PC", "Empty", "Passage"
-  os: string[]; // ["Windows", "Linux"]
-  deviceGroup?: {
-    assignedCode: string; // e.g., "apsit/it/309/1"
-    devices: {
-      type: string;
-      brand?: string;
-      model?: string;
-      billId?: number;
-      invoiceNumber?: string;
-    }[];
-  };
-}
-
-interface SeatingArrangement {
+interface LabSummary {
+  lab_id: string;
+  lab_name: string;
   rows: number;
   columns: number;
-  grid: GridCell[][]; // 2D array
+  station_count: number;
+  layout_id: number | null;
 }
 
-interface Lab {
-  id: number;
-  name: string;
-  equipment: Equipment[];
-  seatingArrangement?: SeatingArrangement;
+interface LayoutCell {
+  cellId: number | null;
+  stationTypeId: number | null;
+  stationTypeName: string;
+  stationTypeLabel: string;
+  stationLabel: string | null;
+  icon: string;
+  color: string;
+  os: string[];
+  notes: string | null;
 }
 
+// ── Equipment types matching database ────────────────────────────────
+const EQUIPMENT_TYPES = [
+  { id: 1, name: "Laptop" },
+  { id: 2, name: "PC" },
+  { id: 3, name: "AC" },
+  { id: 4, name: "Smart Board" },
+  { id: 5, name: "Projector" },
+  { id: 6, name: "Printer" },
+  { id: 7, name: "Scanner" },
+  { id: 8, name: "UPS" },
+  { id: 9, name: "Router" },
+  { id: 10, name: "Switch" },
+  { id: 11, name: "Server" },
+  { id: 12, name: "Monitor" },
+  { id: 13, name: "Keyboard" },
+  { id: 14, name: "Mouse" },
+  { id: 15, name: "Webcam" },
+  { id: 16, name: "Headset" },
+  { id: 17, name: "Other" },
+];
+
+// ── Component ────────────────────────────────────────────────────────
 export default function LabConfiguration() {
-  
   const { logout } = useAuth();
-  const [labs, setLabs] = useState<Lab[]>([]);
-  const [selectedLabId, setSelectedLabId] = useState<string | null>(null);
-  const [labNumber, setLabNumber] = useState("");
-  const [labName, setLabName] = useState("");
-  const [equipment, setEquipment] = useState<Equipment[]>([]);
   const [active, setActive] = useState<string | null>(null);
-  const [equipmentDropdown, setEquipmentDropdown] = useState<string>("");
-  const [searchResults, setSearchResults] = useState<Equipment[]>([]);
-  const [isSearching, setIsSearching] = useState(false);
-  const [selectedQuantities, setSelectedQuantities] = useState<{ [key: number]: number }>({});
-  
-  // Device types that require OS selection
-  const deviceTypesWithOS = ["Laptop", "PC", "Server"];
-  
-  const requiresOS = (deviceType: string): boolean => {
-    return deviceTypesWithOS.includes(deviceType);
-  };
 
-  // Equipment types matching database device_types table
-  const commonEquipmentTypes = [
-    { id: 1, name: "Laptop" },
-    { id: 2, name: "PC" },
-    { id: 3, name: "AC" },
-    { id: 4, name: "Smart Board" },
-    { id: 5, name: "Projector" },
-    { id: 6, name: "Printer" },
-    { id: 7, name: "Scanner" },
-    { id: 8, name: "UPS" },
-    { id: 9, name: "Router" },
-    { id: 10, name: "Switch" },
-    { id: 11, name: "Server" },
-    { id: 12, name: "Monitor" },
-    { id: 13, name: "Keyboard" },
-    { id: 14, name: "Mouse" },
-    { id: 15, name: "Webcam" },
-    { id: 16, name: "Headset" },
-    { id: 17, name: "Other" },
-  ];
-  
-  // Seating arrangement states
-  const [seatingArrangement, setSeatingArrangement] = useState<SeatingArrangement>({
-    rows: 6,
-    columns: 6,
-    grid: [],
-  });
-  const [showSeatingEditor, setShowSeatingEditor] = useState(false);
-  const [nextComputerId, setNextComputerId] = useState(1);
-  const [codePrefixes, setCodePrefixes] = useState<{ [deviceType: string]: string }>({});
-  const [availableDevicesForSeating, setAvailableDevicesForSeating] = useState<Equipment[]>([]);
-  const [selectedDeviceForPlacement, setSelectedDeviceForPlacement] = useState<Equipment | null>(null);
-  const [selectedDeviceMode, setSelectedDeviceMode] = useState<'linked' | 'standby' | 'standalone' | null>(null);
-  const [selectedLinkedGroupIndex, setSelectedLinkedGroupIndex] = useState<number | null>(null);
+  // Lab selection
+  const [labs, setLabs] = useState<LabSummary[]>([]);
+  const [selectedLabId, setSelectedLabId] = useState<string | null>(null);
+  const [labName, setLabName] = useState("");
+
+  // Layout preview (read-only from blueprint)
+  const [layoutGrid, setLayoutGrid] = useState<LayoutCell[][] | null>(null);
+  const [layoutRows, setLayoutRows] = useState(0);
+  const [layoutCols, setLayoutCols] = useState(0);
+
+  // Seating arrangement (assigned devices per cell from get_lab)
+  const [seatingGrid, setSeatingGrid] = useState<any[][] | null>(null);
+
+  // Equipment
+  const [equipment, setEquipment] = useState<Equipment[]>([]);
+  const [equipmentDropdown, setEquipmentDropdown] = useState("");
+  const [rawSearchResults, setRawSearchResults] = useState<Equipment[]>([]);
+  const [isSearching, setIsSearching] = useState(false);
+  const [selectedQuantities, setSelectedQuantities] = useState<Record<number, number>>({});
+
+  // Derive displayed search results reactively from raw API results minus current equipment
+  const searchResults = useMemo(() => {
+    return rawSearchResults
+      .map((d) => {
+        const existing = equipment.find(
+          (eq) =>
+            eq.type === d.type &&
+            eq.brand === d.brand &&
+            eq.model === d.model &&
+            eq.billId === d.billId &&
+            eq.invoiceNumber === d.invoiceNumber
+        );
+        return existing ? { ...d, quantity: d.quantity - existing.quantity } : d;
+      })
+      .filter((d) => d.quantity > 0);
+  }, [rawSearchResults, equipment]);
+
+  // Device linking
   const [linkedDeviceGroups, setLinkedDeviceGroups] = useState<Equipment[][]>([]);
   const [currentLinkingGroup, setCurrentLinkingGroup] = useState<Equipment[]>([]);
   const [showLinkingModal, setShowLinkingModal] = useState(false);
-  const [selectionStart, setSelectionStart] = useState<{ row: number; col: number } | null>(null);
-  const [selectionEnd, setSelectionEnd] = useState<{ row: number; col: number } | null>(null);
-  const [isSelecting, setIsSelecting] = useState(false);
-  const [bulkOSWindows, setBulkOSWindows] = useState(false);
-  const [bulkOSLinux, setBulkOSLinux] = useState(false);
-  const [bulkOSOther, setBulkOSOther] = useState(false);
 
-  // Initialize empty grid
-  useEffect(() => {
-    const emptyGrid: GridCell[][] = Array.from({ length: seatingArrangement.rows }, () =>
-      Array.from({ length: seatingArrangement.columns }, () => ({
-        id: null,
-        equipmentType: "Empty",
-        os: [],
-      }))
-    );
-    setSeatingArrangement(prev => ({ ...prev, grid: emptyGrid }));
-  }, [seatingArrangement.rows, seatingArrangement.columns]);
+  // Code prefixes (keyed by device type name)
+  const [codePrefixes, setCodePrefixes] = useState<Record<string, string>>({});
 
-  // Fetch existing labs from database
+  // OS selection per device type (for PC type)
+  const [osSelection, setOsSelection] = useState<Record<string, { windows: boolean; linux: boolean; other: boolean }>>({});
+
+  // Compute which device types still have unassigned units
+  const unassignedTypes = useMemo(() => {
+    if (!seatingGrid || equipment.length === 0) return new Set(equipment.map((eq) => eq.type));
+    // Count how many devices of each type are already assigned in the grid
+    const assignedCounts: Record<string, number> = {};
+    for (const row of seatingGrid) {
+      for (const cell of row) {
+        const devices = cell?.deviceGroup?.devices || [];
+        for (const d of devices) {
+          if (d.type) assignedCounts[d.type] = (assignedCounts[d.type] || 0) + 1;
+        }
+      }
+    }
+    // Total quantities per type from equipment pool
+    const totalByType: Record<string, number> = {};
+    for (const eq of equipment) {
+      totalByType[eq.type] = (totalByType[eq.type] || 0) + eq.quantity;
+    }
+    const result = new Set<string>();
+    for (const dt of Object.keys(totalByType)) {
+      if ((assignedCounts[dt] || 0) < totalByType[dt]) result.add(dt);
+    }
+    return result;
+  }, [seatingGrid, equipment]);
+
+  // Assignment
+  const [isAssigning, setIsAssigning] = useState(false);
+  const [isResetting, setIsResetting] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+
+  // ── Auth ─────────────────────────────────────────────────────────
+  const authHeaders = (): HeadersInit => {
+    const h: HeadersInit = { "Content-Type": "application/json" };
+    const token = localStorage.getItem("token");
+    if (token) h["Authorization"] = `Bearer ${token}`;
+    return h;
+  };
+
+  // ── Fetch labs ───────────────────────────────────────────────────
   useEffect(() => {
-    fetchLabs();
+    (async () => {
+      try {
+        const res = await fetch("http://127.0.0.1:5000/get_labs_for_layout", { headers: authHeaders() });
+        const data = await res.json();
+        if (data.success) setLabs(data.labs);
+      } catch (err) {
+        console.error("Error fetching labs:", err);
+      }
+    })();
   }, []);
 
-  const fetchLabs = async () => {
+  // ── Load lab ─────────────────────────────────────────────────────
+  const loadLab = async (labId: string) => {
+    setSelectedLabId(labId);
+    setEquipment([]);
+    setLinkedDeviceGroups([]);
+    setCodePrefixes({});
+    setOsSelection({});
+    setSeatingGrid(null);
+    setRawSearchResults([]);
+
+    // Fetch layout blueprint
     try {
-      const token = localStorage.getItem("token");
-      const headers: HeadersInit = {
-        "Content-Type": "application/json",
-      };
-
-      if (token) {
-        headers["Authorization"] = `Bearer ${token}`;
+      const res = await fetch(`http://127.0.0.1:5000/get_lab_layout/${labId}`, { headers: authHeaders() });
+      const data = await res.json();
+      if (data.success && data.layout) {
+        const l = data.layout;
+        setLabName(l.labName);
+        setLayoutRows(l.rows);
+        setLayoutCols(l.columns);
+        setLayoutGrid(l.grid);
       }
-
-      const response = await fetch("http://127.0.0.1:5000/get_labs", {
-        method: "GET",
-        headers,
-      });
-
-      if (!response.ok) {
-        throw new Error("Failed to fetch labs");
-      }
-
-      const data = await response.json();
-      if (data.success && data.labs) {
-        // Convert database labs to frontend format
-        const formattedLabs = data.labs.map((lab: any) => ({
-          id: lab.lab_id,
-          name: `${lab.lab_id} - ${lab.lab_name}`,
-          equipment: [],
-          seatingArrangement: {
-            rows: lab.rows,
-            columns: lab.columns,
-            grid: []
-          }
-        }));
-        setLabs(formattedLabs);
-      }
-    } catch (error) {
-      console.error("Error fetching labs:", error);
-    }
-  };
-
-  const searchEquipment = async () => {
-    if (!equipmentDropdown) {
-      alert("Please select an equipment type to search");
-      return;
+    } catch (err) {
+      console.error("Error loading layout:", err);
     }
 
-    setIsSearching(true);
+    // Fetch existing equipment pool + reconstruct linked groups + prefixes
     try {
-      const token = localStorage.getItem("token");
-      const headers: HeadersInit = {
-        "Content-Type": "application/json",
-      };
-
-      if (token) {
-        headers["Authorization"] = `Bearer ${token}`;
-      }
-
-      const response = await fetch(`http://127.0.0.1:5000/search_devices?type_id=${equipmentDropdown}`, {
-        method: "GET",
-        headers,
-      });
-
-      if (!response.ok) {
-        throw new Error("Failed to search devices");
-      }
-
-      const data = await response.json();
-      
-      // Filter out devices that are already in the equipment list
-      const filteredResults = (data.devices || []).map((device: Equipment) => {
-        // Find if this device is already in equipment list
-        const alreadyAdded = equipment.find(
-          eq => eq.type === device.type && 
-                eq.brand === device.brand && 
-                eq.model === device.model && 
-                eq.billId === device.billId &&
-                eq.invoiceNumber === device.invoiceNumber
-        );
-        
-        if (alreadyAdded) {
-          // Reduce available quantity by the amount already added
-          return {
-            ...device,
-            quantity: device.quantity! - alreadyAdded.quantity
-          };
-        }
-        
-        return device;
-      }).filter((device: Equipment) => device.quantity! > 0); // Remove devices with 0 quantity
-      
-      setSearchResults(filteredResults);
-      
-      // Initialize selected quantities to 1 for each result
-      const initialQuantities: { [key: number]: number } = {};
-      filteredResults.forEach((_: any, idx: number) => {
-        initialQuantities[idx] = 1;
-      });
-      setSelectedQuantities(initialQuantities);
-      
-      setIsSearching(false);
-    } catch (error) {
-      console.error("Error searching devices:", error);
-      alert((error as Error).message || "Error searching devices");
-      setIsSearching(false);
-    }
-  };
-
-  const addEquipmentFromSearch = (equipmentItem: Equipment, idx: number) => {
-    const quantityToAdd = selectedQuantities[idx] || 1;
-    
-    // Validate quantity
-    if (quantityToAdd > equipmentItem.quantity!) {
-      alert(`Cannot add more than ${equipmentItem.quantity} items available`);
-      return;
-    }
-    
-    if (quantityToAdd <= 0) {
-      alert("Please select a valid quantity");
-      return;
-    }
-    
-    // Check if this device already exists in equipment list
-    const existingIndex = equipment.findIndex(
-      eq => eq.type === equipmentItem.type && 
-            eq.brand === equipmentItem.brand && 
-            eq.model === equipmentItem.model && 
-            eq.billId === equipmentItem.billId &&
-            eq.invoiceNumber === equipmentItem.invoiceNumber
-    );
-    
-    if (existingIndex !== -1) {
-      // Device already exists, update quantity
-      setEquipment(prev => 
-        prev.map((eq, i) => 
-          i === existingIndex 
-            ? { ...eq, quantity: eq.quantity + quantityToAdd }
-            : eq
-        )
-      );
-      
-      // Update available devices for seating
-      setAvailableDevicesForSeating(prev =>
-        prev.map(eq =>
-          eq.type === equipmentItem.type && 
-          eq.brand === equipmentItem.brand && 
-          eq.model === equipmentItem.model && 
-          eq.billId === equipmentItem.billId &&
-          eq.invoiceNumber === equipmentItem.invoiceNumber
-            ? { ...eq, quantity: eq.quantity + quantityToAdd }
-            : eq
-        )
-      );
-    } else {
-      // New device, add to lists
-      const newEquipment = { ...equipmentItem, quantity: quantityToAdd };
-      setEquipment(prev => [...prev, newEquipment]);
-      setAvailableDevicesForSeating(prev => [...prev, newEquipment]);
-    }
-    
-    // Update search results to reduce available quantity
-    setSearchResults(prevResults => 
-      prevResults.map((item, i) => 
-        i === idx 
-          ? { ...item, quantity: item.quantity! - quantityToAdd }
-          : item
-      ).filter(item => item.quantity! > 0) // Remove items with 0 quantity
-    );
-    
-    // Reset quantity selector for this item
-    setSelectedQuantities(prev => ({
-      ...prev,
-      [idx]: 1
-    }));
-  };
-
-  const handleEquipmentDropdownChange = (value: string) => {
-    setEquipmentDropdown(value);
-  };
-
-  const saveLab = async () => {
-    const payload = { labNumber, labName, equipment, seatingArrangement };
-    console.log("Saving Lab Config:", payload);
-
-    try {
-      const token = localStorage.getItem("token");
-      const headers: HeadersInit = {
-        "Content-Type": "application/json",
-      };
-
-      if (token) {
-        headers["Authorization"] = `Bearer ${token}`;
-      }
-
-      const response = await fetch("http://127.0.0.1:5000/save_lab", {
-        method: "POST",
-        headers,
-        body: JSON.stringify(payload),
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || "Failed to save lab configuration");
-      }
-
-      const data = await response.json();
-      alert(`✅ ${data.message}\n${data.devices_assigned} devices assigned to the lab`);
-
-      // Refresh labs list
-      await fetchLabs();
-
-      setSelectedLabId(null);
-      setLabNumber("");
-      setLabName("");
-      setEquipment([]);
-      setAvailableDevicesForSeating([]);
-      setSelectedDeviceForPlacement(null);
-      const emptyGrid: GridCell[][] = Array.from({ length: 6 }, () =>
-        Array.from({ length: 6 }, () => ({
-          id: null,
-          equipmentType: "Empty",
-          os: [],
-        }))
-      );
-      setSeatingArrangement({ rows: 6, columns: 6, grid: emptyGrid });
-      setShowSeatingEditor(false);
-    } catch (error) {
-      console.error("Error saving lab:", error);
-      alert((error as Error).message || "Error saving lab configuration");
-    }
-  };
-
-  const loadLab = async (id: string) => {
-    try {
-      const token = localStorage.getItem("token");
-      const headers: HeadersInit = {
-        "Content-Type": "application/json",
-      };
-
-      if (token) {
-        headers["Authorization"] = `Bearer ${token}`;
-      }
-
-      const response = await fetch(`http://127.0.0.1:5000/get_lab/${id}`, {
-        method: "GET",
-        headers,
-      });
-
-      if (!response.ok) {
-        throw new Error("Failed to load lab configuration");
-      }
-
-      const data = await response.json();
-      console.log("📥 Loaded lab data from API:", data);
-      
+      const res = await fetch(`http://127.0.0.1:5000/get_lab/${labId}`, { headers: authHeaders() });
+      const data = await res.json();
       if (data.success && data.lab) {
         const labData = data.lab;
-        console.log("📋 Lab configuration:", labData);
-        console.log("🔧 Equipment from DB:", labData.equipment);
-        console.log("🗺️ Seating arrangement:", labData.seatingArrangement);
-        console.log("🔖 Assigned code prefix:", labData.assignedCodePrefix);
-        
-        setSelectedLabId(id);
-        setLabNumber(labData.labNumber);
-        setLabName(labData.labName);
         setEquipment(labData.equipment || []);
-        
-        // Calculate which devices are already placed on the grid and extract linked groups FIRST
-        const placedDevices: { type: string; brand?: string; model?: string; billId?: number; count: number }[] = [];
-        const linkedGroupsFromGrid: Equipment[][] = [];
-        const linkedGroupMap = new Map<number, Equipment[]>(); // linked_group_id -> devices
-        
+
+        // Store seating arrangement grid (has assigned device data)
         if (labData.seatingArrangement?.grid) {
-          labData.seatingArrangement.grid.forEach((row: any) => {
-            row.forEach((cell: any) => {
-              if (cell.deviceGroup && cell.deviceGroup.devices) {
-                cell.deviceGroup.devices.forEach((dev: any) => {
-                  const existing = placedDevices.find(
-                    pd => pd.type === dev.type && pd.brand === dev.brand && 
-                          pd.model === dev.model && pd.billId === dev.billId
-                  );
-                  if (existing) {
-                    existing.count++;
-                  } else {
-                    placedDevices.push({
+          setSeatingGrid(labData.seatingArrangement.grid);
+        }
+
+        // Reconstruct linked groups from grid
+        const groups: Equipment[][] = [];
+        if (labData.seatingArrangement?.grid) {
+          for (const row of labData.seatingArrangement.grid) {
+            for (const cell of row) {
+              if (cell.deviceGroup?.devices?.length > 1) {
+                const groupKey = cell.deviceGroup.devices
+                  .map((d: any) => `${d.type}-${d.brand}-${d.model}-${d.billId}`)
+                  .sort()
+                  .join("|");
+                const exists = groups.some((g) => {
+                  const k = g
+                    .map((d) => `${d.type}-${d.brand}-${d.model}-${d.billId}`)
+                    .sort()
+                    .join("|");
+                  return k === groupKey;
+                });
+                if (!exists) {
+                  groups.push(
+                    cell.deviceGroup.devices.map((dev: any) => ({
                       type: dev.type,
                       brand: dev.brand,
                       model: dev.model,
                       billId: dev.billId,
-                      count: 1
-                    });
-                  }
-                });
-                
-                // Reconstruct linked groups (devices with more than 1 type in same station)
-                if (cell.deviceGroup.devices.length > 1) {
-                  // Check if we've already added this linked group
-                  const groupKey = cell.deviceGroup.devices
-                    .map((d: any) => `${d.type}-${d.brand}-${d.model}-${d.billId}`)
-                    .sort()
-                    .join('|');
-                  
-                  const alreadyExists = linkedGroupsFromGrid.some(group => {
-                    const existingKey = group
-                      .map(d => `${d.type}-${d.brand}-${d.model}-${d.billId}`)
-                      .sort()
-                      .join('|');
-                    return existingKey === groupKey;
-                  });
-                  
-                  if (!alreadyExists) {
-                    const groupDevices = cell.deviceGroup.devices.map((dev: any) => {
-                      const fullEquipment = labData.equipment.find(
-                        (eq: any) => eq.type === dev.type && eq.brand === dev.brand && 
-                                    eq.model === dev.model && eq.billId === dev.billId
-                      );
-                      return {
-                        type: dev.type,
-                        brand: dev.brand,
-                        model: dev.model,
-                        billId: dev.billId,
-                        invoiceNumber: dev.invoiceNumber,
-                        quantity: 1,
-                        specification: fullEquipment?.specification,
-                        unitPrice: fullEquipment?.unitPrice,
-                        purchaseDate: fullEquipment?.purchaseDate,
-                      };
-                    });
-                    linkedGroupsFromGrid.push(groupDevices);
-                  }
+                      invoiceNumber: dev.invoiceNumber,
+                      quantity: 1,
+                    }))
+                  );
                 }
               }
-            });
-          });
+            }
+          }
         }
-        
-        // Set linked device groups
-        setLinkedDeviceGroups(linkedGroupsFromGrid);
-        console.log("🔗 Reconstructed linked groups:", linkedGroupsFromGrid);
-        
-        // Extract code prefixes from grid (after we know the linked groups)
-        const extractedPrefixes: { [deviceType: string]: string } = {};
+        setLinkedDeviceGroups(groups);
+
+        // Extract prefixes
+        const prefixes: Record<string, string> = {};
         if (labData.seatingArrangement?.grid) {
-          labData.seatingArrangement.grid.forEach((row: any) => {
-            row.forEach((cell: any) => {
-              if (cell.deviceGroup && cell.deviceGroup.devices && cell.deviceGroup.assignedCode) {
-                const devices = cell.deviceGroup.devices;
-                // Extract prefix by removing the sequence number
-                const parts = cell.deviceGroup.assignedCode.split('/');
-                if (parts.length > 0) {
-                  parts.pop(); // Remove sequence number
-                  const prefix = parts.join('/');
-                  
-                  // Check if this is a linked group (multiple device types)
+          for (const row of labData.seatingArrangement.grid) {
+            for (const cell of row) {
+              if (cell.deviceGroup?.assignedCode && cell.deviceGroup?.devices) {
+                const parts = cell.deviceGroup.assignedCode.split("/");
+                if (parts.length > 1) {
+                  parts.pop();
+                  const prefix = parts.join("/");
+                  const devices = cell.deviceGroup.devices;
                   if (devices.length > 1) {
-                    // Find the linked group index
-                    const groupIndex = linkedGroupsFromGrid.findIndex(group => {
-                      const groupDeviceTypes = group.map(d => d.type).sort().join(',');
-                      const cellDeviceTypes = devices.map((d: any) => d.type).sort().join(',');
-                      return groupDeviceTypes === cellDeviceTypes;
+                    const gi = groups.findIndex((g) => {
+                      const gt = g.map((d) => d.type).sort().join(",");
+                      const ct = devices.map((d: any) => d.type).sort().join(",");
+                      return gt === ct;
                     });
-                    
-                    if (groupIndex !== -1 && !extractedPrefixes[`linked_group_${groupIndex}`]) {
-                      extractedPrefixes[`linked_group_${groupIndex}`] = prefix;
+                    if (gi !== -1 && !prefixes[`linked_group_${gi}`]) {
+                      prefixes[`linked_group_${gi}`] = prefix;
                     }
-                  } else {
-                    // Standalone device
-                    const deviceType = devices[0].type;
-                    if (!extractedPrefixes[deviceType]) {
-                      extractedPrefixes[deviceType] = prefix;
-                    }
+                  } else if (!prefixes[devices[0].type]) {
+                    prefixes[devices[0].type] = prefix;
                   }
                 }
               }
-            });
-          });
-        }
-        setCodePrefixes(extractedPrefixes);
-        
-        // Calculate available devices (total equipment - placed devices)
-        console.log("📊 Placed devices count:", placedDevices);
-        const availableDevices = (labData.equipment || []).map((eq: Equipment) => {
-          const placed = placedDevices.find(
-            pd => pd.type === eq.type && pd.brand === eq.brand && 
-                  pd.model === eq.model && pd.billId === eq.billId
-          );
-          const placedCount = placed ? placed.count : 0;
-          const availableCount = eq.quantity - placedCount;
-          
-          console.log(`  ${eq.type} ${eq.brand} ${eq.model}: Total=${eq.quantity}, Placed=${placedCount}, Available=${availableCount}`);
-          
-          return {
-            ...eq,
-            quantity: availableCount
-          };
-        }).filter((eq: Equipment) => eq.quantity > 0); // Only include devices with available quantity
-        
-        console.log("✅ Available devices for placement:", availableDevices);
-        setAvailableDevicesForSeating(availableDevices);
-        
-        if (labData.seatingArrangement) {
-          setSeatingArrangement(labData.seatingArrangement);
-        }
-        
-        // Show seating editor if there's a configured layout
-        if (labData.seatingArrangement?.grid?.some((row: any) => 
-          row.some((cell: any) => cell.deviceGroup)
-        )) {
-          setShowSeatingEditor(true);
-        }
-      }
-    } catch (error) {
-      console.error("Error loading lab:", error);
-      alert((error as Error).message || "Error loading lab configuration");
-    }
-  };
-
-  const handleMouseDown = (rowIdx: number, colIdx: number) => {
-    const cell = seatingArrangement.grid[rowIdx][colIdx];
-    
-    // If clicking on an occupied cell, remove it
-    if (cell.equipmentType !== "Empty") {
-      removeCellDevice(rowIdx, colIdx);
-      return;
-    }
-    
-    // If no device selected for placement, show alert
-    if (!selectedDeviceForPlacement) {
-      alert("Please select a device to place on the grid");
-      return;
-    }
-    
-    // Start drag selection
-    setIsSelecting(true);
-    setSelectionStart({ row: rowIdx, col: colIdx });
-    setSelectionEnd({ row: rowIdx, col: colIdx });
-  };
-
-  const handleMouseEnter = (rowIdx: number, colIdx: number) => {
-    if (isSelecting && selectionStart) {
-      setSelectionEnd({ row: rowIdx, col: colIdx });
-    }
-  };
-
-  const isInSelectionArea = (rowIdx: number, colIdx: number, start: { row: number; col: number }, end: { row: number; col: number } | null) => {
-    if (!end) return false;
-    const minRow = Math.min(start.row, end.row);
-    const maxRow = Math.max(start.row, end.row);
-    const minCol = Math.min(start.col, end.col);
-    const maxCol = Math.max(start.col, end.col);
-    return rowIdx >= minRow && rowIdx <= maxRow && colIdx >= minCol && colIdx <= maxCol;
-  };
-
-  const handleMouseUp = (rowIdx: number, colIdx: number) => {
-    if (!isSelecting || !selectionStart) return;
-    
-    setIsSelecting(false);
-    
-    // Determine if it's a single click or drag
-    if (selectionStart.row === rowIdx && selectionStart.col === colIdx) {
-      // Single click - place one device
-      placeDeviceOnGrid(rowIdx, colIdx);
-    } else {
-      // Drag - fill rectangle area
-      fillRectangle(selectionStart.row, selectionStart.col, rowIdx, colIdx);
-    }
-    
-    setSelectionStart(null);
-    setSelectionEnd(null);
-  };
-
-  const removeCellDevice = (rowIdx: number, colIdx: number) => {
-    const cell = seatingArrangement.grid[rowIdx][colIdx];
-    
-    if (cell.deviceGroup) {
-      // Return devices to available pool
-      const devicesToReturn = cell.deviceGroup.devices;
-      
-      setAvailableDevicesForSeating(prev => {
-        const newAvailable = [...prev];
-        
-        devicesToReturn.forEach(dev => {
-          // Find existing device entry
-          const existingIndex = newAvailable.findIndex(
-            eq => eq.type === dev.type && eq.brand === dev.brand && eq.model === dev.model && eq.billId === dev.billId
-          );
-          
-          if (existingIndex !== -1) {
-            // Device already exists, increment quantity
-            newAvailable[existingIndex] = {
-              ...newAvailable[existingIndex],
-              quantity: newAvailable[existingIndex].quantity + 1
-            };
-          } else {
-            // Device doesn't exist, find from original equipment list or linked groups to get full metadata
-            const originalEquipment = equipment.find(
-              eq => eq.type === dev.type && eq.brand === dev.brand && eq.model === dev.model && eq.billId === dev.billId
-            );
-            
-            // Add device back with full metadata
-            newAvailable.push({
-              type: dev.type,
-              quantity: 1,
-              brand: dev.brand,
-              model: dev.model,
-              billId: dev.billId,
-              invoiceNumber: dev.invoiceNumber,
-              specification: originalEquipment?.specification,
-              unitPrice: originalEquipment?.unitPrice,
-              purchaseDate: originalEquipment?.purchaseDate,
-            });
-          }
-        });
-        
-        return newAvailable;
-      });
-      
-      // Clear the cell and renumber all cells
-      const newGrid = seatingArrangement.grid.map(row => [...row]);
-      newGrid[rowIdx][colIdx] = {
-        id: null,
-        equipmentType: "Empty",
-        os: [],
-      };
-      
-      // Renumber all remaining cells horizontally
-      renumberGrid(newGrid);
-    }
-  };
-
-  const fillRectangle = (startRow: number, startCol: number, endRow: number, endCol: number) => {
-    if (!selectedDeviceForPlacement) return;
-    
-    const newGrid = seatingArrangement.grid.map(row => [...row]);
-    const minRow = Math.min(startRow, endRow);
-    const maxRow = Math.max(startRow, endRow);
-    const minCol = Math.min(startCol, endCol);
-    const maxCol = Math.max(startCol, endCol);
-    let placedCount = 0;
-    
-    // Only use linked group if mode is 'linked'
-    let devicesToPlace: Equipment[];
-    if (selectedDeviceMode === 'linked' && selectedLinkedGroupIndex !== null) {
-      devicesToPlace = linkedDeviceGroups[selectedLinkedGroupIndex];
-    } else {
-      devicesToPlace = [selectedDeviceForPlacement];
-    }
-    
-    // Calculate how many we can actually place
-    const availableQuantities = devicesToPlace.map(device => {
-      const available = availableDevicesForSeating.find(
-        eq => eq.type === device.type && eq.brand === device.brand && eq.model === device.model && eq.billId === device.billId
-      );
-      return available?.quantity || 0;
-    });
-    
-    const maxPlaceable = Math.min(...availableQuantities);
-    
-    // Collect all devices to reduce from available pool
-    const devicesToReduce: { type: string; brand?: string; model?: string; billId?: number }[] = [];
-    
-    for (let row = minRow; row <= maxRow; row++) {
-      for (let col = minCol; col <= maxCol; col++) {
-        if (newGrid[row][col].equipmentType === "Empty" && placedCount < maxPlaceable) {
-          // Create device group
-          const deviceGroup = {
-            assignedCode: '',
-            devices: devicesToPlace.map(eq => ({
-              type: eq.type,
-              brand: eq.brand,
-              model: eq.model,
-              billId: eq.billId,
-              invoiceNumber: eq.invoiceNumber,
-            }))
-          };
-          
-          // Only set OS for devices that need it
-          const needsOS = devicesToPlace.some(d => requiresOS(d.type));
-          
-          newGrid[row][col] = {
-            id: null,
-            equipmentType: selectedDeviceForPlacement.type,
-            os: needsOS ? ["Windows"] : [],
-            deviceGroup
-          };
-          
-          // Add to list of devices to reduce
-          devicesToPlace.forEach(dev => {
-            devicesToReduce.push({
-              type: dev.type,
-              brand: dev.brand,
-              model: dev.model,
-              billId: dev.billId
-            });
-          });
-          
-          placedCount++;
-        }
-      }
-    }
-    
-    if (placedCount < (maxRow - minRow + 1) * (maxCol - minCol + 1)) {
-      alert(`Only ${placedCount} devices placed out of ${(maxRow - minRow + 1) * (maxCol - minCol + 1)} cells selected.`);
-    }
-    
-    // Batch update available devices in a single state update
-    setAvailableDevicesForSeating(prev => {
-      const newAvailable = [...prev];
-      
-      devicesToReduce.forEach(dev => {
-        const existingIndex = newAvailable.findIndex(
-          eq => eq.type === dev.type && eq.brand === dev.brand && eq.model === dev.model && eq.billId === dev.billId
-        );
-        
-        if (existingIndex !== -1) {
-          newAvailable[existingIndex] = {
-            ...newAvailable[existingIndex],
-            quantity: newAvailable[existingIndex].quantity - 1
-          };
-        }
-      });
-      
-      return newAvailable.filter(eq => eq.quantity > 0);
-    });
-    
-    // Renumber all cells horizontally
-    renumberGrid(newGrid);
-  };
-
-  const renumberGrid = (grid: GridCell[][]) => {
-    // Track sequence numbers per device type or linked group
-    const sequenceNumbers: { [key: string]: number } = {};
-    
-    // Go through grid horizontally (row by row, left to right)
-    for (let row = 0; row < grid.length; row++) {
-      for (let col = 0; col < grid[row].length; col++) {
-        const cell = grid[row][col];
-        if (cell.deviceGroup && cell.deviceGroup.devices.length > 0) {
-          const devices = cell.deviceGroup.devices;
-          
-          // Determine if this is a linked group or standalone device
-          let prefixKey: string;
-          let prefix: string;
-          
-          if (devices.length > 1) {
-            // Multiple devices - find which linked group this belongs to
-            const groupIndex = linkedDeviceGroups.findIndex(group => {
-              const groupDeviceTypes = group.map(d => d.type).sort().join(',');
-              const cellDeviceTypes = devices.map(d => d.type).sort().join(',');
-              return groupDeviceTypes === cellDeviceTypes;
-            });
-            
-            if (groupIndex !== -1) {
-              prefixKey = `linked_group_${groupIndex}`;
-              prefix = codePrefixes[prefixKey] || '';
-            } else {
-              // Fallback to primary device type
-              const primaryDevice = devices[0];
-              prefixKey = primaryDevice.type;
-              prefix = codePrefixes[prefixKey] || '';
-            }
-          } else {
-            // Single device - use device type as prefix key
-            const primaryDevice = devices[0];
-            const deviceType = primaryDevice.type;
-            
-            // Check if this device type is part of any linked group
-            const isInLinkedGroup = linkedDeviceGroups.some(group => 
-              group.some(d => d.type === deviceType && d.brand === primaryDevice.brand && d.model === primaryDevice.model)
-            );
-            
-            if (isInLinkedGroup) {
-              // Find which linked group this device belongs to
-              const groupIndex = linkedDeviceGroups.findIndex(group => 
-                group.some(d => d.type === deviceType && d.brand === primaryDevice.brand && d.model === primaryDevice.model)
-              );
-              prefixKey = `linked_group_${groupIndex}`;
-              prefix = codePrefixes[prefixKey] || '';
-            } else {
-              // Standalone device
-              prefixKey = deviceType;
-              prefix = codePrefixes[deviceType] || '';
             }
           }
-          
-          // Initialize sequence number for this prefix key if not exists
-          if (!sequenceNumbers[prefixKey]) {
-            sequenceNumbers[prefixKey] = 1;
-          }
-          
-          // Create assigned code
-          const assignedCode = prefix ? `${prefix}/${sequenceNumbers[prefixKey]}` : `${sequenceNumbers[prefixKey]}`;
-          
-          cell.deviceGroup.assignedCode = assignedCode;
-          cell.id = `${devices[0].type.substring(0, 1)}${String(sequenceNumbers[prefixKey]).padStart(3, "0")}`;
-          sequenceNumbers[prefixKey]++;
         }
+        setCodePrefixes(prefixes);
+
+        // Extract OS selections from grid cells
+        const osMap: Record<string, { windows: boolean; linux: boolean; other: boolean }> = {};
+        if (labData.seatingArrangement?.grid) {
+          for (const row of labData.seatingArrangement.grid) {
+            for (const cell of row) {
+              const eqType = cell.equipmentType;
+              if (eqType && cell.os?.length > 0) {
+                if (!osMap[eqType]) osMap[eqType] = { windows: false, linux: false, other: false };
+                for (const o of cell.os) {
+                  if (o === "Windows") osMap[eqType].windows = true;
+                  if (o === "Linux") osMap[eqType].linux = true;
+                  if (o === "Other") osMap[eqType].other = true;
+                }
+              }
+            }
+          }
+        }
+        setOsSelection(osMap);
       }
+    } catch (err) {
+      console.error("Error loading lab equipment:", err);
     }
-    
-    setSeatingArrangement({ ...seatingArrangement, grid });
+
+
   };
 
-  const canPlaceDevice = (): boolean => {
-    if (!selectedDeviceForPlacement) return false;
-    
-    // Determine which devices to check based on selection mode
-    let devicesToCheck: Equipment[];
-    if (selectedDeviceMode === 'linked' && selectedLinkedGroupIndex !== null) {
-      devicesToCheck = linkedDeviceGroups[selectedLinkedGroupIndex];
-    } else {
-      devicesToCheck = [selectedDeviceForPlacement];
+  // ── Reset ────────────────────────────────────────────────────────
+  const resetForm = () => {
+    setSelectedLabId(null);
+    setLabName("");
+    setLayoutGrid(null);
+    setLayoutRows(0);
+    setLayoutCols(0);
+    setEquipment([]);
+    setCodePrefixes({});
+    setOsSelection({});
+    setSeatingGrid(null);
+    setLinkedDeviceGroups([]);
+    setRawSearchResults([]);
+    setEquipmentDropdown("");
+    setSelectedQuantities({});
+  };
+
+  // ── Reset Assignments (backend) ──────────────────────────────────
+  const resetAssignments = async () => {
+    if (!selectedLabId) return;
+    if (!confirm("This will clear ALL device assignments from this lab. The devices will go back to unassigned. Continue?"))
+      return;
+    setIsResetting(true);
+    try {
+      const res = await fetch(`http://127.0.0.1:5000/reset_lab_assignments/${selectedLabId}`, {
+        method: "POST",
+        headers: authHeaders(),
+      });
+      const data = await res.json();
+      if (data.success) {
+        alert(`✅ ${data.message}`);
+        loadLab(selectedLabId);
+      } else {
+        alert(data.error || "Failed to reset assignments");
+      }
+    } catch (err) {
+      console.error(err);
+      alert("Error resetting assignments");
+    } finally {
+      setIsResetting(false);
     }
-    
-    // Check if ALL devices in the selection have at least 1 quantity
-    return devicesToCheck.every(device => {
-      const available = availableDevicesForSeating.find(
-        eq => eq.type === device.type && eq.brand === device.brand && eq.model === device.model && eq.billId === device.billId
-      );
-      return available && available.quantity > 0;
-    });
   };
 
-  const placeDeviceAtPosition = (grid: GridCell[][], rowIdx: number, colIdx: number) => {
-    if (!selectedDeviceForPlacement) return;
-    
-    const linkedGroup = linkedDeviceGroups.find(group =>
-      group.some(eq => 
-        eq.type === selectedDeviceForPlacement.type && 
-        eq.brand === selectedDeviceForPlacement.brand && 
-        eq.model === selectedDeviceForPlacement.model &&
-        eq.billId === selectedDeviceForPlacement.billId
-      )
-    );
-    
-    const devicesToPlace = linkedGroup || [selectedDeviceForPlacement];
-    
-    // Placeholder - will be renumbered
-    const deviceGroup = {
-      assignedCode: '',
-      devices: devicesToPlace.map(eq => ({
-        type: eq.type,
-        brand: eq.brand,
-        model: eq.model,
-        billId: eq.billId,
-        invoiceNumber: eq.invoiceNumber,
-      }))
-    };
-    
-    grid[rowIdx][colIdx] = {
-      id: null,
-      equipmentType: selectedDeviceForPlacement.type,
-      os: ["Windows"],
-      deviceGroup
-    };
-    
-    // Reduce available devices
-    setAvailableDevicesForSeating(prev => 
-      prev.map(eq => {
-        const isInGroup = devicesToPlace.some(
-          d => d.type === eq.type && d.brand === eq.brand && d.model === eq.model && d.billId === eq.billId
-        );
-        return isInGroup ? { ...eq, quantity: eq.quantity - 1 } : eq;
-      }).filter(eq => eq.quantity > 0)
-    );
-  };
-
-  const placeDeviceOnGrid = (rowIdx: number, colIdx: number) => {
-    if (!selectedDeviceForPlacement) return;
-    
-    // Check if we have devices available
-    if (!canPlaceDevice()) {
-      alert("No more devices available to place. All devices from this group have been used.");
+  // ── Save Configuration ───────────────────────────────────────────
+  const saveConfiguration = async () => {
+    if (!selectedLabId) {
+      alert("Select a lab first");
       return;
     }
-    
-    const newGrid = seatingArrangement.grid.map(row => [...row]);
-    
-    // Only use linked group if mode is 'linked'
-    let devicesToPlace: Equipment[];
-    if (selectedDeviceMode === 'linked' && selectedLinkedGroupIndex !== null) {
-      devicesToPlace = linkedDeviceGroups[selectedLinkedGroupIndex];
-    } else {
-      devicesToPlace = [selectedDeviceForPlacement];
+    if (equipment.length === 0) {
+      alert("Add equipment first");
+      return;
     }
-    
-    // Create device group (will be renumbered)
-    const deviceGroup = {
-      assignedCode: '',
-      devices: devicesToPlace.map(eq => ({
-        type: eq.type,
-        brand: eq.brand,
-        model: eq.model,
-        billId: eq.billId,
-        invoiceNumber: eq.invoiceNumber,
-      }))
-    };
-    
-    // Only set OS for devices that need it
-    const needsOS = devicesToPlace.some(d => requiresOS(d.type));
-    
-    newGrid[rowIdx][colIdx] = {
-      id: null,
-      equipmentType: selectedDeviceForPlacement.type,
-      os: needsOS ? ["Windows"] : [],
-      deviceGroup
-    };
-    
-    // Reduce available devices for all devices in the group
-    setAvailableDevicesForSeating(prev => 
-      prev.map(eq => {
-        const isInGroup = devicesToPlace.some(
-          d => d.type === eq.type && d.brand === eq.brand && d.model === eq.model && d.billId === eq.billId
-        );
-        return isInGroup ? { ...eq, quantity: eq.quantity - 1 } : eq;
-      }).filter(eq => eq.quantity > 0)
-    );
-    
-    // Renumber all cells horizontally
-    renumberGrid(newGrid);
+    setIsSaving(true);
+    try {
+      const res = await fetch("http://127.0.0.1:5000/save_lab_config", {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify({
+          labNumber: selectedLabId,
+          equipment,
+          codePrefixes,
+          linkedDeviceGroups,
+        }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        alert(`✅ ${data.message}`);
+      } else {
+        alert(data.error || "Failed to save configuration");
+      }
+    } catch (err) {
+      console.error(err);
+      alert("Error saving configuration");
+    } finally {
+      setIsSaving(false);
+    }
   };
 
+  // ── Equipment search ─────────────────────────────────────────────
+
+  const addEquipmentFromSearch = (item: Equipment, idx: number) => {
+    const qty = selectedQuantities[idx] || 1;
+    if (qty > item.quantity) {
+      alert(`Max ${item.quantity} available`);
+      return;
+    }
+    const existingIdx = equipment.findIndex(
+      (eq) =>
+        eq.type === item.type &&
+        eq.brand === item.brand &&
+        eq.model === item.model &&
+        eq.billId === item.billId &&
+        eq.invoiceNumber === item.invoiceNumber
+    );
+    if (existingIdx !== -1) {
+      setEquipment((prev) =>
+        prev.map((eq, i) => (i === existingIdx ? { ...eq, quantity: eq.quantity + qty } : eq))
+      );
+    } else {
+      setEquipment((prev) => [...prev, { ...item, quantity: qty }]);
+    }
+    // searchResults is derived via useMemo — no manual update needed
+    setSelectedQuantities((prev) => ({ ...prev, [idx]: 1 }));
+  };
+
+  // ── Device linking ───────────────────────────────────────────────
   const addToLinkingGroup = (device: Equipment) => {
-    // Check if device is already in current linking group
-    const alreadyExists = currentLinkingGroup.some(
-      eq => eq.type === device.type && eq.brand === device.brand && eq.model === device.model && eq.billId === device.billId
-    );
-    
-    if (alreadyExists) {
-      alert("This device is already in the linking group");
+    if (
+      currentLinkingGroup.some(
+        (d) =>
+          d.type === device.type &&
+          d.brand === device.brand &&
+          d.model === device.model &&
+          d.billId === device.billId
+      )
+    ) {
+      alert("Already in group");
       return;
     }
-    
-    setCurrentLinkingGroup(prev => [...prev, device]);
-  };
-
-  const removeFromLinkingGroup = (index: number) => {
-    setCurrentLinkingGroup(prev => prev.filter((_, i) => i !== index));
+    setCurrentLinkingGroup((prev) => [...prev, device]);
   };
 
   const saveLinkingGroup = () => {
-    if (currentLinkingGroup.length === 0) {
-      alert("Please add at least one device to the linking group");
+    if (currentLinkingGroup.length < 2) {
+      alert("Link at least 2 devices");
       return;
     }
-    
-    setLinkedDeviceGroups(prev => [...prev, currentLinkingGroup]);
+    setLinkedDeviceGroups((prev) => [...prev, currentLinkingGroup]);
     setCurrentLinkingGroup([]);
     setShowLinkingModal(false);
-    alert(`✅ Linked ${currentLinkingGroup.length} device types together`);
   };
 
-  const removeLinkedGroup = (groupIndex: number) => {
-    setLinkedDeviceGroups(prev => prev.filter((_, i) => i !== groupIndex));
-  };
+  // ── Auto-assign devices ──────────────────────────────────────────
+  const assignDevices = async () => {
+    if (!selectedLabId) {
+      alert("Select a lab first");
+      return;
+    }
+    if (equipment.length === 0) {
+      alert("Add equipment first");
+      return;
+    }
+    if (!confirm("This will (re-)assign all devices horizontally based on the layout blueprint. Continue?"))
+      return;
 
-  const clearAllGrid = () => {
-    // Collect all devices from the grid before clearing
-    const currentGrid = seatingArrangement.grid.flat();
-    const devicesToReturn: { type: string; brand?: string; model?: string; billId?: number; invoiceNumber?: string }[] = [];
-    
-    currentGrid.forEach(cell => {
-      if (cell.deviceGroup) {
-        cell.deviceGroup.devices.forEach(dev => {
-          devicesToReturn.push(dev);
-        });
-      }
-    });
-    
-    // Return all devices to available pool in a single state update
-    setAvailableDevicesForSeating(prev => {
-      const newAvailable = [...prev];
-      
-      devicesToReturn.forEach(dev => {
-        const existingIndex = newAvailable.findIndex(
-          eq => eq.type === dev.type && eq.brand === dev.brand && eq.model === dev.model && eq.billId === dev.billId
-        );
-        
-        if (existingIndex !== -1) {
-          newAvailable[existingIndex] = {
-            ...newAvailable[existingIndex],
-            quantity: newAvailable[existingIndex].quantity + 1
-          };
-        } else {
-          // Find from original equipment list to get full metadata
-          const originalEquipment = equipment.find(
-            eq => eq.type === dev.type && eq.brand === dev.brand && eq.model === dev.model && eq.billId === dev.billId
-          );
-          
-          newAvailable.push({
-            type: dev.type,
-            quantity: 1,
-            brand: dev.brand,
-            model: dev.model,
-            billId: dev.billId,
-            invoiceNumber: dev.invoiceNumber,
-            specification: originalEquipment?.specification,
-            unitPrice: originalEquipment?.unitPrice,
-            purchaseDate: originalEquipment?.purchaseDate,
-          });
-        }
+    setIsAssigning(true);
+    try {
+      const res = await fetch("http://127.0.0.1:5000/auto_assign_devices", {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify({
+          labNumber: selectedLabId,
+          equipment,
+          codePrefixes,
+          linkedDeviceGroups,
+          osSelection,
+        }),
       });
-      
-      return newAvailable;
-    });
-    
-    // Clear the grid
-    const emptyGrid: GridCell[][] = Array.from({ length: seatingArrangement.rows }, () =>
-      Array.from({ length: seatingArrangement.columns }, () => ({
-        id: null,
-        equipmentType: "Empty",
-        os: [],
-      }))
-    );
-    setSeatingArrangement({ ...seatingArrangement, grid: emptyGrid });
-    setNextComputerId(1);
-  };
-
-  const applyBulkOS = (osType: string, shouldAdd: boolean) => {
-    const newGrid = seatingArrangement.grid.map(row => 
-      row.map(cell => {
-        if (cell.deviceGroup) {
-          // Only apply OS to devices that need it
-          const needsOS = cell.deviceGroup.devices.some(d => requiresOS(d.type));
-          if (needsOS) {
-            const updatedCell = { ...cell };
-            if (shouldAdd) {
-              if (!updatedCell.os.includes(osType)) {
-                updatedCell.os = [...updatedCell.os, osType];
-              }
-            } else {
-              updatedCell.os = updatedCell.os.filter(os => os !== osType);
-            }
-            return updatedCell;
-          }
-        }
-        return cell;
-      })
-    );
-    setSeatingArrangement({ ...seatingArrangement, grid: newGrid });
-  };
-
-  const toggleOS = (rowIdx: number, colIdx: number, os: string) => {
-    const newGrid = [...seatingArrangement.grid];
-    const cell = newGrid[rowIdx][colIdx];
-    // Only allow OS toggle if device needs OS
-    const needsOS = cell.deviceGroup?.devices.some(d => requiresOS(d.type));
-    if ((cell.equipmentType === "PC" || cell.deviceGroup) && needsOS) {
-      if (cell.os.includes(os)) {
-        cell.os = cell.os.filter((o) => o !== os);
+      const data = await res.json();
+      if (data.success) {
+        alert(
+          `✅ ${data.message}\n${data.devices_assigned} devices assigned across ${data.stations_created} stations`
+        );
+        loadLab(selectedLabId);
       } else {
-        cell.os.push(os);
+        alert(data.error || "Failed to assign devices");
       }
-      setSeatingArrangement({ ...seatingArrangement, grid: newGrid });
+    } catch (err) {
+      console.error(err);
+      alert("Error assigning devices");
+    } finally {
+      setIsAssigning(false);
     }
   };
 
-  const updateGridSize = (rows: number, columns: number) => {
-    const newGrid: GridCell[][] = Array.from({ length: rows }, (_, rowIdx) =>
-      Array.from({ length: columns }, (_, colIdx) => {
-        if (rowIdx < seatingArrangement.rows && colIdx < seatingArrangement.columns) {
-          return seatingArrangement.grid[rowIdx][colIdx];
+  // ── Layout stats ─────────────────────────────────────────────────
+  const getLayoutStats = () => {
+    if (!layoutGrid) return {};
+    const counts: Record<string, { count: number; icon: string; color: string }> = {};
+    for (const row of layoutGrid) {
+      for (const cell of row) {
+        if (cell.stationTypeId !== null) {
+          const key = cell.stationTypeLabel;
+          if (!counts[key]) counts[key] = { count: 0, icon: cell.icon, color: cell.color };
+          counts[key].count++;
         }
-        return { id: null, equipmentType: "Empty", os: [] };
-      })
-    );
-    setSeatingArrangement({ rows, columns, grid: newGrid });
-  };
-
-  const getTotalSeats = () => {
-    // Count cells with deviceGroup (each cell represents one seat/station, even if it has multiple linked devices)
-    return seatingArrangement.grid.flat().filter(cell => cell.deviceGroup).length;
-  };
-
-  const removeDeviceFromAvailable = (device: Equipment) => {
-    // Remove from available devices for seating
-    setAvailableDevicesForSeating(prev => 
-      prev.filter(eq => !(eq.type === device.type && eq.brand === device.brand && eq.model === device.model && eq.billId === device.billId))
-    );
-    
-    // Remove from equipment list
-    setEquipment(prev => 
-      prev.filter(eq => !(eq.type === device.type && eq.brand === device.brand && eq.model === device.model && eq.billId === device.billId))
-    );
-    
-    // Clear selection if this device was selected
-    if (selectedDeviceForPlacement?.type === device.type && 
-        selectedDeviceForPlacement?.brand === device.brand && 
-        selectedDeviceForPlacement?.model === device.model && 
-        selectedDeviceForPlacement?.billId === device.billId) {
-      setSelectedDeviceForPlacement(null);
-      setSelectedDeviceMode(null);
-      setSelectedLinkedGroupIndex(null);
+      }
     }
+    return counts;
   };
 
+  // ── Render ───────────────────────────────────────────────────────
   return (
-    <div className="min-h-screen bg-neutral-950" style={{
-      backgroundImage: 'url(/bg.jpg)',
-      backgroundSize: 'cover',
-      backgroundPosition: 'center',
-      backgroundRepeat: 'no-repeat'
-    }}>
-      
-      {/* ✅ Top Navbar (slimmer) */}
+    <div
+      className="min-h-screen bg-neutral-950"
+      style={{
+        backgroundImage: "url(/bg.jpg)",
+        backgroundSize: "cover",
+        backgroundPosition: "center",
+        backgroundRepeat: "no-repeat",
+      }}
+    >
+      {/* Navbar */}
       <div className="fixed top-2 inset-x-0 max-w-6xl mx-auto z-50 flex items-center justify-center px-4 py-2">
-
         <Menu setActive={setActive}>
           <MenuItem setActive={setActive} active={active} item="Asset Management">
             <div className="flex flex-col space-y-2 text-sm p-2">
               <HoveredLink href="/assets">All Assets</HoveredLink>
               <HoveredLink href="/ocr">Add Assets</HoveredLink>
-              
             </div>
           </MenuItem>
-
           <MenuItem setActive={setActive} active={active} item="Lab Management">
             <div className="flex flex-col space-y-2 text-sm p-2">
               <HoveredLink href="/lab-plan">Lab Floor Plans</HoveredLink>
+              <HoveredLink href="/lab-layout">Lab Layout Designer</HoveredLink>
               <HoveredLink href="/lab-configuration">Lab Configuration</HoveredLink>
             </div>
           </MenuItem>
-
           <MenuItem setActive={setActive} active={active} item="Operations">
             <div className="flex flex-col space-y-2 text-sm p-2">
               <HoveredLink href="/transfers">Transfers</HoveredLink>
@@ -1162,18 +523,16 @@ export default function LabConfiguration() {
               <HoveredLink href="/dashboard/documents">Documents</HoveredLink>
             </div>
           </MenuItem>
-
           <MenuItem setActive={setActive} active={active} item="Analytics">
             <div className="flex flex-col space-y-2 text-sm p-2">
               <HoveredLink href="/reports">Reports</HoveredLink>
               <HoveredLink href="/warranty-expiry">Warranty Expiry</HoveredLink>
             </div>
           </MenuItem>
-
           <MenuItem setActive={setActive} active={active} item="Account">
             <div className="flex flex-col space-y-2 text-sm p-2">
               <HoveredLink href="/settings">Settings</HoveredLink>
-              <button 
+              <button
                 onClick={logout}
                 className="text-left text-neutral-600 hover:text-neutral-800 transition-colors"
               >
@@ -1184,8 +543,8 @@ export default function LabConfiguration() {
         </Menu>
       </div>
 
-      {/* ✅ Page content (with padding for navbar) */}
-      <div className="flex items-center justify-center pt-24 px-4">
+      {/* Page Content */}
+      <div className="flex items-start justify-center pt-24 px-4 pb-12">
         <BackgroundGradient className="w-full max-w-7xl p-8 rounded-xl shadow-xl">
           <LogoButton />
           <motion.div
@@ -1193,779 +552,501 @@ export default function LabConfiguration() {
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.4 }}
           >
-            <h1 className="text-3xl font-bold text-center mb-6 text-white">
-              {selectedLabId ? "Edit Lab" : "Configure New Lab"}
-            </h1>
+            <h1 className="text-3xl font-bold text-center mb-6 text-white">Lab Configuration</h1>
 
-            {/* Select Existing Lab */}
+            {/* ── Select Lab ──────────────────────────────────────── */}
             <div className="mb-6">
-              <Label className="text-white">Edit Existing Lab</Label>
-              <select
-                value={selectedLabId ?? ""}
-                onChange={(e) => {
-                  if (e.target.value) {
-                    loadLab(e.target.value);
-                  } else {
-                    setSelectedLabId(null);
-                    setLabNumber("");
-                    setLabName("");
-                    setEquipment([]);
-                    setAvailableDevicesForSeating([]);
-                    setSelectedDeviceForPlacement(null);
-                    const emptyGrid: GridCell[][] = Array.from({ length: 6 }, () =>
-                      Array.from({ length: 6 }, () => ({
-                        id: null,
-                        equipmentType: "Empty",
-                        os: [],
-                      }))
-                    );
-                    setSeatingArrangement({ rows: 6, columns: 6, grid: emptyGrid });
-                    setShowSeatingEditor(false);
-                  }
-                }}
-                className="mt-2 w-full bg-neutral-800 text-white p-2 rounded-lg"
-              >
-                <option value="">-- Select Lab --</option>
-                {labs.map((lab) => (
-                  <option key={lab.id} value={lab.id}>
-                    {lab.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            {/* Lab Number and Name */}
-            <div className="mb-6 grid grid-cols-2 gap-4">
-              <div>
-                <Label htmlFor="labNumber" className="text-white">
-                  Lab Number
-                </Label>
-                <Input
-                  id="labNumber"
-                  placeholder="e.g., 309"
-                  value={labNumber}
-                  onChange={(e) => setLabNumber(e.target.value)}
-                  className="mt-2"
-                />
-              </div>
-              <div>
-                <Label htmlFor="labName" className="text-white">
-                  Lab Name
-                </Label>
-                <Input
-                  id="labName"
-                  placeholder="e.g., Computer Lab"
-                  value={labName}
-                  onChange={(e) => setLabName(e.target.value)}
-                  className="mt-2"
-                />
-              </div>
-            </div>
-
-            {/* Search Equipment */}
-            <div className="mb-6 space-y-2">
-              <Label className="text-white">Search Equipment from Inventory</Label>
-              <div className="flex gap-3 items-end">
-                <div className="flex-1">
-                  <Label className="text-gray-300 text-sm mb-1">Equipment Type</Label>
-                  <select
-                    value={equipmentDropdown}
-                    onChange={(e) => handleEquipmentDropdownChange(e.target.value)}
-                    className="w-full bg-neutral-800 text-white p-2 rounded-lg border border-gray-600 focus:border-blue-500 focus:outline-none"
-                  >
-                    <option value="">-- Select Equipment --</option>
-                    {commonEquipmentTypes.map((type) => (
-                      <option key={type.id} value={type.id.toString()}>
-                        {type.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <button
-                  onClick={searchEquipment}
-                  disabled={isSearching}
-                  className={`px-6 py-2 rounded-full font-semibold transition ${
-                    isSearching
-                      ? "bg-gray-600 text-gray-400 cursor-not-allowed"
-                      : "bg-gradient-to-r from-blue-600 to-purple-600 text-white hover:shadow-lg"
-                  }`}
+              <Label className="text-white">Select Lab</Label>
+              <div className="flex gap-3 mt-2">
+                <select
+                  value={selectedLabId ?? ""}
+                  onChange={(e) => {
+                    if (e.target.value) loadLab(e.target.value);
+                    else resetForm();
+                  }}
+                  className="flex-1 bg-neutral-800 text-white p-2 rounded-lg border border-gray-600"
                 >
-                  {isSearching ? "Searching..." : "🔍 Search"}
-                </button>
-              </div>
-            </div>
-
-            {/* Search Results */}
-            {searchResults.length > 0 && (
-              <div className="mb-6 bg-neutral-800 p-4 rounded-lg">
-                <h3 className="text-white font-semibold mb-3">
-                  Available Equipment ({searchResults.length} groups found)
-                </h3>
-                <div className="space-y-2 max-h-96 overflow-y-auto">
-                  {searchResults.map((item, idx) => (
-                    <div
-                      key={idx}
-                      className="bg-neutral-700 p-3 rounded-lg flex justify-between items-start gap-3"
-                    >
-                      <div className="flex-1">
-                        <div className="text-white font-semibold mb-1">
-                          {item.brand} {item.model} ({item.quantity} available)
-                        </div>
-                        <div className="text-gray-300 text-sm space-y-1">
-                          <p><span className="text-gray-400">Type:</span> {item.type}</p>
-                          {item.specification && (
-                            <p><span className="text-gray-400">Specs:</span> {item.specification}</p>
-                          )}
-                          {item.unitPrice && (
-                            <p><span className="text-gray-400">Price:</span> ₹{item.unitPrice.toLocaleString()}</p>
-                          )}
-                          {item.purchaseDate && (
-                            <p><span className="text-gray-400">Purchase Date:</span> {item.purchaseDate}</p>
-                          )}
-                          {item.invoiceNumber && (
-                            <p><span className="text-gray-400">Invoice:</span> {item.invoiceNumber}</p>
-                          )}
-                        </div>
-                      </div>
-                      <div className="flex flex-col gap-2 items-end">
-                        <div className="flex items-center gap-2">
-                          <label className="text-gray-300 text-sm">Qty:</label>
-                          <Input
-                            type="number"
-                            min="1"
-                            max={item.quantity}
-                            value={Math.min(selectedQuantities[idx] || 1, item.quantity!)}
-                            onChange={(e) => {
-                              const value = Math.min(Math.max(1, parseInt(e.target.value) || 1), item.quantity!);
-                              setSelectedQuantities(prev => ({
-                                ...prev,
-                                [idx]: value
-                              }));
-                            }}
-                            className="w-20 bg-neutral-600 text-white text-center"
-                          />
-                        </div>
-                        <button
-                          onClick={() => addEquipmentFromSearch(item, idx)}
-                          className="px-3 py-1 bg-green-600 hover:bg-green-700 text-white rounded text-sm transition whitespace-nowrap"
-                        >
-                          Add to Lab
-                        </button>
-                      </div>
-                    </div>
+                  <option value="">-- Select Lab --</option>
+                  {labs.map((l) => (
+                    <option key={l.lab_id} value={l.lab_id}>
+                      {l.lab_id} - {l.lab_name} ({l.rows}×{l.columns})
+                      {l.layout_id ? ` — ${l.station_count} stations` : " — No layout yet"}
+                    </option>
                   ))}
-                </div>
-              </div>
-            )}
-
-            {searchResults.length === 0 && equipmentDropdown && !isSearching && (
-              <div className="mb-6 bg-neutral-800 p-4 rounded-lg">
-                <p className="text-gray-400 text-center">
-                  No unassigned equipment found for the selected type
-                </p>
-              </div>
-            )}
-
-            {/* Equipment List */}
-            <div className="mb-6">
-              <h2 className="text-xl font-semibold text-white mb-2">
-                Lab Equipment
-              </h2>
-              {equipment.length === 0 ? (
-                <p className="text-gray-400">No equipment added yet.</p>
-              ) : (
-                <ul className="space-y-2">
-                  {equipment.map((eq, idx) => (
-                    <li
-                      key={idx}
-                      className="bg-neutral-800 text-white px-4 py-3 rounded-lg"
-                    >
-                      <div className="flex justify-between items-start">
-                        <div className="flex-1">
-                          <div className="font-semibold mb-1">
-                            {eq.brand} {eq.model} - {eq.type} × {eq.quantity}
-                          </div>
-                          {eq.specification && (
-                            <div className="text-gray-400 text-sm">{eq.specification}</div>
-                          )}
-                          {eq.invoiceNumber && (
-                            <div className="text-gray-400 text-sm">Invoice: {eq.invoiceNumber}</div>
-                          )}
-                        </div>
-                        <button
-                          className="text-red-400 hover:text-red-600 ml-3"
-                          onClick={() => {
-                            const deviceToRemove = equipment[idx];
-                            
-                            // Remove from equipment list
-                            setEquipment(equipment.filter((_, i) => i !== idx));
-                            
-                            // Remove from available devices for seating
-                            setAvailableDevicesForSeating(prev => 
-                              prev.filter(eq => !(
-                                eq.type === deviceToRemove.type && 
-                                eq.brand === deviceToRemove.brand && 
-                                eq.model === deviceToRemove.model && 
-                                eq.billId === deviceToRemove.billId
-                              ))
-                            );
-                            
-                            // Clear selection if this device was selected
-                            if (selectedDeviceForPlacement?.type === deviceToRemove.type && 
-                                selectedDeviceForPlacement?.brand === deviceToRemove.brand && 
-                                selectedDeviceForPlacement?.model === deviceToRemove.model && 
-                                selectedDeviceForPlacement?.billId === deviceToRemove.billId) {
-                              setSelectedDeviceForPlacement(null);
-                              setSelectedDeviceMode(null);
-                              setSelectedLinkedGroupIndex(null);
-                            }
-                          }}
-                        >
-                          Remove
-                        </button>
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-
-            {/* Seating Arrangement Section */}
-            <div className="mb-6 border-t border-gray-700 pt-6">
-              <div className="flex items-center justify-between mb-4">
-                <h2 className="text-xl font-semibold text-white">
-                  Seating Arrangement
-                </h2>
-                {!showSeatingEditor && (
-                  <button
-                    onClick={() => setShowSeatingEditor(!showSeatingEditor)}
-                    className="px-6 py-3 bg-gradient-to-r from-cyan-500 to-teal-500 text-white font-bold text-lg rounded-lg hover:shadow-xl hover:scale-105 transition-all border-2 border-cyan-300"
-                  >
-                    ⚙️ Configure Layout
-                  </button>
-                )}
-              </div>
-
-              {showSeatingEditor && (
-                <motion.div
-                  initial={{ opacity: 0, height: 0 }}
-                  animate={{ opacity: 1, height: "auto" }}
-                  className="space-y-4"
-                >
-                  {/* Hide Editor Button */}
-                  <div className="flex justify-end mb-4">
+                </select>
+                {selectedLabId && (
+                  <div className="flex gap-2">
                     <button
-                      onClick={() => setShowSeatingEditor(false)}
-                      className="px-6 py-3 bg-gradient-to-r from-red-500 to-red-600 text-white font-bold text-lg rounded-lg hover:shadow-xl hover:scale-105 transition-all border-2 border-red-300"
+                      onClick={resetAssignments}
+                      disabled={isResetting}
+                      className="px-4 py-2 bg-red-700 hover:bg-red-600 text-white rounded-lg transition text-sm disabled:opacity-50"
                     >
-                      ✖ Hide Editor
+                      {isResetting ? "Resetting…" : "Reset Assignments"}
+                    </button>
+                    <button
+                      onClick={resetForm}
+                      className="px-4 py-2 bg-neutral-700 hover:bg-neutral-600 text-white rounded-lg transition text-sm"
+                    >
+                      Deselect Lab
                     </button>
                   </div>
+                )}
+              </div>
+            </div>
 
-                  {/* Grid Size Controls */}
-                  <div className="bg-neutral-800 p-4 rounded-lg space-y-3">
-                    <h3 className="text-white font-semibold mb-2">Lab Dimensions</h3>
-                    <div className="grid grid-cols-2 gap-3">
-                      <div>
-                        <Label className="text-gray-300 text-sm">Rows</Label>
-                        <Input
-                          type="number"
-                          min="1"
-                          max="15"
-                          value={seatingArrangement.rows}
-                          onChange={(e) => updateGridSize(parseInt(e.target.value) || 1, seatingArrangement.columns)}
-                          className="mt-1 bg-neutral-700 text-white"
-                        />
-                      </div>
-                      <div>
-                        <Label className="text-gray-300 text-sm">Columns</Label>
-                        <Input
-                          type="number"
-                          min="1"
-                          max="15"
-                          value={seatingArrangement.columns}
-                          onChange={(e) => updateGridSize(seatingArrangement.rows, parseInt(e.target.value) || 1)}
-                          className="mt-1 bg-neutral-700 text-white"
-                        />
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Device Linking Section */}
-                  <div className="bg-neutral-800 p-4 rounded-lg space-y-3">
-                    <div className="flex justify-between items-center">
-                      <h3 className="text-white font-semibold">Device Linking</h3>
-                      <button
-                        onClick={() => setShowLinkingModal(true)}
-                        className="px-3 py-1 bg-purple-600 hover:bg-purple-700 text-white rounded text-sm transition"
-                      >
-                        + Create Link
-                      </button>
-                    </div>
-                    
-                    {linkedDeviceGroups.length === 0 ? (
-                      <p className="text-gray-400 text-sm">No device groups linked yet. Link devices from different invoices to assign them together.</p>
-                    ) : (
-                      <div className="space-y-2 max-h-48 overflow-y-auto">
-                        {linkedDeviceGroups.map((group, groupIdx) => (
-                          <div key={groupIdx} className="bg-neutral-700 p-2 rounded">
-                            <div className="flex justify-between items-start">
-                              <div className="flex-1">
-                                <div className="text-white font-semibold text-sm mb-1">Group {groupIdx + 1}</div>
-                                <div className="text-gray-300 text-xs space-y-1">
-                                  {group.map((device, idx) => (
-                                    <div key={idx}>• {device.type}: {device.brand} {device.model} (Invoice: {device.invoiceNumber})</div>
-                                  ))}
-                                </div>
-                              </div>
-                              <button
-                                onClick={() => removeLinkedGroup(groupIdx)}
-                                className="text-red-400 hover:text-red-600 text-xs ml-2"
-                              >
-                                Remove
-                              </button>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Code Prefixes Section */}
-                  <div className="bg-neutral-800 p-4 rounded-lg space-y-3">
-                    <h3 className="text-white font-semibold mb-3">Assigned Code Prefixes</h3>
-                    
-                    {/* Linked Groups Prefixes */}
-                    {linkedDeviceGroups.length > 0 && (
-                      <div className="mb-4">
-                        <h4 className="text-cyan-400 font-semibold text-sm mb-2">Linked Device Groups</h4>
-                        <div className="space-y-2">
-                          {linkedDeviceGroups.map((group, groupIdx) => (
-                            <div key={groupIdx} className="bg-neutral-700 p-3 rounded-lg">
-                              <Label className="text-white text-sm font-semibold mb-2">
-                                Group {groupIdx + 1} ({group.map(d => d.type).join(' + ')})
-                              </Label>
-                              <Input
-                                type="text"
-                                value={codePrefixes[`linked_group_${groupIdx}`] || ''}
-                                onChange={(e) => setCodePrefixes(prev => ({ ...prev, [`linked_group_${groupIdx}`]: e.target.value }))}
-                                placeholder={`e.g., apsit/it/309/station`}
-                                className="bg-neutral-600 text-white mt-1"
-                              />
-                              <p className="text-gray-400 text-xs mt-1">
-                                Preview: {codePrefixes[`linked_group_${groupIdx}`] || '[prefix]'}/1, {codePrefixes[`linked_group_${groupIdx}`] || '[prefix]'}/2, etc.
-                              </p>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                    
-                    {/* Standalone Device Prefixes */}
-                    <div>
-                      <h4 className="text-green-400 font-semibold text-sm mb-2">Standalone Devices</h4>
-                      <div className="space-y-2 max-h-64 overflow-y-auto">
-                        {Array.from(new Set(equipment.map(eq => eq.type))).filter(deviceType => {
-                          // Only show device types that are NOT in any linked group
-                          return !linkedDeviceGroups.some(group => 
-                            group.some(d => d.type === deviceType)
-                          );
-                        }).map((deviceType) => (
-                          <div key={deviceType} className="bg-neutral-700 p-3 rounded-lg">
-                            <Label className="text-white text-sm font-semibold mb-2">{deviceType}</Label>
-                            <Input
-                              type="text"
-                              value={codePrefixes[deviceType] || ''}
-                              onChange={(e) => setCodePrefixes(prev => ({ ...prev, [deviceType]: e.target.value }))}
-                              placeholder={`e.g., apsit/it/309/${deviceType.toLowerCase()}`}
-                              className="bg-neutral-600 text-white mt-1"
-                            />
-                            <p className="text-gray-400 text-xs mt-1">
-                              Preview: {codePrefixes[deviceType] || '[prefix]'}/1, {codePrefixes[deviceType] || '[prefix]'}/2, etc.
-                            </p>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                    
-                    {equipment.length === 0 && (
-                      <p className="text-gray-400 text-sm">Add equipment first to configure code prefixes.</p>
-                    )}
-                    
-                    <p className="text-gray-400 text-xs mt-3">
-                      💡 Linked device groups share a single prefix, while standalone devices have individual prefixes per type.
+            {selectedLabId && (
+              <>
+                {/* ── No Layout Warning ────────────────────────────── */}
+                {!layoutGrid && (
+                  <div className="mb-6 bg-yellow-900/30 border border-yellow-600 p-4 rounded-lg text-center">
+                    <p className="text-yellow-300 font-semibold mb-2">
+                      ⚠️ This lab has no layout designed yet
                     </p>
-                  </div>
-
-                  <div className="bg-neutral-800 p-4 rounded-lg">
-                    <h3 className="text-white font-semibold mb-3">Select Device to Place</h3>
-                    <div className="space-y-2 max-h-48 overflow-y-auto">
-                      {availableDevicesForSeating.length === 0 ? (
-                        <p className="text-gray-400 text-sm">No devices available. Add equipment from inventory first.</p>
-                      ) : (
-                        <>
-                          {/* Show linked groups first (priority 1) */}
-                          {linkedDeviceGroups.map((group, groupIdx) => {
-                            // Calculate minimum quantity across all devices in the group
-                            const minQuantity = Math.min(...group.map(device => {
-                              const available = availableDevicesForSeating.find(
-                                eq => eq.type === device.type && eq.brand === device.brand && eq.model === device.model && eq.billId === device.billId
-                              );
-                              return available?.quantity || 0;
-                            }));
-                            
-                            if (minQuantity === 0) return null;
-                            
-                            const isSelected = selectedDeviceMode === 'linked' && selectedLinkedGroupIndex === groupIdx;
-                            
-                            return (
-                              <button
-                                key={`group-${groupIdx}`}
-                                onClick={() => {
-                                  setSelectedDeviceForPlacement(group[0]);
-                                  setSelectedDeviceMode('linked');
-                                  setSelectedLinkedGroupIndex(groupIdx);
-                                }}
-                                className={`w-full text-left px-3 py-2 rounded transition ${
-                                  isSelected
-                                    ? "bg-blue-600 text-white"
-                                    : "bg-neutral-700 text-gray-300 hover:bg-neutral-600"
-                                }`}
-                              >
-                                <div className="flex justify-between items-start">
-                                  <div className="flex-1">
-                                    <div className="font-semibold text-purple-400">🔗 Linked Group {groupIdx + 1}</div>
-                                    <div className="text-sm mt-1 space-y-0.5">
-                                      {group.map((device, idx) => (
-                                        <div key={idx}>• {device.type}: {device.brand} {device.model}</div>
-                                      ))}
-                                    </div>
-                                    <div className="text-xs text-gray-400 mt-1">{minQuantity} sets available</div>
-                                  </div>
-                                </div>
-                              </button>
-                            );
-                          })}
-                          
-                          {/* Show standby devices from linked groups with excess quantity (priority 2) */}
-                          {linkedDeviceGroups.map((group, groupIdx) => {
-                            // Calculate minimum quantity to determine how many are in standby
-                            const minQuantity = Math.min(...group.map(device => {
-                              const available = availableDevicesForSeating.find(
-                                eq => eq.type === device.type && eq.brand === device.brand && eq.model === device.model && eq.billId === device.billId
-                              );
-                              return available?.quantity || 0;
-                            }));
-                            
-                            // Show devices that have more quantity than the minimum (excess/standby)
-                            return group.map((device, deviceIdx) => {
-                              const available = availableDevicesForSeating.find(
-                                eq => eq.type === device.type && eq.brand === device.brand && eq.model === device.model && eq.billId === device.billId
-                              );
-                              
-                              const standbyQuantity = (available?.quantity || 0) - minQuantity;
-                              
-                              if (standbyQuantity <= 0) return null;
-                              
-                              const isStandbySelected = selectedDeviceMode === 'standby' && 
-                                selectedDeviceForPlacement?.type === device.type &&
-                                selectedDeviceForPlacement?.brand === device.brand &&
-                                selectedDeviceForPlacement?.model === device.model &&
-                                selectedDeviceForPlacement?.billId === device.billId &&
-                                selectedLinkedGroupIndex === groupIdx;
-                              
-                              return (
-                                <button
-                                  key={`standby-${groupIdx}-${deviceIdx}`}
-                                  onClick={() => {
-                                    setSelectedDeviceForPlacement(device);
-                                    setSelectedDeviceMode('standby');
-                                    setSelectedLinkedGroupIndex(groupIdx);
-                                  }}
-                                  className={`w-full text-left px-3 py-2 rounded transition ${
-                                    isStandbySelected
-                                      ? "bg-blue-600 text-white"
-                                      : "bg-neutral-700 text-gray-300 hover:bg-neutral-600"
-                                  }`}
-                                >
-                                  <div className="flex justify-between items-start">
-                                    <div className="flex-1">
-                                      <div className="font-semibold">{device.brand} {device.model}</div>
-                                      <div className="text-sm">{device.type} - {standbyQuantity} standby</div>
-                                      <div className="text-xs text-orange-400 mt-1">
-                                        ⏸️ Excess from Group {groupIdx + 1}
-                                      </div>
-                                    </div>
-                                  </div>
-                                </button>
-                              );
-                            });
-                          })}
-                          
-                          {/* Show completely standalone devices (priority 3) */}
-                          {availableDevicesForSeating.map((device, idx) => {
-                            // Skip if device is part of any linked group
-                            const isInLinkedGroup = linkedDeviceGroups.some(group =>
-                              group.some(eq => 
-                                eq.type === device.type && 
-                                eq.brand === device.brand && 
-                                eq.model === device.model &&
-                                eq.billId === device.billId
-                              )
-                            );
-                            
-                            if (isInLinkedGroup) return null;
-                            
-                            const isStandaloneSelected = selectedDeviceMode === 'standalone' &&
-                              selectedDeviceForPlacement?.type === device.type &&
-                              selectedDeviceForPlacement?.brand === device.brand &&
-                              selectedDeviceForPlacement?.model === device.model &&
-                              selectedDeviceForPlacement?.billId === device.billId;
-                            
-                            return (
-                              <button
-                                key={`device-${idx}`}
-                                onClick={() => {
-                                  setSelectedDeviceForPlacement(device);
-                                  setSelectedDeviceMode('standalone');
-                                  setSelectedLinkedGroupIndex(null);
-                                }}
-                                className={`w-full text-left px-3 py-2 rounded transition ${
-                                  isStandaloneSelected
-                                    ? "bg-blue-600 text-white"
-                                    : "bg-neutral-700 text-gray-300 hover:bg-neutral-600"
-                                }`}
-                              >
-                                <div className="flex justify-between items-start gap-2">
-                                  <div className="flex-1">
-                                    <div className="font-semibold">{device.brand} {device.model}</div>
-                                    <div className="text-sm">{device.type} - {device.quantity} available</div>
-                                  </div>
-                                  <button
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      removeDeviceFromAvailable(device);
-                                    }}
-                                    className="text-red-400 hover:text-red-600 text-xs px-2 py-1 rounded hover:bg-red-900/30 transition"
-                                    title="Remove this device from lab"
-                                  >
-                                    ✕
-                                  </button>
-                                </div>
-                              </button>
-                            );
-                          })}
-                        </>
-                      )}
-                    </div>
-                    <p className="text-gray-400 text-xs mt-2">
-                      💡 Click to place single device, or click and drag to fill an area
+                    <p className="text-gray-400 text-sm mb-3">
+                      You need to design a layout in the Lab Layout Designer first before you can
+                      auto-assign devices.
                     </p>
+                    <a
+                      href="/lab-layout"
+                      className="inline-block px-4 py-2 bg-cyan-600 hover:bg-cyan-700 text-white rounded-lg transition text-sm"
+                    >
+                      Go to Lab Layout Designer →
+                    </a>
                   </div>
+                )}
 
-                  <div className="bg-neutral-800 p-4 rounded-lg">
-                    <h3 className="text-white font-semibold mb-3">Actions</h3>
-                    <div className="flex gap-3 flex-wrap">
-                      <button
-                        onClick={clearAllGrid}
-                        className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition"
-                      >
-                        🗑️ Clear All
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Interactive Grid */}
-                  <div className="bg-neutral-900 p-4 rounded-lg">
-                    <h3 className="text-white font-semibold mb-3">
-                      Lab Layout Grid ({getTotalSeats()} Stations Configured)
+                {/* ── Layout Blueprint Preview ─────────────────────── */}
+                {layoutGrid && (
+                  <div className="mb-6 bg-neutral-900 p-4 rounded-lg">
+                    <h3 className="text-white font-semibold mb-2">
+                      Layout Blueprint — {labName} ({layoutRows}×{layoutCols})
                     </h3>
-                    <div className="flex flex-col items-center select-none">
-                      {seatingArrangement.grid.map((row, rowIdx) => (
-                        <div key={rowIdx} className="flex gap-1">
-                          {row.map((cell, colIdx) => {
-                            const needsOS = cell.deviceGroup?.devices.some(d => requiresOS(d.type)) || false;
-                            
-                            return (
-                            <div
-                              key={colIdx}
-                              onMouseDown={() => handleMouseDown(rowIdx, colIdx)}
-                              onMouseEnter={() => handleMouseEnter(rowIdx, colIdx)}
-                              onMouseUp={() => handleMouseUp(rowIdx, colIdx)}
-                              className={`
-                                w-32 h-32 rounded-lg border-2 flex flex-col items-center justify-center cursor-pointer transition p-2 relative
-                                ${cell.deviceGroup ? "bg-blue-600 border-blue-400 hover:bg-blue-700" : ""}
-                                ${cell.equipmentType === "Empty" ? "bg-neutral-800 border-gray-600 hover:bg-neutral-700" : ""}
-                                ${isSelecting && selectionStart && selectionEnd && isInSelectionArea(rowIdx, colIdx, selectionStart, selectionEnd) ? "ring-2 ring-yellow-400" : ""}
-                              `}
-                              title={cell.deviceGroup ? `${cell.deviceGroup.assignedCode}\n${cell.deviceGroup.devices.map(d => d.type).join(', ')}` : "Empty"}
-                            >
-                              {cell.deviceGroup && (
-                                <>
-                                  <div className="text-white font-bold text-sm text-center break-all">
-                                    {cell.deviceGroup.assignedCode}
-                                  </div>
-                                  <div className="text-white text-2xl my-1">
-                                    {cell.deviceGroup.devices[0]?.type === "PC" && "🖥️"}
-                                    {cell.deviceGroup.devices[0]?.type === "Laptop" && "💻"}
-                                    {cell.deviceGroup.devices[0]?.type === "Monitor" && "🖥️"}
-                                    {cell.deviceGroup.devices[0]?.type === "AC" && "❄️"}
-                                    {cell.deviceGroup.devices[0]?.type === "Smart Board" && "📺"}
-                                    {cell.deviceGroup.devices[0]?.type === "Projector" && "📽️"}
-                                    {cell.deviceGroup.devices[0]?.type === "Router" && "📡"}
-                                    {cell.deviceGroup.devices[0]?.type === "Switch" && "🔌"}
-                                    {cell.deviceGroup.devices[0]?.type === "Server" && "🖥️"}
-                                  </div>
-                                  <div className="text-xs text-gray-200 text-center mb-1">
-                                    {cell.deviceGroup.devices.length} devices
-                                  </div>
-                                  {needsOS && (
-                                  <div className="flex gap-1 flex-wrap justify-center">
-                                    <button
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        toggleOS(rowIdx, colIdx, "Windows");
-                                      }}
-                                      className={`text-xs px-2 py-1 rounded font-semibold ${
-                                        cell.os.includes("Windows")
-                                          ? "bg-blue-800 text-white"
-                                          : "bg-gray-600 text-gray-400"
-                                      }`}
-                                    >
-                                      Win
-                                    </button>
-                                    <button
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        toggleOS(rowIdx, colIdx, "Linux");
-                                      }}
-                                      className={`text-xs px-2 py-1 rounded font-semibold ${
-                                        cell.os.includes("Linux")
-                                          ? "bg-orange-600 text-white"
-                                          : "bg-gray-600 text-gray-400"
-                                      }`}
-                                    >
-                                      Lin
-                                    </button>
-                                    <button
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        toggleOS(rowIdx, colIdx, "Other");
-                                      }}
-                                      className={`text-xs px-2 py-1 rounded font-semibold ${
-                                        cell.os.includes("Other")
-                                          ? "bg-purple-600 text-white"
-                                          : "bg-gray-600 text-gray-400"
-                                      }`}
-                                    >
-                                      Oth
-                                    </button>
-                                  </div>
+                    <p className="text-gray-400 text-xs mb-3">
+                      Read-only preview. To modify, go to{" "}
+                      <a href="/lab-layout" className="text-cyan-400 hover:underline">
+                        Lab Layout Designer
+                      </a>
+                      . Devices will be assigned horizontally (row by row, left to right) to matching
+                      station types.
+                    </p>
+                    <div className="overflow-x-auto">
+                      <div className="flex flex-col items-center">
+                        {layoutGrid.map((row, ri) => (
+                          <div key={ri} className="flex gap-1.5 mb-1.5">
+                            {row.map((cell, ci) => {
+                              const isStation = cell.stationTypeId !== null;
+                              // Look up assigned device data from seating grid
+                              const seat = seatingGrid?.[ri]?.[ci];
+                              const deviceGroup = seat?.deviceGroup;
+                              const devices = deviceGroup?.devices || [];
+                              const hasDevices = devices.length > 0;
+                              return (
+                                <div
+                                  key={ci}
+                                  className={`w-28 rounded-lg border-2 flex flex-col items-center justify-center p-2 ${
+                                    !isStation
+                                      ? "bg-neutral-800 border-gray-700 h-24"
+                                      : hasDevices
+                                        ? "ring-2 ring-green-500/50"
+                                        : ""
+                                  }`}
+                                  style={
+                                    isStation
+                                      ? {
+                                          backgroundColor: hasDevices
+                                            ? cell.color + "50"
+                                            : cell.color + "20",
+                                          borderColor: hasDevices ? "#22c55e" : cell.color,
+                                          minHeight: hasDevices ? `${Math.max(96, 48 + devices.length * 18)}px` : "96px",
+                                        }
+                                      : undefined
+                                  }
+                                  title={
+                                    isStation && hasDevices
+                                      ? devices
+                                          .map(
+                                            (d: any) =>
+                                              `${d.type}: ${d.assignedCode || "unassigned"}`
+                                          )
+                                          .join("\n")
+                                      : cell.stationTypeLabel || "Empty"
+                                  }
+                                >
+                                  {isStation ? (
+                                    <>
+                                      <span className="text-lg leading-none mb-0.5">{cell.icon}</span>
+                                      {hasDevices ? (
+                                        <div className="text-center w-full space-y-0.5">
+                                          {devices.map((d: any, di: number) => (
+                                            <div
+                                              key={di}
+                                              className="text-green-300 text-[10px] font-semibold leading-tight truncate"
+                                              title={d.assignedCode || ""}
+                                            >
+                                              {d.assignedCode || d.type}
+                                            </div>
+                                          ))}
+                                        </div>
+                                      ) : (
+                                        <div className="text-gray-400 text-[10px] text-center leading-tight">
+                                          {cell.stationTypeLabel}
+                                        </div>
+                                      )}
+                                    </>
+                                  ) : (
+                                    <span className="text-gray-600 text-xs mt-4">Empty</span>
                                   )}
-                                </>
-                              )}
-                              {cell.equipmentType === "Empty" && (
-                                <div className="text-gray-500 text-sm">Empty</div>
-                              )}
-                            </div>
-                            );
-                          })}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                    {/* Station type summary */}
+                    <div className="mt-3 flex flex-wrap gap-3">
+                      {Object.entries(getLayoutStats()).map(([label, info]) => (
+                        <div
+                          key={label}
+                          className="flex items-center gap-1.5 bg-neutral-800 px-3 py-1.5 rounded-full text-sm"
+                        >
+                          <span>{info.icon}</span>
+                          <span className="text-gray-300">{label}:</span>
+                          <span className="text-white font-bold">{info.count}</span>
                         </div>
                       ))}
                     </div>
                   </div>
+                )}
 
-                  {/* Bulk OS Assignment Checkboxes */}
-                  <div className="bg-gradient-to-r from-purple-900/50 to-blue-900/50 p-5 rounded-lg border-2 border-purple-500">
-                    <h4 className="text-white font-bold mb-4 text-lg">🔧 Bulk OS Assignment (applies to PC/Laptop/Server only)</h4>
-                    <div className="flex gap-8">
-                      <label className="flex items-center gap-3 text-white cursor-pointer hover:text-cyan-400 transition group">
-                        <input
-                          type="checkbox"
-                          checked={bulkOSWindows}
-                          onChange={(e) => {
-                            setBulkOSWindows(e.target.checked);
-                            applyBulkOS("Windows", e.target.checked);
-                          }}
-                          className="w-6 h-6 cursor-pointer accent-cyan-500"
-                        />
-                        <span className="text-lg font-semibold group-hover:scale-105 transition">🪟 Windows</span>
-                      </label>
-                      <label className="flex items-center gap-3 text-white cursor-pointer hover:text-cyan-400 transition group">
-                        <input
-                          type="checkbox"
-                          checked={bulkOSLinux}
-                          onChange={(e) => {
-                            setBulkOSLinux(e.target.checked);
-                            applyBulkOS("Linux", e.target.checked);
-                          }}
-                          className="w-6 h-6 cursor-pointer accent-cyan-500"
-                        />
-                        <span className="text-lg font-semibold group-hover:scale-105 transition">🐧 Linux</span>
-                      </label>
-                      <label className="flex items-center gap-3 text-white cursor-pointer hover:text-cyan-400 transition group">
-                        <input
-                          type="checkbox"
-                          checked={bulkOSOther}
-                          onChange={(e) => {
-                            setBulkOSOther(e.target.checked);
-                            applyBulkOS("Other", e.target.checked);
-                          }}
-                          className="w-6 h-6 cursor-pointer accent-cyan-500"
-                        />
-                        <span className="text-lg font-semibold group-hover:scale-105 transition">💻 Other</span>
-                      </label>
+                {/* ── Search Equipment ─────────────────────────────── */}
+                <div className="mb-6 space-y-2">
+                  <Label className="text-white">Search Equipment from Inventory</Label>
+                  <div className="flex gap-3 items-end">
+                    <div className="flex-1">
+                      <Label className="text-gray-300 text-sm mb-1">Equipment Type</Label>
+                      <select
+                        value={equipmentDropdown}
+                        onChange={(e) => {
+                          setEquipmentDropdown(e.target.value);
+                          if (e.target.value) {
+                            setIsSearching(true);
+                            fetch(`http://127.0.0.1:5000/search_devices?type_id=${e.target.value}`, {
+                              headers: authHeaders(),
+                            })
+                              .then((r) => r.json())
+                              .then((data) => {
+                                const results = data.devices || [];
+                                setRawSearchResults(results);
+                                const initQ: Record<number, number> = {};
+                                results.forEach((_: any, i: number) => { initQ[i] = 1; });
+                                setSelectedQuantities(initQ);
+                              })
+                              .catch((err) => {
+                                console.error(err);
+                                alert("Error searching devices");
+                              })
+                              .finally(() => setIsSearching(false));
+                          } else {
+                            setRawSearchResults([]);
+                          }
+                        }}
+                        className="w-full bg-neutral-800 text-white p-2 rounded-lg border border-gray-600 focus:border-blue-500 focus:outline-none"
+                      >
+                        <option value="">-- Select Equipment --</option>
+                        {EQUIPMENT_TYPES.map((t) => (
+                          <option key={t.id} value={t.id.toString()}>
+                            {t.name}
+                          </option>
+                        ))}
+                      </select>
                     </div>
-                    <p className="text-gray-300 text-sm mt-3">💡 You can still remove OS from individual stations using the buttons on each station</p>
+                    {isSearching && (
+                      <span className="text-gray-400 text-sm self-end pb-2">Searching…</span>
+                    )}
                   </div>
-                </motion.div>
-              )}
-
-              {/* Summary when editor is closed */}
-              {!showSeatingEditor && getTotalSeats() > 0 && (
-                <div className="bg-neutral-800 p-3 rounded-lg">
-                  <p className="text-gray-300 text-sm">
-                    {seatingArrangement.rows} × {seatingArrangement.columns} grid with {getTotalSeats()} stations configured
-                  </p>
                 </div>
-              )}
-            </div>
 
-            {/* Save Button */}
-            <div className="flex justify-center">
-              <HoverBorderGradient onClick={saveLab}>
-                {selectedLabId ? "Update Lab" : "Save Lab"}
-              </HoverBorderGradient>
-            </div>
+                {/* ── Search Results ───────────────────────────────── */}
+                {searchResults.length > 0 && (
+                  <div className="mb-6 bg-neutral-800 p-4 rounded-lg">
+                    <h3 className="text-white font-semibold mb-3">
+                      Available Equipment ({searchResults.length} groups found)
+                    </h3>
+                    <div className="space-y-2 max-h-96 overflow-y-auto">
+                      {searchResults.map((item, idx) => (
+                        <div
+                          key={idx}
+                          className="bg-neutral-700 p-3 rounded-lg flex justify-between items-start gap-3"
+                        >
+                          <div className="flex-1">
+                            <div className="text-white font-semibold mb-1">
+                              {item.brand} {item.model} ({item.quantity} available)
+                            </div>
+                            <div className="text-gray-300 text-sm space-y-1">
+                              <p>
+                                <span className="text-gray-400">Type:</span> {item.type}
+                              </p>
+                              {item.specification && (
+                                <p>
+                                  <span className="text-gray-400">Specs:</span> {item.specification}
+                                </p>
+                              )}
+                              {item.unitPrice && (
+                                <p>
+                                  <span className="text-gray-400">Price:</span> ₹
+                                  {item.unitPrice.toLocaleString()}
+                                </p>
+                              )}
+                              {item.invoiceNumber && (
+                                <p>
+                                  <span className="text-gray-400">Invoice:</span> {item.invoiceNumber}
+                                </p>
+                              )}
+                            </div>
+                          </div>
+                          <div className="flex flex-col gap-2 items-end">
+                            <div className="flex items-center gap-2">
+                              <label className="text-gray-300 text-sm">Qty:</label>
+                              <Input
+                                type="number"
+                                min="1"
+                                max={item.quantity}
+                                value={Math.min(selectedQuantities[idx] || 1, item.quantity)}
+                                onChange={(e) =>
+                                  setSelectedQuantities((prev) => ({
+                                    ...prev,
+                                    [idx]: Math.min(
+                                      Math.max(1, parseInt(e.target.value) || 1),
+                                      item.quantity
+                                    ),
+                                  }))
+                                }
+                                className="w-20 bg-neutral-600 text-white text-center"
+                              />
+                            </div>
+                            <button
+                              onClick={() => addEquipmentFromSearch(item, idx)}
+                              className="px-3 py-1 bg-green-600 hover:bg-green-700 text-white rounded text-sm transition whitespace-nowrap"
+                            >
+                              Add to Lab
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {searchResults.length === 0 && rawSearchResults.length > 0 && !isSearching && (
+                  <div className="mb-6 bg-neutral-800 p-4 rounded-lg">
+                    <p className="text-gray-400 text-center">
+                      All available equipment of this type has been added to the lab
+                    </p>
+                  </div>
+                )}
+
+                {searchResults.length === 0 && rawSearchResults.length === 0 && equipmentDropdown && !isSearching && (
+                  <div className="mb-6 bg-neutral-800 p-4 rounded-lg">
+                    <p className="text-gray-400 text-center">
+                      No unassigned equipment found for the selected type
+                    </p>
+                  </div>
+                )}
+
+                {/* ── Equipment List ───────────────────────────────── */}
+                <div className="mb-6">
+                  <h2 className="text-xl font-semibold text-white mb-2">Lab Equipment</h2>
+                  {equipment.length === 0 ? (
+                    <p className="text-gray-400">
+                      No equipment added yet. Search and add from inventory above.
+                    </p>
+                  ) : (
+                    <ul className="space-y-2">
+                      {equipment.map((eq, idx) => (
+                        <li key={idx} className="bg-neutral-800 text-white px-4 py-3 rounded-lg">
+                          <div className="flex justify-between items-start">
+                            <div className="flex-1">
+                              <div className="font-semibold mb-1">
+                                {eq.brand} {eq.model} - {eq.type} × {eq.quantity}
+                              </div>
+                              {eq.specification && (
+                                <div className="text-gray-400 text-sm">{eq.specification}</div>
+                              )}
+                              {eq.invoiceNumber && (
+                                <div className="text-gray-400 text-sm">Invoice: {eq.invoiceNumber}</div>
+                              )}
+                            </div>
+                            <button
+                              onClick={() => setEquipment((prev) => prev.filter((_, i) => i !== idx))}
+                              className="text-red-400 hover:text-red-600 ml-3"
+                            >
+                              Remove
+                            </button>
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+
+                {/* ── Device Linking ───────────────────────────────── */}
+                <div className="mb-6 bg-neutral-800 p-4 rounded-lg">
+                  <div className="flex justify-between items-center mb-3">
+                    <h3 className="text-white font-semibold">Device Linking</h3>
+                    <button
+                      onClick={() => setShowLinkingModal(true)}
+                      className="px-3 py-1 bg-purple-600 hover:bg-purple-700 text-white rounded text-sm transition"
+                    >
+                      + Create Link
+                    </button>
+                  </div>
+                  <p className="text-gray-400 text-xs mb-3">
+                    Link devices from different invoices to assign them together at each station. E.g.,
+                    link PC + Monitor + Keyboard + Mouse so they go to the same station.
+                  </p>
+                  {linkedDeviceGroups.length === 0 ? (
+                    <p className="text-gray-400 text-sm">No device groups linked yet.</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {linkedDeviceGroups.map((group, gi) => (
+                        <div
+                          key={gi}
+                          className="bg-neutral-700 p-2 rounded flex justify-between items-start"
+                        >
+                          <div>
+                            <div className="text-white font-semibold text-sm">Group {gi + 1}</div>
+                            <div className="text-gray-300 text-xs">
+                              {group.map((d, i) => (
+                                <div key={i}>
+                                  • {d.type}: {d.brand} {d.model}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                          <button
+                            onClick={() =>
+                              setLinkedDeviceGroups((prev) => prev.filter((_, i) => i !== gi))
+                            }
+                            className="text-red-400 hover:text-red-600 text-xs ml-2"
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* ── Code Prefixes (per device type) ─────────────── */}
+                <div className="mb-6 bg-neutral-800 p-4 rounded-lg">
+                  <h3 className="text-white font-semibold mb-3">Device Code Prefixes</h3>
+                  <p className="text-gray-400 text-xs mb-3">
+                    Each device type gets its own unique code: prefix/number. Numbers are persistent
+                    and never reset — even after scrapping devices.
+                  </p>
+
+                  {Array.from(new Set(equipment.map((eq) => eq.type)))
+                    .filter((dt) => unassignedTypes.has(dt))
+                    .map((dt) => {
+                    const preview = codePrefixes[dt] || `[${dt}]`;
+                    const os = osSelection[dt] || { windows: false, linux: false, other: false };
+                    return (
+                      <div key={dt} className="bg-neutral-700 p-3 rounded-lg mb-2">
+                        <div className="flex items-center justify-between mb-1">
+                          <Label className="text-white text-sm font-semibold">{dt}</Label>
+                        </div>
+                        <Input
+                          value={codePrefixes[dt] || ""}
+                          onChange={(e) =>
+                            setCodePrefixes((prev) => ({ ...prev, [dt]: e.target.value }))
+                          }
+                          placeholder={`e.g., apsit/it/${selectedLabId}/${dt.toLowerCase()}`}
+                          className="bg-neutral-600 text-white mt-1"
+                        />
+                        <p className="text-gray-400 text-xs mt-1">
+                          Preview: {preview}/1, {preview}/2, …
+                        </p>
+                        {(dt === "PC" || dt === "Laptop") && (
+                          <div className="mt-2 flex items-center gap-4">
+                            <span className="text-gray-300 text-sm">OS:</span>
+                            {(["windows", "linux", "other"] as const).map((osKey) => (
+                              <label key={osKey} className="flex items-center gap-1.5 cursor-pointer">
+                                <input
+                                  type="checkbox"
+                                  checked={os[osKey]}
+                                  onChange={(e) =>
+                                    setOsSelection((prev) => ({
+                                      ...prev,
+                                      [dt]: { ...prev[dt], windows: prev[dt]?.windows || false, linux: prev[dt]?.linux || false, other: prev[dt]?.other || false, [osKey]: e.target.checked },
+                                    }))
+                                  }
+                                  className="w-4 h-4 rounded border-gray-500 bg-neutral-600 accent-cyan-500"
+                                />
+                                <span className="text-gray-300 text-sm capitalize">{osKey}</span>
+                              </label>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                  {equipment.length === 0 && (
+                    <p className="text-gray-400 text-sm">
+                      Add equipment first to configure prefixes.
+                    </p>
+                  )}
+                  {equipment.length > 0 && unassignedTypes.size === 0 && (
+                    <p className="text-green-400 text-sm">
+                      All devices have been assigned.
+                    </p>
+                  )}
+                </div>
+
+                {/* ── Action Buttons ────────────────────────────── */}
+                <div className="flex justify-center gap-4">
+                  <HoverBorderGradient onClick={saveConfiguration}>
+                    {isSaving ? "Saving…" : "💾 Save Configuration"}
+                  </HoverBorderGradient>
+                  <HoverBorderGradient onClick={assignDevices}>
+                    {isAssigning ? "Assigning…" : "⚡ Auto-Assign Devices"}
+                  </HoverBorderGradient>
+                </div>
+              </>
+            )}
           </motion.div>
         </BackgroundGradient>
       </div>
 
-      {/* Device Linking Modal */}
+      {/* ── Device Linking Modal ──────────────────────────────────── */}
       {showLinkingModal && (
         <div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center z-50 p-4">
           <div className="bg-neutral-900 rounded-xl p-6 max-w-2xl w-full max-h-[80vh] overflow-y-auto">
             <h2 className="text-2xl font-bold text-white mb-4">Link Devices Together</h2>
             <p className="text-gray-400 text-sm mb-4">
-              Select devices from different invoices to link them together. When placed, they will share the same assigned code.
+              Select devices to link. When assigned, they will share the same station code.
             </p>
 
-            {/* Current Linking Group */}
             <div className="mb-4 bg-neutral-800 p-4 rounded-lg">
-              <h3 className="text-white font-semibold mb-2">Current Linking Group ({currentLinkingGroup.length} devices)</h3>
+              <h3 className="text-white font-semibold mb-2">
+                Linking Group ({currentLinkingGroup.length} devices)
+              </h3>
               {currentLinkingGroup.length === 0 ? (
-                <p className="text-gray-400 text-sm">No devices added yet. Select devices from the list below.</p>
+                <p className="text-gray-400 text-sm">Select devices below.</p>
               ) : (
                 <ul className="space-y-2">
-                  {currentLinkingGroup.map((device, idx) => (
-                    <li key={idx} className="bg-neutral-700 p-2 rounded flex justify-between items-center">
-                      <div className="text-white text-sm">
-                        <span className="font-semibold">{device.type}</span>: {device.brand} {device.model}
-                        <span className="text-gray-400 ml-2">(Invoice: {device.invoiceNumber})</span>
-                      </div>
+                  {currentLinkingGroup.map((d, i) => (
+                    <li
+                      key={i}
+                      className="bg-neutral-700 p-2 rounded flex justify-between items-center"
+                    >
+                      <span className="text-white text-sm">
+                        {d.type}: {d.brand} {d.model}
+                      </span>
                       <button
-                        onClick={() => removeFromLinkingGroup(idx)}
+                        onClick={() =>
+                          setCurrentLinkingGroup((prev) => prev.filter((_, j) => j !== i))
+                        }
                         className="text-red-400 hover:text-red-600 text-xs"
                       >
                         Remove
@@ -1976,26 +1057,28 @@ export default function LabConfiguration() {
               )}
             </div>
 
-            {/* Available Devices to Link */}
             <div className="mb-4">
               <h3 className="text-white font-semibold mb-2">Available Devices</h3>
               <div className="space-y-2 max-h-64 overflow-y-auto bg-neutral-800 p-3 rounded-lg">
-                {availableDevicesForSeating.length === 0 ? (
+                {equipment.length === 0 ? (
                   <p className="text-gray-400 text-sm">No devices available.</p>
                 ) : (
-                  availableDevicesForSeating.map((device, idx) => (
+                  equipment.map((d, i) => (
                     <div
-                      key={idx}
+                      key={i}
                       className="bg-neutral-700 p-3 rounded flex justify-between items-start"
                     >
-                      <div className="flex-1">
-                        <div className="text-white font-semibold">{device.brand} {device.model}</div>
-                        <div className="text-gray-300 text-sm">{device.type} - {device.quantity} available</div>
-                        <div className="text-gray-400 text-xs">Invoice: {device.invoiceNumber}</div>
+                      <div>
+                        <div className="text-white font-semibold">
+                          {d.brand} {d.model}
+                        </div>
+                        <div className="text-gray-300 text-sm">
+                          {d.type} - {d.quantity} units
+                        </div>
                       </div>
                       <button
-                        onClick={() => addToLinkingGroup(device)}
-                        className="px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded text-sm transition"
+                        onClick={() => addToLinkingGroup(d)}
+                        className="px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded text-sm"
                       >
                         Add
                       </button>
@@ -2005,7 +1088,6 @@ export default function LabConfiguration() {
               </div>
             </div>
 
-            {/* Actions */}
             <div className="flex gap-3 justify-end">
               <button
                 onClick={() => {

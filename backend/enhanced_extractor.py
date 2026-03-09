@@ -125,10 +125,14 @@ class EnhancedInvoiceExtractor:
         for i, line in enumerate(lines[:30]):
             line_clean = line.strip().replace('|', '').strip()
             # Skip common non-vendor lines
-            if any(skip in line_clean for skip in ['E-Way Bill', 'E-WAY', 'Tax Invoice', 'ORIGINAL', 'Invoice No', 'Generated', 'Bill To', 'Ship To', 'Page', 'Dated', 'Delivery Note']):
+            if any(skip in line_clean for skip in ['E-Way Bill', 'E-WAY', 'Tax Invoice', 'ORIGINAL', 'Invoice No', 'Generated', 'Bill To', 'Ship To', 'Page', 'Dated', 'Delivery Note', 'DELIVERY NOTE', 'Consignee']):
                 continue
             # Only match if line is reasonably short (company names aren't super long)
             if len(line_clean) > 3 and len(line_clean) < 100 and any(keyword in line_clean for keyword in company_keywords):
+                # Clean up OCR errors - sometimes "Team" becomes "am" etc.
+                if line_clean.startswith('am ') or line_clean.startswith('eam '):
+                    # Likely "Team" with OCR error
+                    line_clean = 'Team ' + line_clean.split(' ', 1)[1] if ' ' in line_clean else line_clean
                 vendor_info['name'] = line_clean
                 break
         
@@ -224,11 +228,12 @@ class EnhancedInvoiceExtractor:
         
         # Extract invoice/bill number - multiple patterns
         invoice_patterns = [
+            r'Delivery\s*Note\s*(?:No|Number|#)?[:\s.]*([A-Z0-9/-]+)',  # Delivery Note pattern
             r'Invoice\s*(?:No|Number|#)[:\s]*([A-Z0-9/-]+)',
             r'Bill\s*(?:No|Number|#)[:\s]*([A-Z0-9/-]+)',
             r'Receipt\s*(?:No|Number|#)[:\s]*([A-Z0-9/-]+)',
             r'(?:INV|BILL)[:\s-]*([A-Z0-9/-]+)',
-            r'([A-Z]{2,}[/-]\d{2,}[/-]\d+)',  # Pattern like TTS/22-23/0499
+            r'([A-Z]{2,}[/-]\d{2,}[/-]\d+)',  # Pattern like TTS/22-23/0499 or TTS/25-26/0669
         ]
         
         for pattern in invoice_patterns:
@@ -246,8 +251,10 @@ class EnhancedInvoiceExtractor:
         # Extract date - multiple formats
         date_patterns = [
             (r'(?:Date|Dated)[:\s]*(\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4})', '%d-%m-%Y'),
+            (r'(?:Date|Dated)[:\s]*(\d{1,2}-[A-Za-z]{3}-\d{2,4})', '%d-%b-%y'),  # DD-Mon-YY format
             (r'(?:Date|Dated)[:\s]*(\d{1,2}-[A-Za-z]{3}-\d{4})', '%d-%b-%Y'),
             (r'(?:Date|Dated)[:\s]*(\d{1,2}\s+[A-Za-z]+\s+\d{4})', '%d %B %Y'),
+            (r'(\d{1,2}-[A-Za-z]{3}-\d{2})', '%d-%b-%y'),  # Standalone DD-Mon-YY
             (r'(\d{1,2}[-/.]\d{1,2}[-/.]\d{4})', '%d-%m-%Y'),
             (r'(\d{1,2}-[A-Za-z]{3}-\d{4})', '%d-%b-%Y'),
             (r'(\d{4}[-/.]\d{1,2}[-/.]\d{1,2})', '%Y-%m-%d'),
@@ -260,9 +267,16 @@ class EnhancedInvoiceExtractor:
                 print(f"DEBUG: Found date: {date_str}")
                 try:
                     # Try multiple date formats
-                    for fmt in [date_format, '%d/%m/%Y', '%d.%m.%Y', '%d-%m-%Y', '%d-%b-%Y', '%d %B %Y', '%Y-%m-%d']:
+                    for fmt in [date_format, '%d/%m/%Y', '%d.%m.%Y', '%d-%m-%Y', '%d-%b-%Y', '%d-%b-%y', '%d %B %Y', '%Y-%m-%d']:
                         try:
                             date_obj = datetime.strptime(date_str.strip(), fmt)
+                            # Handle 2-digit year (convert to 4-digit)
+                            if date_obj.year < 1000:
+                                # If year is 00-49, treat as 2000-2049; if 50-99, treat as 1950-1999
+                                if date_obj.year < 50:
+                                    date_obj = date_obj.replace(year=date_obj.year + 2000)
+                                else:
+                                    date_obj = date_obj.replace(year=date_obj.year + 1900)
                             bill_details['bill_date'] = date_obj.strftime('%Y-%m-%d')
                             break
                         except:
@@ -464,8 +478,12 @@ class EnhancedInvoiceExtractor:
         # Format 2: Tax Invoice format (SI | Description | HSN | Qty | Rate | Amount)
         # Format 3: Kirana Bill format (S.No | Items | HSN | QTY | RATE | TAX | AMOUNT)
         # Format 4: Simple format without pipes
+        # Format 5: Delivery Note format (SI | Description | HSN | Qty Pcs | Rate | per | Amount)
         
         item_patterns = [
+            # Pattern 0: Delivery Note format - | SI | Description | HSN | Qty Pcs | Rate | per | Amount |
+            r'\|\s*(\d+)\s*\|\s*([^|]+?)\s*\|\s*(\d{4,8})\s*\|\s*([\d.]+)\s*(?:Pcs|pcs|PCS|P\.cs)\s*\|\s*\|\s*\|\s*\|',
+            
             # Pattern 1: E-Way Bill style - | HSN | Product | Qty | Amount | Tax rates...
             r'\|\s*(\d{4,8})\s*\|\s*([^|]+?)\s*\|\s*([\d.]+)\s*\|\s*([\d,]+\.?\d*)\s*\|',
             
@@ -503,8 +521,50 @@ class EnhancedInvoiceExtractor:
             if any(header in line.upper() for header in ['S.NO.', 'SI NO.', 'ITEMS', 'HSN CODE', 'PRODUCT NAME', 'TAXABLE AMOUNT']):
                 continue
             
-            # Try Pattern 1: E-Way Bill format (HSN first)
+            # Try Pattern 0: Delivery Note format (SI | Description | HSN | Qty | empty fields)
             match = re.search(item_patterns[0], line)
+            if match:
+                if current_item:
+                    self._finalize_asset(current_item, current_batches, detail_lines, assets)
+                
+                sl_no = match.group(1)
+                description = match.group(2).strip()
+                hsn_code = match.group(3)
+                quantity = float(match.group(4))
+                
+                # Skip if it's a batch line or total row
+                skip_terms = ['Batch', 'Total', 'CGST', 'SGST']
+                if any(term in description for term in skip_terms):
+                    continue
+                
+                category = self._classify_asset_category(description)
+                brand, model = self._extract_brand_model(description)
+                device_type = self._detect_device_type(description)
+                
+                current_item = ExtractedAsset(
+                    name=description,
+                    description=description,
+                    category=category,
+                    brand=brand,
+                    model=model,
+                    serial_number='',
+                    quantity=int(quantity),
+                    unit_price=0.0,  # Will be filled later if available
+                    total_price=0.0,  # Will be filled later if available
+                    warranty_period='',
+                    hsn_code=hsn_code,
+                    device_type=device_type
+                )
+                current_batches = []
+                detail_lines = []
+                collecting_details = True
+                found_items.append(description)
+                print(f"DEBUG: Found item (Delivery Note format): {description}, Qty: {quantity}, HSN: {hsn_code}")
+                pattern_used = 0
+                continue
+            
+            # Try Pattern 1: E-Way Bill format (HSN first)
+            match = re.search(item_patterns[1], line)
             if match and not pattern_used:
                 hsn_code = match.group(1)
                 description = match.group(2).strip()
@@ -540,7 +600,7 @@ class EnhancedInvoiceExtractor:
                 continue
             
             # Try Pattern 2: Tax Invoice with HSN (SI | Description | HSN | Qty | Rate | Unit | Amount)
-            match = re.search(item_patterns[1], line)
+            match = re.search(item_patterns[2], line)
             if match:
                 if current_item:
                     self._finalize_asset(current_item, current_batches, detail_lines, assets)
@@ -584,7 +644,7 @@ class EnhancedInvoiceExtractor:
                 continue
             
             # Try Pattern 3: Kirana Bill format (S.No | ITEMS | HSN | QTY | RATE | TAX | AMOUNT)
-            match = re.search(item_patterns[2], line)
+            match = re.search(item_patterns[3], line)
             if match:
                 sl_no = match.group(1)
                 description = match.group(2).strip()
@@ -623,7 +683,7 @@ class EnhancedInvoiceExtractor:
             
             # Try Pattern 4: Without HSN (SI | Description | Qty | Rate | Amount)
             if not pattern_used or pattern_used == 2:
-                match = re.search(item_patterns[3], line)
+                match = re.search(item_patterns[4], line)
                 if match:
                     sl_no = match.group(1)
                     description = match.group(2).strip()
@@ -679,12 +739,13 @@ class EnhancedInvoiceExtractor:
                         break
                 
                 # Collect detail lines (Model, Part no, Warranty, etc.)
+                # First try table format
                 if '|' in line:
                     detail_match = re.search(r'\|\s*([^|]+?)\s*\|', line)
                     if detail_match:
                         detail_text = detail_match.group(1).strip()
                         # Include lines that start with common specification keywords
-                        spec_starters = ['Model:', 'Part no:', 'Warranty:', 'with', 'No Warranty', 'Brand:', 'Serial:']
+                        spec_starters = ['Model:', 'Part no:', 'Warranty:', 'with', 'No Warranty', 'Brand:', 'Serial:', 'T-', 'i3-', 'i5-', 'i7-', 'i9-']
                         is_spec_line = any(detail_text.startswith(starter) for starter in spec_starters)
                         
                         if (detail_text and 
@@ -697,6 +758,18 @@ class EnhancedInvoiceExtractor:
                             (is_spec_line or not any(skip in detail_text for skip in ['CGST', 'SGST', 'Total']))):
                             detail_lines.append(detail_text)
                             print(f"DEBUG: Collected detail line: {detail_text[:50]}...")
+                else:
+                    # For delivery notes, also collect plain text lines with specifications
+                    line_clean = line.strip()
+                    # Check if line contains model/specification patterns
+                    spec_indicators = ['Processor', 'Memory', 'SSD', 'HDD', 'GB', 'TB', 'Keyboard', 'Mouse', 'Windows', 'Warranty', 'Limited by']
+                    if (len(line_clean) > 20 and 
+                        any(indicator in line_clean for indicator in spec_indicators) and
+                        not line_clean.startswith('+') and
+                        not line_clean.startswith('-') and
+                        not line_clean.startswith('|')):
+                        detail_lines.append(line_clean)
+                        print(f"DEBUG: Collected plain spec line: {line_clean[:50]}...")
                 
                 # Check for end of item details
                 if any(end_marker in line for end_marker in ['| Total |', '| CGST |', '| SGST |', '| Tax |', 'HSN/SAC', 'Amount in Words', 'Company\'s Bank', 'Tax Amount (in words)']):
@@ -807,16 +880,30 @@ class EnhancedInvoiceExtractor:
                 
                 # Extract model
                 if 'Model' in detail:
-                    model_match = re.search(r'Model[:#\s]*([A-Z0-9-]+)', detail, re.IGNORECASE)
+                    model_match = re.search(r'Model[:#\s]*([A-Z0-9-#]+)', detail, re.IGNORECASE)
                     if model_match and not asset.model:
                         asset.model = model_match.group(1)
                 
+                # If detail contains a model-like pattern at the start, extract it
+                if not asset.model:
+                    early_model = re.match(r'^([A-Z]+-[A-Z0-9]+#[A-Z0-9]+)', detail)
+                    if early_model:
+                        asset.model = early_model.group(1)
+                
                 # Extract warranty - combine all warranty-related lines
                 if 'Warranty' in detail or 'warranty' in detail or 'No Warranty' in detail:
-                    if asset.warranty_period:
-                        asset.warranty_period += ' | ' + detail
+                    # Extract specific warranty duration if present
+                    warranty_match = re.search(r'(\d+)\s*(?:Year|Yr|Month|Mon)s?\s*Warranty', detail, re.IGNORECASE)
+                    if warranty_match:
+                        if asset.warranty_period:
+                            asset.warranty_period += ' | ' + detail
+                        else:
+                            asset.warranty_period = detail
                     else:
-                        asset.warranty_period = detail
+                        if asset.warranty_period:
+                            asset.warranty_period += ' | ' + detail
+                        else:
+                            asset.warranty_period = detail
                 
                 # Look for specifications and accessories
                 spec_keywords = ['CORE', 'GB', 'RAM', 'SSD', 'HDD', 'WIN', 'LED', 'LCD', 'INCH', 'GHz', 'TB', 'MHz']
@@ -899,8 +986,9 @@ class EnhancedInvoiceExtractor:
         # Extract model - various patterns
         model = None
         model_patterns = [
-            r'Model[:\s]+([A-Z0-9][-A-Z0-9]+)',  # Model: ABC-123
-            r'\b([A-Z]{2,}[-_][A-Z0-9]{2,}[-_]?[A-Z0-9]*)\b',  # HP-ABC123
+            r'\b([A-Z]+-[A-Z0-9]+#[A-Z0-9]+)\b',  # T-B6QL4PT#ACJ format
+            r'Model[:\s]+([A-Z0-9][-A-Z0-9#]+)',  # Model: ABC-123 or ABC#123
+            r'\b([A-Z]{2,}[-_#][A-Z0-9]{2,}[-_#]?[A-Z0-9]*)\b',  # HP-ABC123 or HP#ABC123
             r'\b([A-Z][0-9]{3,}[A-Z]?)\b',  # E5500, G7, etc.
             r'\b([0-9]{2,}[A-Z]{2,}[0-9]{2,})\b',  # 22EA43, etc.
         ]

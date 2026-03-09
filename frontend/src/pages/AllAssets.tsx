@@ -23,6 +23,7 @@ interface Device {
   purchase_date?: string;
   unit_price?: number;
   is_active: boolean;
+  warranty_years?: number;
   warranty_expiry?: string;
 }
 
@@ -31,6 +32,7 @@ interface DeviceGroup {
   brand: string;
   model: string;
   specification?: string;
+  warranty_years?: number;
   total: number;
   assigned: number;
   unassigned: number;
@@ -50,7 +52,15 @@ export default function AllAssets() {
   const [expandedGroup, setExpandedGroup] = useState<number | null>(null);
   const [groupBills, setGroupBills] = useState<Map<number, any>>(new Map());
   const [loadingBills, setLoadingBills] = useState<Set<number>>(new Set());
+  const [updatingType, setUpdatingType] = useState<number | null>(null);
   
+  const deviceTypeMap: Record<string, number> = {
+    "Laptop": 1, "PC": 2, "AC": 3, "Smart Board": 4, "Projector": 5,
+    "Printer": 6, "Scanner": 7, "UPS": 8, "Router": 9, "Switch": 10,
+    "Server": 11, "Monitor": 12, "Keyboard": 13, "Mouse": 14,
+    "Webcam": 15, "Headset": 16, "Other": 17
+  };
+
   const deviceTypes = [
     "All Types", "Laptop", "PC", "Monitor", "AC", "Smart Board", "Projector",
     "Printer", "Scanner", "UPS", "Router", "Switch", "Server",
@@ -115,6 +125,7 @@ export default function AllAssets() {
           brand: device.brand,
           model: device.model,
           specification: device.specification,
+          warranty_years: device.warranty_years,
           total: 0,
           assigned: 0,
           unassigned: 0,
@@ -200,6 +211,49 @@ export default function AllAssets() {
     }
   };
 
+  const handleTypeChange = async (deviceId: number | number[], newTypeName: string) => {
+    const newTypeId = deviceTypeMap[newTypeName];
+    if (!newTypeId) return;
+
+    const ids = Array.isArray(deviceId) ? deviceId : [deviceId];
+    
+    // Mark all as updating
+    for (const id of ids) setUpdatingType(id);
+
+    try {
+      // Update all devices in the batch
+      const results = await Promise.all(
+        ids.map(id =>
+          fetch("http://127.0.0.1:5000/update_device_type", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ deviceId: id, newTypeId }),
+          }).then(r => r.json())
+        )
+      );
+
+      const allSuccess = results.every(r => r.success);
+      if (allSuccess) {
+        setDevices(prev => {
+          const idSet = new Set(ids);
+          const updated = prev.map(d =>
+            idSet.has(d.device_id) ? { ...d, type_name: newTypeName } : d
+          );
+          groupDevices(updated);
+          return updated;
+        });
+      } else {
+        const failed = results.filter(r => !r.success);
+        alert(`Failed to update ${failed.length} device(s): ${failed[0]?.error || 'Unknown error'}`);
+      }
+    } catch (err) {
+      console.error("Error updating device type:", err);
+      alert("Network error updating device type");
+    } finally {
+      setUpdatingType(null);
+    }
+  };
+
   const handleGroupClick = (idx: number, billId: number) => {
     if (expandedGroup === idx) {
       setExpandedGroup(null);
@@ -232,6 +286,7 @@ export default function AllAssets() {
           <MenuItem setActive={setActive} active={active} item="Lab Management">
             <div className="flex flex-col space-y-2 text-sm p-2">
               <HoveredLink href="/lab-plan">Lab Floor Plans</HoveredLink>
+              <HoveredLink href="/lab-layout">Lab Layout Designer</HoveredLink>
               <HoveredLink href="/lab-configuration">Lab Configuration</HoveredLink>
             </div>
           </MenuItem>
@@ -351,14 +406,36 @@ export default function AllAssets() {
                     onClick={() => handleGroupClick(idx, asset.devices[0]?.bill_id)}
                     className="p-4 cursor-pointer hover:bg-neutral-700/50 transition flex justify-between items-center"
                   >
-                    <div className="flex-1 grid grid-cols-1 md:grid-cols-4 gap-4">
+                    <div className="flex-1 grid grid-cols-1 md:grid-cols-6 gap-4">
                       <div>
                         <div className="text-gray-400 text-xs">Type</div>
-                        <div className="text-white font-semibold">{asset.type}</div>
+                        <select
+                          value={asset.type}
+                          disabled={asset.devices.some(d => updatingType === d.device_id)}
+                          onChange={(e) => {
+                            e.stopPropagation();
+                            const newType = e.target.value;
+                            handleTypeChange(asset.devices.map(d => d.device_id), newType);
+                          }}
+                          onClick={(e) => e.stopPropagation()}
+                          className="bg-neutral-700 text-white text-sm px-2 py-1 rounded border border-neutral-600 cursor-pointer hover:border-blue-500 transition font-semibold disabled:opacity-50"
+                        >
+                          {deviceTypes.slice(1).map(t => (
+                            <option key={t} value={t}>{t}</option>
+                          ))}
+                        </select>
                       </div>
                       <div>
                         <div className="text-gray-400 text-xs">Brand & Model</div>
                         <div className="text-white font-semibold">{asset.brand} {asset.model}</div>
+                      </div>
+                      <div>
+                        <div className="text-gray-400 text-xs">Specification</div>
+                        <div className="text-white font-semibold">{asset.specification || "-"}</div>
+                      </div>
+                      <div>
+                        <div className="text-gray-400 text-xs">Warranty</div>
+                        <div className="text-white font-semibold">{asset.warranty_years ? `${asset.warranty_years} Year${asset.warranty_years > 1 ? 's' : ''}` : "-"}</div>
                       </div>
                       <div>
                         <div className="text-gray-400 text-xs">Total Units</div>
@@ -452,6 +529,8 @@ export default function AllAssets() {
                               <tr className="border-b border-neutral-700">
                                 <th className="px-3 py-2 text-left text-gray-400">Asset ID</th>
                                 <th className="px-3 py-2 text-left text-gray-400">Assigned Code</th>
+                                <th className="px-3 py-2 text-left text-gray-400">Specification</th>
+                                <th className="px-3 py-2 text-left text-gray-400">Warranty</th>
                                 <th className="px-3 py-2 text-left text-gray-400">Location</th>
                                 <th className="px-3 py-2 text-left text-gray-400">Invoice</th>
                                 <th className="px-3 py-2 text-left text-gray-400">Price</th>
@@ -466,6 +545,8 @@ export default function AllAssets() {
                                 >
                                   <td className="px-3 py-2 text-white">{device.asset_id || "-"}</td>
                                   <td className="px-3 py-2 text-white">{device.assigned_code || "-"}</td>
+                                  <td className="px-3 py-2 text-white">{device.specification || "-"}</td>
+                                  <td className="px-3 py-2 text-white">{device.warranty_years ? `${device.warranty_years} Year${device.warranty_years > 1 ? 's' : ''}` : "-"}</td>
                                   <td className="px-3 py-2 text-white">
                                     {device.lab_name ? `${device.lab_name} (Lab ${device.lab_id})` : "Unassigned"}
                                   </td>

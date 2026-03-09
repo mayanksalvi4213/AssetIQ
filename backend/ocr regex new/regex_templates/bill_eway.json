@@ -1,0 +1,50 @@
+{
+  "vendor_name": [
+    "From\\s*\\n\\s*GSTIN:\\s*[0-9A-Z#]+\\s*\\n\\s*([^\\n<>][^\\n]{3,})"
+  ],
+  "vendor_address": [
+    "From\\s*\\n\\s*GSTIN:[^\\n]+\\n[^\\n]+\\n\\s*([^\\n]+)"
+  ],
+  "gstin": [
+    "GSTIN:\\s*([0-9A-Z#]{10,20})"
+  ],
+  "invoice_number": [
+    "Document\\s*Details:\\s*Tax[-\\s]*Invoice[-\\s]*([A-Za-z0-9\\-]+)"
+  ],
+  "invoice_date": [
+    "Document\\s*Details:\\s*Tax[-\\s]*Invoice[-\\s]*[A-Za-z0-9\\-]+\\s*([0-9]{2}\\/[0-9]{2}\\/[0-9]{4})"
+  ],
+  "cgst": [
+    "CGST\\s*Amt\\s*\\|\\s*([0-9,]+\\.?[0-9]*)"
+  ],
+  "sgst": [
+    "SGST\\s*Amt\\s*\\|\\s*([0-9,]+\\.?[0-9]*)"
+  ],
+  "igst": [
+    "IGST\\s*Amt\\s*\\|\\s*([0-9,]+\\.?[0-9]*)"
+  ],
+  "grand_total": [
+    "Tot\\.\\s*Inv\\.\\s*Amt\\s*\\|\\s*([0-9,]+\\.?[0-9]*)"
+  ],
+  "eway_bill_number": [
+    "eWay\\s*Bill\\s*No:?\\s*([0-9\\s]{10,})"
+  ],
+  "generated_date": [
+    "Generated\\s*Date:?\\s*([0-9]{2}\\/[0-9]{2}\\/[0-9]{4})"
+  ],
+  "batch_numbers_multi": [],
+  "items_multi": [
+    "\\|\\s*(\\d{3,8})\\s*\\|\\s*([^\\|]+?)\\s*\\|\\s*([0-9,.]+)\\s*\\|\\s*([0-9,.]+)\\s*\\|\\s*([0-9]+)%\\s*\\|\\s*([0-9]+)%\\s*\\|\\s*([0-9]+)%\\s*\\|\\s*([0-9]+)%\\s*\\|\\s*([0-9,.]+)"
+  ],
+  "item_groups": {
+    "hsn_code": 1,
+    "description": 2,
+    "quantity": 3,
+    "taxable_value": 4,
+    "cgst_percent": 5,
+    "sgst_percent": 6,
+    "igst_percent": 7,
+    "cess_percent": 8,
+    "cess_non_advol": 9
+  }
+}
