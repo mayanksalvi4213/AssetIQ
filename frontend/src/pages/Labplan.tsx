@@ -16,6 +16,7 @@ interface GridCell {
   deviceGroup?: {
     assignedCode: string;
     devices: any[];
+    stationQrValue?: string;
   };
 }
 
@@ -65,6 +66,11 @@ export default function Labplan() {
   const [stationList, setStationList] = useState<any[]>([]);
   const [loadingStationList, setLoadingStationList] = useState(false);
   const [showPrintQR, setShowPrintQR] = useState(false);
+  const [stationQrModal, setStationQrModal] = useState<{
+    stationCode: string;
+    qrValue: string;
+    devices: { type: string; prefixCode: string; brand: string; model: string }[];
+  } | null>(null);
 
   // Fetch all labs on component mount
   useEffect(() => {
@@ -130,30 +136,46 @@ export default function Labplan() {
     fetchLabDetails(lab.lab_id);
   };
 
+  // Computed stats
+  const labStats = useMemo(() => {
+    if (!stationList || stationList.length === 0) return null;
+    const activeStations = stationList.filter((s: any) => s.devices && s.devices.length > 0);
+    const totalDevices = activeStations.reduce((sum: number, s: any) => sum + (s.devices?.length || 0), 0);
+    const activeDevices = activeStations.reduce((sum: number, s: any) =>
+      sum + (s.devices?.filter((d: any) => d.isActive).length || 0), 0);
+    const issueDevices = activeStations.reduce((sum: number, s: any) =>
+      sum + (s.devices?.filter((d: any) => d.issues && d.issues.length > 0).length || 0), 0);
+    const deviceTypes: Record<string, number> = {};
+    activeStations.forEach((s: any) => s.devices?.forEach((d: any) => {
+      deviceTypes[d.type] = (deviceTypes[d.type] || 0) + 1;
+    }));
+    return { activeStations: activeStations.length, emptyStations: stationList.length - activeStations.length, totalDevices, activeDevices, issueDevices, deviceTypes };
+  }, [stationList]);
+
+  // Filter only stations with devices for the table
+  const activeStationList = useMemo(() => {
+    if (!stationList) return [];
+    return stationList.filter((s: any) => s.devices && s.devices.length > 0);
+  }, [stationList]);
+
   const exportToExcel = () => {
-    if (!stationList || stationList.length === 0) {
+    if (!activeStationList || activeStationList.length === 0) {
       alert("No station data to export");
       return;
     }
 
-    // Create CSV content
-    let csv = "Station Code,Operating System,Device Type,Brand,Model,Specification,Asset Code,Unit Price,Warranty (Years),Purchase Date,Invoice Number\n";
+    // Create CSV content with prefix code column
+    let csv = "Station Code,Position,Operating System,Device Type,Brand,Model,Specification,Prefix Code,Asset Code,Unit Price,Warranty (Years),Purchase Date,Invoice Number,Status\n";
     
-    stationList.forEach((station) => {
-      if (station.devices && station.devices.length > 0) {
-        station.devices.forEach((device: any, idx: number) => {
-          // For first device, include station info
-          if (idx === 0) {
-            csv += `"${station.assignedCode}","${station.os}","${device.type}","${device.brand}","${device.model}","${device.specification || ''}","${device.assetCode || ''}","${device.unitPrice || 0}","${device.warrantyYears || ''}","${device.purchaseDate || ''}","${device.invoiceNumber}"\n`;
-          } else {
-            // For subsequent devices, empty station columns
-            csv += `"","","${device.type}","${device.brand}","${device.model}","${device.specification || ''}","${device.assetCode || ''}","${device.unitPrice || 0}","${device.warrantyYears || ''}","${device.purchaseDate || ''}","${device.invoiceNumber}"\n`;
-          }
-        });
-      } else {
-        // Station with no devices
-        csv += `"${station.assignedCode}","${station.os}","","","","","","","","",""\n`;
-      }
+    activeStationList.forEach((station: any) => {
+      station.devices.forEach((device: any, idx: number) => {
+        const status = device.isActive ? 'Active' : (device.issues?.length > 0 ? 'Has Issues' : 'Inactive');
+        if (idx === 0) {
+          csv += `"${station.assignedCode}","R${station.row}C${station.column}","${station.os}","${device.type}","${device.brand}","${device.model}","${device.specification || ''}","${device.prefixCode || ''}","${device.assetCode || ''}","${device.unitPrice || 0}","${device.warrantyYears || ''}","${device.purchaseDate || ''}","${device.invoiceNumber || ''}","${status}"\n`;
+        } else {
+          csv += `"","","","${device.type}","${device.brand}","${device.model}","${device.specification || ''}","${device.prefixCode || ''}","${device.assetCode || ''}","${device.unitPrice || 0}","${device.warrantyYears || ''}","${device.purchaseDate || ''}","${device.invoiceNumber || ''}","${status}"\n`;
+        }
+      });
     });
 
     // Create blob and download
@@ -215,52 +237,44 @@ export default function Labplan() {
     }, 0);
   }, [selectedLab]);
 
-  // Prepare QR codes for printing
+  // Prepare QR codes for printing — includes both station QR and individual device QRs
   const qrCodesToPrint = useMemo(() => {
-    if (!stationList || stationList.length === 0) return [];
+    if (!activeStationList || activeStationList.length === 0) return [];
     
     const qrList: any[] = [];
     
-    stationList.forEach((station) => {
-      if (!station.devices || station.devices.length === 0) return;
-      
-      const allLinked = station.devices.every((d: any) => d.isLinked);
-      
-      if (allLinked && station.devices.length > 1) {
-        // Single QR code for linked group with all device details
-        const deviceDetails = station.devices.map((d: any) => {
-          return `${d.type}: ${d.brand} ${d.model}${d.specification ? ` (${d.specification})` : ''}`;
-        }).join(' | ');
-        
-        const qrValue = `Station: ${station.assignedCode}\nOS: ${station.os}\nDevices: ${deviceDetails}\nAsset Codes: ${station.devices.map((d: any) => d.assetCode).filter(Boolean).join(', ')}`;
+    activeStationList.forEach((station: any) => {
+      // 1) Station-level QR (shows all devices in station)
+      const stationQr = station.stationQrValue || '';
+      if (stationQr) {
+        qrList.push({
+          assignedCode: station.assignedCode,
+          type: "Station QR",
+          assetCode: station.devices.map((d: any) => d.prefixCode || d.assetCode).filter(Boolean).join(", "),
+          qrValue: stationQr,
+          displayInfo: station.devices.map((d: any) => `${d.type}: ${d.brand} ${d.model}`).join(' | '),
+          isStation: true
+        });
+      }
+
+      // 2) Individual device QRs
+      station.devices.forEach((device: any) => {
+        const qrValue = device.qrValue || `Station: ${station.assignedCode}\nDevice: ${device.type}\nBrand: ${device.brand}\nModel: ${device.model}\nPrefix Code: ${device.prefixCode || 'N/A'}\nAsset Code: ${device.assetCode || 'N/A'}\nInvoice: ${device.invoiceNumber || 'N/A'}\nWarranty: ${device.warrantyYears || 'N/A'} years\nPrice: \u20b9${device.unitPrice || 0}`;
         
         qrList.push({
           assignedCode: station.assignedCode,
-          type: "Linked Group",
-          assetCode: station.devices.map((d: any) => d.assetCode).filter(Boolean).join(", "),
+          type: device.type,
+          assetCode: device.assetCode,
+          prefixCode: device.prefixCode,
           qrValue: qrValue,
-          displayInfo: deviceDetails
+          displayInfo: `${device.brand} ${device.model}${device.specification ? ` - ${device.specification}` : ''}`,
+          isStation: false
         });
-      } else {
-        // Multiple QR codes for standalone devices with full specifications
-        station.devices.forEach((device: any) => {
-          if (!device.qrValue) return;
-          
-          const qrValue = `Station: ${station.assignedCode}\nDevice: ${device.type}\nBrand: ${device.brand}\nModel: ${device.model}\nSpecification: ${device.specification || 'N/A'}\nAsset Code: ${device.assetCode || 'N/A'}\nInvoice: ${device.invoiceNumber || 'N/A'}\nWarranty: ${device.warrantyYears || 'N/A'} years\nPrice: ₹${device.unitPrice || 0}`;
-          
-          qrList.push({
-            assignedCode: station.assignedCode,
-            type: device.type,
-            assetCode: device.assetCode,
-            qrValue: qrValue,
-            displayInfo: `${device.brand} ${device.model}${device.specification ? ` - ${device.specification}` : ''}`
-          });
-        });
-      }
+      });
     });
     
     return qrList;
-  }, [stationList]);
+  }, [activeStationList]);
 
   const handlePrintQRCodes = () => {
     setShowPrintQR(true);
@@ -377,9 +391,12 @@ export default function Labplan() {
           >
             <BackgroundGradient className="p-8 rounded-xl shadow-xl">
               <div className="flex items-center justify-between mb-6">
-                <h2 className="text-2xl font-bold">{selectedLab.labName} - Floor Plan</h2>
+                <div>
+                  <h2 className="text-2xl font-bold">{selectedLab.labName} - Floor Plan</h2>
+                  <p className="text-gray-400 text-sm">Lab ID: {selectedLab.labNumber} | Grid: {selectedLab.seatingArrangement?.rows ?? 0}×{selectedLab.seatingArrangement?.columns ?? 0}</p>
+                </div>
                 <div className="flex flex-col items-end text-sm text-gray-300">
-                  <span className="font-semibold text-white">Lab Cost</span>
+                  <span className="font-semibold text-white">Total Lab Cost</span>
                   <span className="text-green-400 text-lg font-bold">₹{labCost.toFixed(2)}</span>
                 </div>
                 <button
@@ -389,6 +406,43 @@ export default function Labplan() {
                   Close
                 </button>
               </div>
+
+              {/* Lab Stats Summary */}
+              {labStats && (
+                <div className="mb-6 grid grid-cols-2 md:grid-cols-5 gap-3">
+                  <div className="bg-green-900/40 border border-green-700 rounded-lg p-3 text-center">
+                    <p className="text-2xl font-bold text-green-400">{labStats.activeStations}</p>
+                    <p className="text-xs text-gray-300">Active Stations</p>
+                  </div>
+                  <div className="bg-neutral-800 border border-neutral-600 rounded-lg p-3 text-center">
+                    <p className="text-2xl font-bold text-gray-400">{labStats.emptyStations}</p>
+                    <p className="text-xs text-gray-300">Empty Stations</p>
+                  </div>
+                  <div className="bg-blue-900/40 border border-blue-700 rounded-lg p-3 text-center">
+                    <p className="text-2xl font-bold text-blue-400">{labStats.totalDevices}</p>
+                    <p className="text-xs text-gray-300">Total Devices</p>
+                  </div>
+                  <div className="bg-cyan-900/40 border border-cyan-700 rounded-lg p-3 text-center">
+                    <p className="text-2xl font-bold text-cyan-400">{labStats.activeDevices}</p>
+                    <p className="text-xs text-gray-300">Active Devices</p>
+                  </div>
+                  <div className={`border rounded-lg p-3 text-center ${labStats.issueDevices > 0 ? 'bg-red-900/40 border-red-700' : 'bg-neutral-800 border-neutral-600'}`}>
+                    <p className={`text-2xl font-bold ${labStats.issueDevices > 0 ? 'text-red-400' : 'text-gray-400'}`}>{labStats.issueDevices}</p>
+                    <p className="text-xs text-gray-300">With Issues</p>
+                  </div>
+                </div>
+              )}
+
+              {/* Device Type Breakdown */}
+              {labStats && Object.keys(labStats.deviceTypes).length > 0 && (
+                <div className="mb-6 flex flex-wrap gap-2">
+                  {Object.entries(labStats.deviceTypes).map(([type, count]) => (
+                    <span key={type} className="px-3 py-1 bg-neutral-800 border border-neutral-600 rounded-full text-sm">
+                      {type}: <span className="text-white font-bold">{count}</span>
+                    </span>
+                  ))}
+                </div>
+              )}
 
               {/* Equipment Summary */}
               {selectedLab.equipment && selectedLab.equipment.length > 0 && (
@@ -426,16 +480,14 @@ export default function Labplan() {
                           const hasDevices = cell.deviceGroup && cell.deviceGroup.devices.length > 0;
                           const hasWindows = cell.os.includes("Windows");
                           const hasLinux = cell.os.includes("Linux");
+                          const deviceCount = cell.deviceGroup?.devices?.length || 0;
+                          const hasIssues = cell.deviceGroup?.devices?.some((d: any) => d.issues && d.issues.length > 0);
+                          const isStationType = cell.equipmentType !== "Empty";
                           
-                          // Determine emoji based on primary device type
-                          let emoji = "🔧"; // Default
-                          
+                          // Determine emoji based on device type or station/equipment type
+                          let emoji = "🔧";
                           if (hasDevices && cell.deviceGroup && cell.deviceGroup.devices.length > 0) {
-                            // Get the first device type to determine the icon
-                            const primaryDevice = cell.deviceGroup.devices[0];
-                            const deviceType = primaryDevice.type?.toLowerCase() || '';
-                            
-                            // Assign appropriate emoji based on device type
+                            const deviceType = cell.deviceGroup.devices[0].type?.toLowerCase() || '';
                             if (deviceType === 'laptop') emoji = "💻";
                             else if (deviceType === 'pc') emoji = "🖥️";
                             else if (deviceType === 'monitor') emoji = "🖥️";
@@ -452,44 +504,96 @@ export default function Labplan() {
                             else if (deviceType === 'mouse') emoji = "🖱️";
                             else if (deviceType === 'webcam') emoji = "📷";
                             else if (deviceType === 'headset') emoji = "🎧";
+                          } else if (isStationType) {
+                            // Emoji for station types without devices
+                            const eqType = cell.equipmentType?.toLowerCase() || '';
+                            if (eqType.includes('cctv') || eqType.includes('camera')) emoji = "📹";
+                            else if (eqType.includes('passage') || eqType.includes('walkway')) emoji = "🚶";
+                            else if (eqType.includes('door')) emoji = "🚪";
+                            else if (eqType.includes('network')) emoji = "🌐";
+                            else if (eqType.includes('printer')) emoji = "🖨️";
+                            else if (eqType.includes('server')) emoji = "🗄️";
+                            else if (eqType.includes('ac') || eqType.includes('air')) emoji = "❄️";
+                            else if (eqType.includes('ups') || eqType.includes('power')) emoji = "🔋";
+                            else if (eqType.includes('smart board') || eqType.includes('board')) emoji = "📺";
+                            else if (eqType.includes('projector')) emoji = "📽️";
+                            else if (eqType.includes('window')) emoji = "🪟";
+                            else if (eqType.includes('wall')) emoji = "🧱";
+                            else emoji = "📍";
+                          }
+                          
+                          // Determine cell styling
+                          let cellBg = "bg-neutral-800 border-gray-600";
+                          if (hasDevices) {
+                            cellBg = hasIssues
+                              ? "bg-yellow-900/60 border-yellow-500 hover:bg-yellow-900/80"
+                              : "bg-green-900/60 border-green-500 hover:bg-green-900/80";
+                          } else if (isStationType) {
+                            cellBg = "bg-neutral-800/80 border-cyan-800/60";
                           }
                           
                           return (
                             <div
                               key={colIdx}
-                              onClick={() => hasDevices && setSelectedDevice(cell)}
                               className={`
-                                w-24 h-24 rounded-lg border-2 flex flex-col items-center justify-center transition 
+                                w-28 rounded-lg border-2 flex flex-col items-center justify-center transition p-1
                                 ${hasDevices ? "cursor-pointer" : ""}
-                                ${hasDevices 
-                                  ? "bg-green-600 border-green-400 hover:bg-green-700" 
-                                  : ""}
-                                ${cell.equipmentType === "Empty" || !hasDevices
-                                  ? "bg-neutral-800 border-gray-600" 
-                                  : ""}
+                                ${cellBg}
                               `}
+                              style={{ minHeight: hasDevices ? `${Math.max(96, 60 + deviceCount * 14)}px` : '96px' }}
+                              onClick={() => hasDevices && setSelectedDevice(cell)}
+                              title={hasDevices ? cell.deviceGroup!.devices.map((d: any) => `${d.type}: ${d.assignedCode || d.type}`).join('\n') : cell.equipmentType}
                             >
-                              {cell.equipmentType !== "Empty" && hasDevices ? (
+                              {hasDevices ? (
                                 <>
-                                  <div className="text-white font-bold text-xs">{cell.id}</div>
-                                  <div className="text-white text-xl">
-                                    {emoji}
-                                  </div>
-                                  <div className="flex gap-1 mt-1 flex-wrap justify-center">
-                                    {hasWindows && (
-                                      <div className="text-xs px-1 py-0.5 bg-blue-800 text-white rounded">
-                                        Win
+                                  <div className="text-white font-bold text-[10px] truncate w-full text-center">{cell.id}</div>
+                                  <div className="text-white text-lg leading-none">{emoji}</div>
+                                  {/* Device prefix codes */}
+                                  <div className="text-center w-full space-y-0.5 mt-0.5">
+                                    {cell.deviceGroup!.devices.map((d: any, di: number) => (
+                                      <div key={di} className="text-green-300 text-[9px] font-mono leading-tight truncate" title={d.assignedCode || ''}>
+                                        {d.assignedCode || d.type}
                                       </div>
-                                    )}
-                                    {hasLinux && (
-                                      <div className="text-xs px-1 py-0.5 bg-orange-600 text-white rounded">
-                                        Linux
-                                      </div>
-                                    )}
+                                    ))}
                                   </div>
+                                  <div className="flex gap-1 mt-0.5 flex-wrap justify-center">
+                                    {hasWindows && <div className="text-[8px] px-1 bg-blue-800 text-white rounded">Win</div>}
+                                    {hasLinux && <div className="text-[8px] px-1 bg-orange-600 text-white rounded">Linux</div>}
+                                  </div>
+                                  {/* Station QR button */}
+                                  <button
+                                    className="mt-0.5 px-1.5 py-0.5 bg-cyan-600 hover:bg-cyan-700 text-white text-[8px] rounded flex items-center gap-0.5"
+                                    title="View Station QR"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      const stQr = cell.deviceGroup?.stationQrValue || '';
+                                      const codes = cell.deviceGroup!.devices.map((d: any) => d.assignedCode || '').filter(Boolean);
+                                      const fallbackQr = stQr || `STATION|${cell.id}|${codes.join(',')}`;
+                                      setStationQrModal({
+                                        stationCode: cell.id || `R${rowIdx}C${colIdx}`,
+                                        qrValue: fallbackQr,
+                                        devices: cell.deviceGroup!.devices.map((d: any) => ({
+                                          type: d.type,
+                                          prefixCode: d.assignedCode || '',
+                                          brand: d.brand || '',
+                                          model: d.model || '',
+                                        })),
+                                      });
+                                    }}
+                                  >
+                                    📱 QR
+                                  </button>
+                                </>
+                              ) : isStationType ? (
+                                <>
+                                  <div className="text-cyan-300 text-xl leading-none mb-1">{emoji}</div>
+                                  <div className="text-cyan-200/80 font-medium text-[10px] text-center leading-tight">{cell.equipmentType}</div>
+                                  {cell.id && (
+                                    <div className="text-gray-500 text-[8px] mt-0.5 font-mono">{cell.id}</div>
+                                  )}
                                 </>
                               ) : (
-                                <div className="text-gray-500 text-xs">Empty</div>
+                                <div className="text-gray-600 text-xs">Empty</div>
                               )}
                             </div>
                           );
@@ -501,8 +605,16 @@ export default function Labplan() {
                   {/* Legend */}
                   <div className="mt-6 flex gap-6 items-center flex-wrap">
                     <div className="flex items-center gap-2">
-                      <div className="w-4 h-4 bg-green-600 rounded"></div>
+                      <div className="w-4 h-4 bg-green-900/60 border border-green-500 rounded"></div>
                       <span className="text-sm text-gray-300">Configured Station</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <div className="w-4 h-4 bg-yellow-900/60 border border-yellow-500 rounded"></div>
+                      <span className="text-sm text-gray-300">Has Issues</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <div className="w-4 h-4 bg-neutral-800/80 border border-cyan-800/60 rounded"></div>
+                      <span className="text-sm text-gray-300">Station Type (no devices)</span>
                     </div>
                     <div className="flex items-center gap-2">
                       <div className="w-4 h-4 bg-neutral-800 border border-gray-600 rounded"></div>
@@ -516,11 +628,16 @@ export default function Labplan() {
                 </div>
               )}
 
-              {/* ✅ Station List Table */}
+              {/* ✅ Station List Table (stations with devices only) */}
               {stationList && stationList.length > 0 && (
                 <div className="mt-8">
                   <div className="flex items-center justify-between mb-4">
-                    <h3 className="text-xl font-bold">Station Details</h3>
+                    <div>
+                      <h3 className="text-xl font-bold">Station Details</h3>
+                      <p className="text-gray-400 text-sm mt-1">
+                        Showing {activeStationList.length} stations with devices (out of {stationList.length} total)
+                      </p>
+                    </div>
                     <div className="flex gap-3">
                       <button
                         onClick={handlePrintQRCodes}
@@ -555,146 +672,197 @@ export default function Labplan() {
                       <table className="w-full text-sm text-left">
                         <thead className="text-xs uppercase bg-neutral-800 border-b-2 border-neutral-600">
                           <tr>
-                            <th className="px-6 py-4 font-bold text-white">Station</th>
-                            <th className="px-6 py-4 font-bold text-white">OS</th>
-                            <th className="px-6 py-4 font-bold text-white">Devices</th>
-                            <th className="px-6 py-4 font-bold text-white">QR Code</th>
-                            <th className="px-6 py-4 font-bold text-white">Status</th>
+                            <th className="px-4 py-3 font-bold text-white">Station</th>
+                            <th className="px-4 py-3 font-bold text-white">Position</th>
+                            <th className="px-4 py-3 font-bold text-white">OS</th>
+                            <th className="px-4 py-3 font-bold text-white">Devices</th>
+                            <th className="px-4 py-3 font-bold text-white">Prefix Codes</th>
+                            <th className="px-4 py-3 font-bold text-white">Station QR</th>
+                            <th className="px-4 py-3 font-bold text-white">Device QRs</th>
+                            <th className="px-4 py-3 font-bold text-white">Status</th>
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-neutral-700">
-                          {stationList.map((station, idx) => (
+                          {activeStationList.map((station, idx) => (
                             <tr key={idx} className="hover:bg-neutral-800/70 transition-colors">
-                              <td className="px-6 py-4 font-bold text-lg text-white">{station.assignedCode}</td>
-                              <td className="px-6 py-4 text-gray-300 font-medium">{station.os}</td>
-                              <td className="px-6 py-4">
-                                {station.devices && station.devices.length > 0 ? (
-                                  <div className="space-y-3">
-                                    {station.devices.map((device: any, deviceIdx: number) => (
-                                      <div key={deviceIdx} className="bg-neutral-800 p-3 rounded-lg border border-neutral-600">
-                                        <div className="flex items-center gap-2 mb-1">
-                                          <span className="font-bold text-white text-sm">
-                                            {device.type}:
-                                          </span>
-                                          <span className="text-gray-200 font-medium">
-                                            {device.brand} {device.model}
-                                          </span>
-                                        </div>
-                                        {device.assetCode && (
-                                          <div className="text-blue-400 font-mono text-xs mb-1">
-                                            {device.assetCode}
-                                          </div>
-                                        )}
-                                        {device.specification && (
-                                          <div className="text-gray-400 italic text-xs mb-1">
-                                            {device.specification}
-                                          </div>
-                                        )}
-                                        <div className="flex gap-4 text-gray-300 mt-2 text-xs">
-                                          {device.unitPrice > 0 && (
-                                            <span className="font-semibold">₹{device.unitPrice.toFixed(2)}</span>
-                                          )}
-                                          {device.warrantyYears && (
-                                            <span>Warranty: {device.warrantyYears}y</span>
-                                          )}
-                                          {device.invoiceNumber && (
-                                            <span className="text-blue-300">Invoice: {device.invoiceNumber}</span>
-                                          )}
-                                        </div>
-                                        
-                                        {/* Display Issues */}
-                                        {device.issues && device.issues.length > 0 && (
-                                          <div className="mt-3 space-y-2">
-                                            {device.issues.map((issue: any, issueIdx: number) => (
-                                              <div 
-                                                key={issueIdx} 
-                                                className={`p-2 rounded border-l-4 ${
-                                                  issue.severity === 'high' || issue.severity === 'critical' 
-                                                    ? 'bg-red-900/30 border-red-500' 
-                                                    : issue.severity === 'medium' 
-                                                    ? 'bg-yellow-900/30 border-yellow-500'
-                                                    : 'bg-blue-900/30 border-blue-500'
-                                                }`}
-                                              >
-                                                <div className="flex items-start justify-between mb-1">
-                                                  <span className="font-bold text-xs text-white uppercase">
-                                                    {issue.severity === 'high' || issue.severity === 'critical' ? '🔴' : issue.severity === 'medium' ? '🟡' : '🔵'} {issue.severity}
-                                                  </span>
-                                                  <span className="text-xs text-gray-400">
-                                                    {issue.reportedAt ? new Date(issue.reportedAt).toLocaleDateString() : ''}
-                                                  </span>
-                                                </div>
-                                                <p className="text-white text-xs font-semibold mb-1">{issue.title}</p>
-                                                {issue.description && (
-                                                  <p className="text-gray-300 text-xs">{issue.description}</p>
-                                                )}
-                                              </div>
-                                            ))}
-                                          </div>
-                                        )}
-                                      </div>
-                                    ))}
+                              <td className="px-4 py-3">
+                                <span className="font-bold text-white text-base">
+                                  {station.assignedCode}
+                                </span>
+                              </td>
+                              <td className="px-4 py-3 text-gray-400 text-xs font-mono">
+                                R{station.row} C{station.column}
+                              </td>
+                              <td className="px-4 py-3">
+                                {station.os ? (
+                                  <div className="flex flex-wrap gap-1">
+                                    {station.os.split(',').map((osName: string, osIdx: number) => {
+                                      const trimmed = osName.trim();
+                                      return (
+                                        <span key={osIdx} className={`inline-block px-2 py-0.5 text-[10px] font-semibold rounded-full ${
+                                          trimmed === 'Windows' ? 'bg-blue-600/80 text-blue-100' :
+                                          trimmed === 'Linux' ? 'bg-orange-600/80 text-orange-100' :
+                                          trimmed === 'Dual Boot' ? 'bg-purple-600/80 text-purple-100' :
+                                          'bg-gray-600/80 text-gray-200'
+                                        }`}>
+                                          {trimmed}
+                                        </span>
+                                      );
+                                    })}
                                   </div>
                                 ) : (
-                                  <span className="text-gray-500">No devices assigned</span>
+                                  <span className="text-gray-500 text-xs">—</span>
                                 )}
                               </td>
-                              <td className="px-6 py-4">
-                                {(() => {
-                                  if (!station.devices || station.devices.length === 0) {
-                                    return <span className="text-gray-500 text-xs">No QR</span>;
-                                  }
-                                  
-                                  const allLinked = station.devices.every((d: any) => d.isLinked);
-                                  
-                                  if (allLinked && station.devices.length > 1) {
-                                    // Single QR code for linked group
-                                    const deviceDetails = station.devices.map((d: any) => {
-                                      return `${d.type}: ${d.brand} ${d.model}${d.specification ? ` (${d.specification})` : ''}`;
-                                    }).join(' | ');
-                                    
-                                    const qrValue = `Station: ${station.assignedCode}\nOS: ${station.os}\nDevices: ${deviceDetails}\nAsset Codes: ${station.devices.map((d: any) => d.assetCode).filter(Boolean).join(', ')}`;
-                                    
-                                    return (
-                                      <div className="flex flex-col items-center bg-white p-2 rounded">
-                                        <QRCodeSVG value={qrValue} size={80} />
-                                        <span className="text-xs text-black mt-1">Linked Group</span>
+                              <td className="px-4 py-3">
+                                <div className="space-y-3">
+                                  {station.devices.map((device: any, deviceIdx: number) => (
+                                    <div key={deviceIdx} className="bg-neutral-800 p-3 rounded-lg border border-neutral-600">
+                                      <div className="flex items-center gap-2 mb-1">
+                                        <span className="font-bold text-white text-sm">
+                                          {device.type}:
+                                        </span>
+                                        <span className="text-gray-200 font-medium">
+                                          {device.brand} {device.model}
+                                        </span>
                                       </div>
-                                    );
-                                  } else {
-                                    // Multiple QR codes for standalone devices
-                                    return (
-                                      <div className="space-y-2">
-                                        {station.devices.map((device: any, qrIdx: number) => {
-                                          const qrValue = `Station: ${station.assignedCode}\nDevice: ${device.type}\nBrand: ${device.brand}\nModel: ${device.model}\nSpecification: ${device.specification || 'N/A'}\nAsset Code: ${device.assetCode || 'N/A'}\nInvoice: ${device.invoiceNumber || 'N/A'}\nWarranty: ${device.warrantyYears || 'N/A'} years\nPrice: ₹${device.unitPrice || 0}`;
-                                          
-                                          return (
-                                            <div key={qrIdx} className="flex flex-col items-center bg-white p-2 rounded">
-                                              <QRCodeSVG value={qrValue} size={80} />
-                                              <span className="text-xs text-black mt-1">{device.type}</span>
+                                      {device.assetCode && (
+                                        <div className="text-blue-400 font-mono text-xs mb-1">
+                                          Asset: {device.assetCode}
+                                        </div>
+                                      )}
+                                      {device.specification && (
+                                        <div className="text-gray-400 italic text-xs mb-1">
+                                          {device.specification}
+                                        </div>
+                                      )}
+                                      <div className="flex gap-4 text-gray-300 mt-2 text-xs flex-wrap">
+                                        {device.unitPrice > 0 && (
+                                          <span className="font-semibold">₹{device.unitPrice.toFixed(2)}</span>
+                                        )}
+                                        {device.warrantyYears && (
+                                          <span>Warranty: {device.warrantyYears}y</span>
+                                        )}
+                                        {device.purchaseDate && (
+                                          <span>Purchased: {new Date(device.purchaseDate).toLocaleDateString()}</span>
+                                        )}
+                                        {device.invoiceNumber && (
+                                          <span className="text-blue-300">Invoice: {device.invoiceNumber}</span>
+                                        )}
+                                      </div>
+                                      
+                                      {/* Display Issues */}
+                                      {device.issues && device.issues.length > 0 && (
+                                        <div className="mt-3 space-y-2">
+                                          {device.issues.map((issue: any, issueIdx: number) => (
+                                            <div 
+                                              key={issueIdx} 
+                                              className={`p-2 rounded border-l-4 ${
+                                                issue.severity === 'high' || issue.severity === 'critical' 
+                                                  ? 'bg-red-900/30 border-red-500' 
+                                                  : issue.severity === 'medium' 
+                                                  ? 'bg-yellow-900/30 border-yellow-500'
+                                                  : 'bg-blue-900/30 border-blue-500'
+                                              }`}
+                                            >
+                                              <div className="flex items-start justify-between mb-1">
+                                                <span className="font-bold text-xs text-white uppercase">
+                                                  {issue.severity === 'high' || issue.severity === 'critical' ? '🔴' : issue.severity === 'medium' ? '🟡' : '🔵'} {issue.severity}
+                                                </span>
+                                                <span className="text-xs text-gray-400">
+                                                  {issue.reportedAt ? new Date(issue.reportedAt).toLocaleDateString() : ''}
+                                                </span>
+                                              </div>
+                                              <p className="text-white text-xs font-semibold mb-1">{issue.title}</p>
+                                              {issue.description && (
+                                                <p className="text-gray-300 text-xs">{issue.description}</p>
+                                              )}
                                             </div>
-                                          );
+                                          ))}
+                                        </div>
+                                      )}
+                                    </div>
+                                  ))}
+                                </div>
+                              </td>
+                              {/* Prefix Codes column */}
+                              <td className="px-4 py-3">
+                                <div className="space-y-1">
+                                  {station.devices.map((device: any, dIdx: number) => (
+                                    <div key={dIdx} className="flex items-center gap-1">
+                                      <span className="text-green-400 font-mono text-xs font-bold">
+                                        {device.prefixCode || '—'}
+                                      </span>
+                                      <span className="text-gray-500 text-[10px]">({device.type})</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              </td>
+                              {/* Station QR column */}
+                              <td className="px-4 py-3">
+                                {(() => {
+                                  const codes = station.devices.map((d: any) => d.prefixCode || d.assetCode || '').filter(Boolean);
+                                  const stQr = station.stationQrValue || `STATION|${station.assignedCode}|${codes.join(',')}`;
+                                  return (
+                                    <div className="flex flex-col items-center">
+                                      <div className="bg-white p-2 rounded cursor-pointer hover:shadow-lg transition"
+                                        onClick={() => setStationQrModal({
+                                          stationCode: station.assignedCode,
+                                          qrValue: stQr,
+                                          devices: station.devices.map((d: any) => ({
+                                            type: d.type,
+                                            prefixCode: d.prefixCode || '',
+                                            brand: d.brand || '',
+                                            model: d.model || '',
+                                          })),
                                         })}
+                                      >
+                                        <QRCodeSVG value={stQr} size={64} />
                                       </div>
-                                    );
-                                  }
+                                      <button
+                                        className="mt-1 text-cyan-400 hover:text-cyan-300 text-[10px] underline"
+                                        onClick={() => setStationQrModal({
+                                          stationCode: station.assignedCode,
+                                          qrValue: stQr,
+                                          devices: station.devices.map((d: any) => ({
+                                            type: d.type,
+                                            prefixCode: d.prefixCode || '',
+                                            brand: d.brand || '',
+                                            model: d.model || '',
+                                          })),
+                                        })}
+                                      >
+                                        View Full
+                                      </button>
+                                    </div>
+                                  );
                                 })()}
                               </td>
-                              <td className="px-6 py-4">
-                                {station.devices && station.devices.length > 0 ? (
-                                  station.devices.every((d: any) => d.isActive) ? (
-                                    <span className="px-3 py-1.5 bg-green-600 text-white text-xs font-bold rounded-md">
-                                      ✅ Active
-                                    </span>
-                                  ) : (
-                                    <span className="px-3 py-1.5 bg-red-600 text-white text-xs font-bold rounded-md">
-                                      ⚠️ Issues
-                                    </span>
-                                  )
+                              {/* Individual Device QRs column */}
+                              <td className="px-4 py-3">
+                                <div className="space-y-2">
+                                  {station.devices.map((device: any, qrIdx: number) => {
+                                    const qrVal = device.qrValue || `${device.invoiceNumber || ''}|${device.prefixCode || device.assetCode || ''}`;
+                                    return (
+                                      <div key={qrIdx} className="flex flex-col items-center bg-white p-2 rounded">
+                                        <QRCodeSVG value={qrVal} size={60} />
+                                        <span className="text-[10px] text-black mt-1 font-mono">{device.prefixCode || device.type}</span>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              </td>
+                              <td className="px-4 py-3">
+                                {station.devices.every((d: any) => d.isActive) ? (
+                                  <div className="flex items-center gap-1.5">
+                                    <span className="w-2 h-2 rounded-full bg-green-500 inline-block"></span>
+                                    <span className="text-green-400 text-xs font-medium">Active</span>
+                                  </div>
                                 ) : (
-                                  <span className="px-3 py-1.5 bg-gray-600 text-white text-xs font-bold rounded-md">
-                                    Empty
-                                  </span>
+                                  <div className="flex items-center gap-1.5">
+                                    <span className="w-2 h-2 rounded-full bg-red-500 inline-block"></span>
+                                    <span className="text-red-400 text-xs font-medium">Issues</span>
+                                  </div>
                                 )}
                               </td>
                             </tr>
@@ -759,6 +927,9 @@ export default function Labplan() {
                       {selectedDevice.deviceGroup.devices.map((device: any, idx: number) => (
                         <div key={idx} className="bg-neutral-800 p-3 rounded-lg">
                           <p className="font-semibold">{device.type}</p>
+                          {device.assignedCode && (
+                            <p className="text-sm text-green-400 font-mono font-bold">Prefix: {device.assignedCode}</p>
+                          )}
                           {device.brand && (
                             <p className="text-sm text-gray-400">Brand: {device.brand}</p>
                           )}
@@ -768,8 +939,17 @@ export default function Labplan() {
                           {device.specification && (
                             <p className="text-sm text-gray-400">Spec: {device.specification}</p>
                           )}
+                          {device.assetCode && (
+                            <p className="text-sm text-blue-400 font-mono">Asset: {device.assetCode}</p>
+                          )}
                           {device.invoiceNumber && (
                             <p className="text-sm text-gray-400">Invoice: {device.invoiceNumber}</p>
+                          )}
+                          {device.unitPrice > 0 && (
+                            <p className="text-sm text-gray-400">Price: ₹{device.unitPrice}</p>
+                          )}
+                          {device.warrantyYears && (
+                            <p className="text-sm text-gray-400">Warranty: {device.warrantyYears} years</p>
                           )}
                           {device.isLinked && (
                             <span className="text-xs px-2 py-1 bg-purple-600 text-white rounded mt-1 inline-block">
@@ -1000,11 +1180,20 @@ export default function Labplan() {
                 
                 <div className="grid grid-cols-3 gap-6">
                   {qrCodesToPrint.map((qr, idx) => (
-                    <div key={idx} className="border-2 border-gray-300 p-4 rounded-lg flex flex-col items-center bg-gray-50">
+                    <div key={idx} className={`border-2 p-4 rounded-lg flex flex-col items-center ${
+                      qr.isStation ? 'border-cyan-400 bg-cyan-50' : 'border-gray-300 bg-gray-50'
+                    }`}>
                       <QRCodeSVG value={qr.qrValue} size={150} />
                       <div className="mt-3 text-center">
                         <p className="font-bold text-lg text-black">{qr.assignedCode}</p>
-                        <p className="text-sm text-gray-700">{qr.type}</p>
+                        {qr.isStation ? (
+                          <p className="text-sm text-cyan-700 font-semibold">📍 Station QR</p>
+                        ) : (
+                          <p className="text-sm text-gray-700">{qr.type}</p>
+                        )}
+                        {qr.prefixCode && (
+                          <p className="text-xs text-green-700 font-mono font-bold mt-1">{qr.prefixCode}</p>
+                        )}
                         {qr.assetCode && (
                           <p className="text-xs text-gray-600 font-mono mt-1">{qr.assetCode}</p>
                         )}
@@ -1046,11 +1235,20 @@ export default function Labplan() {
                 
                 <div className="grid grid-cols-3 gap-6">
                   {qrCodesToPrint.map((qr, idx) => (
-                    <div key={idx} className="border-2 border-black p-4 rounded-lg flex flex-col items-center">
+                    <div key={idx} className={`border-2 p-4 rounded-lg flex flex-col items-center ${
+                      qr.isStation ? 'border-cyan-600' : 'border-black'
+                    }`}>
                       <QRCodeSVG value={qr.qrValue} size={150} />
                       <div className="mt-3 text-center">
                         <p className="font-bold text-lg text-black">{qr.assignedCode}</p>
-                        <p className="text-sm text-gray-700">{qr.type}</p>
+                        {qr.isStation ? (
+                          <p className="text-sm text-gray-700 font-semibold">Station QR</p>
+                        ) : (
+                          <p className="text-sm text-gray-700">{qr.type}</p>
+                        )}
+                        {qr.prefixCode && (
+                          <p className="text-xs text-gray-600 font-mono font-bold mt-1">{qr.prefixCode}</p>
+                        )}
                         {qr.assetCode && (
                           <p className="text-xs text-gray-600 font-mono mt-1">{qr.assetCode}</p>
                         )}
@@ -1061,6 +1259,66 @@ export default function Labplan() {
               </div>
             </div>
           </>
+        )}
+
+        {/* ✅ Station QR Modal */}
+        {stationQrModal && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            className="fixed inset-0 bg-black/70 flex items-center justify-center z-50"
+            onClick={() => setStationQrModal(null)}
+          >
+            <motion.div
+              initial={{ scale: 0.9 }}
+              animate={{ scale: 1 }}
+              className="bg-neutral-900 p-6 rounded-xl shadow-lg w-[420px] max-h-[80vh] overflow-y-auto"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-xl font-bold">Station QR: {stationQrModal.stationCode}</h3>
+                <button
+                  className="text-gray-400 hover:text-white"
+                  onClick={() => setStationQrModal(null)}
+                >
+                  ✕
+                </button>
+              </div>
+              
+              <div className="flex flex-col items-center mb-4">
+                <div className="bg-white p-4 rounded-lg">
+                  <QRCodeSVG value={stationQrModal.qrValue} size={200} />
+                </div>
+                <p className="text-gray-400 text-xs mt-2 font-mono break-all text-center max-w-[350px]">
+                  {stationQrModal.qrValue}
+                </p>
+              </div>
+
+              <div className="mt-4">
+                <h4 className="font-semibold text-gray-300 mb-2">Devices at this station:</h4>
+                <div className="space-y-2">
+                  {stationQrModal.devices.map((d: any, i: number) => (
+                    <div key={i} className="bg-neutral-800 p-2 rounded flex items-center justify-between">
+                      <div>
+                        <span className="text-white text-sm font-medium">{d.type}</span>
+                        {d.brand && <span className="text-gray-400 text-xs ml-2">{d.brand} {d.model}</span>}
+                      </div>
+                      {d.prefixCode && (
+                        <span className="text-green-400 font-mono text-xs font-bold">{d.prefixCode}</span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <button
+                className="mt-6 w-full px-4 py-2 bg-neutral-700 hover:bg-neutral-600 rounded-lg transition text-white"
+                onClick={() => setStationQrModal(null)}
+              >
+                Close
+              </button>
+            </motion.div>
+          </motion.div>
         )}
       </div>
     </div>

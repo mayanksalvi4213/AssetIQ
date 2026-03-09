@@ -1,6 +1,7 @@
 "use client";
 import { useState, useEffect, useMemo } from "react";
 import { motion } from "motion/react";
+import { QRCodeSVG } from "qrcode.react";
 import { BackgroundGradient } from "@/components/ui/background-gradient";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -13,6 +14,7 @@ import { useAuth } from "@/contexts/AuthContext";
 interface Equipment {
   type: string;
   quantity: number;
+  quantityAssigned?: number;
   brand?: string;
   model?: string;
   specification?: string;
@@ -89,22 +91,11 @@ export default function LabConfiguration() {
   const [isSearching, setIsSearching] = useState(false);
   const [selectedQuantities, setSelectedQuantities] = useState<Record<number, number>>({});
 
-  // Derive displayed search results reactively from raw API results minus current equipment
+  // Derive displayed search results — backend already excludes pooled/assigned devices,
+  // so we just use rawSearchResults directly.
   const searchResults = useMemo(() => {
-    return rawSearchResults
-      .map((d) => {
-        const existing = equipment.find(
-          (eq) =>
-            eq.type === d.type &&
-            eq.brand === d.brand &&
-            eq.model === d.model &&
-            eq.billId === d.billId &&
-            eq.invoiceNumber === d.invoiceNumber
-        );
-        return existing ? { ...d, quantity: d.quantity - existing.quantity } : d;
-      })
-      .filter((d) => d.quantity > 0);
-  }, [rawSearchResults, equipment]);
+    return rawSearchResults.filter((d) => d.quantity > 0);
+  }, [rawSearchResults]);
 
   // Device linking
   const [linkedDeviceGroups, setLinkedDeviceGroups] = useState<Equipment[][]>([]);
@@ -116,6 +107,13 @@ export default function LabConfiguration() {
 
   // OS selection per device type (for PC type)
   const [osSelection, setOsSelection] = useState<Record<string, { windows: boolean; linux: boolean; other: boolean }>>({});
+
+  // Station QR modal
+  const [stationQrModal, setStationQrModal] = useState<{
+    stationCode: string;
+    qrValue: string;
+    devices: { type: string; assignedCode: string }[];
+  } | null>(null);
 
   // Compute which device types still have unassigned units
   const unassignedTypes = useMemo(() => {
@@ -376,31 +374,72 @@ export default function LabConfiguration() {
     }
   };
 
+  // ── Refresh helpers (don't reset dropdown/search state) ──────────
+  const refreshLabData = async (labId: string) => {
+    try {
+      const res = await fetch(`http://127.0.0.1:5000/get_lab/${labId}`, { headers: authHeaders() });
+      const data = await res.json();
+      if (data.success && data.lab) {
+        setEquipment(data.lab.equipment || []);
+        if (data.lab.seatingArrangement?.grid) {
+          setSeatingGrid(data.lab.seatingArrangement.grid);
+        }
+      }
+    } catch (err) {
+      console.error("Error refreshing lab data:", err);
+    }
+  };
+
+  const refreshSearch = async () => {
+    if (!equipmentDropdown) return;
+    try {
+      const res = await fetch(`http://127.0.0.1:5000/search_devices?type_id=${equipmentDropdown}`, { headers: authHeaders() });
+      const data = await res.json();
+      setRawSearchResults(data.devices || []);
+    } catch (err) {
+      console.error("Error refreshing search:", err);
+    }
+  };
+
   // ── Equipment search ─────────────────────────────────────────────
 
-  const addEquipmentFromSearch = (item: Equipment, idx: number) => {
-    const qty = selectedQuantities[idx] || 1;
+  const addEquipmentFromSearch = async (item: Equipment, idx: number) => {
+    const qty = selectedQuantities[idx] || 0;
+    if (qty <= 0) {
+      alert("Enter a quantity greater than 0");
+      return;
+    }
     if (qty > item.quantity) {
       alert(`Max ${item.quantity} available`);
       return;
     }
-    const existingIdx = equipment.findIndex(
-      (eq) =>
-        eq.type === item.type &&
-        eq.brand === item.brand &&
-        eq.model === item.model &&
-        eq.billId === item.billId &&
-        eq.invoiceNumber === item.invoiceNumber
-    );
-    if (existingIdx !== -1) {
-      setEquipment((prev) =>
-        prev.map((eq, i) => (i === existingIdx ? { ...eq, quantity: eq.quantity + qty } : eq))
-      );
-    } else {
-      setEquipment((prev) => [...prev, { ...item, quantity: qty }]);
+    try {
+      const res = await fetch("http://127.0.0.1:5000/reserve_devices_for_lab", {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify({
+          labId: selectedLabId,
+          type: item.type,
+          brand: item.brand,
+          model: item.model,
+          billId: item.billId,
+          invoiceNumber: item.invoiceNumber,
+          quantity: qty,
+        }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        // Refresh both lab equipment and search results
+        await refreshLabData(selectedLabId!);
+        await refreshSearch();
+      } else {
+        alert(data.error || "Failed to reserve devices");
+      }
+    } catch (err) {
+      console.error(err);
+      alert("Error reserving devices");
     }
-    // searchResults is derived via useMemo — no manual update needed
-    setSelectedQuantities((prev) => ({ ...prev, [idx]: 1 }));
+    setSelectedQuantities((prev) => ({ ...prev, [idx]: 0 }));
   };
 
   // ── Device linking ───────────────────────────────────────────────
@@ -450,7 +489,6 @@ export default function LabConfiguration() {
         headers: authHeaders(),
         body: JSON.stringify({
           labNumber: selectedLabId,
-          equipment,
           codePrefixes,
           linkedDeviceGroups,
           osSelection,
@@ -458,9 +496,15 @@ export default function LabConfiguration() {
       });
       const data = await res.json();
       if (data.success) {
-        alert(
-          `✅ ${data.message}\n${data.devices_assigned} devices assigned across ${data.stations_created} stations`
-        );
+        let msg = `✅ ${data.message}\n${data.devices_assigned} devices assigned across ${data.stations_created} stations`;
+        if (data.devices_unassigned > 0) {
+          msg += `\n\n⚠️ WARNING: ${data.devices_unassigned} device(s) could NOT be assigned — the layout has no more available stations for them:`;
+          for (const u of data.unassigned_summary) {
+            msg += `\n  • ${u.quantity}× ${u.type} (${u.brand} ${u.model})`;
+          }
+          msg += `\n\nThese devices remain in the equipment pool but are not placed in the lab. Either remove them from the pool or expand the layout.`;
+        }
+        alert(msg);
         loadLab(selectedLabId);
       } else {
         alert(data.error || "Failed to assign devices");
@@ -686,6 +730,25 @@ export default function LabConfiguration() {
                                               {d.assignedCode || d.type}
                                             </div>
                                           ))}
+                                          {/* Station QR button */}
+                                          <button
+                                            className="mt-1 px-1.5 py-0.5 bg-cyan-600 hover:bg-cyan-700 text-white text-[9px] rounded flex items-center gap-0.5 mx-auto"
+                                            title="View Station QR Code"
+                                            onClick={() => {
+                                              const qrVal = deviceGroup?.stationQrValue || "";
+                                              const stCode = deviceGroup?.assignedCode || `R${ri}C${ci}`;
+                                              setStationQrModal({
+                                                stationCode: stCode,
+                                                qrValue: qrVal,
+                                                devices: devices.map((d: any) => ({
+                                                  type: d.type,
+                                                  assignedCode: d.assignedCode || "",
+                                                })),
+                                              });
+                                            }}
+                                          >
+                                            📱 QR
+                                          </button>
                                         </div>
                                       ) : (
                                         <div className="text-gray-400 text-[10px] text-center leading-tight">
@@ -739,7 +802,7 @@ export default function LabConfiguration() {
                                 const results = data.devices || [];
                                 setRawSearchResults(results);
                                 const initQ: Record<number, number> = {};
-                                results.forEach((_: any, i: number) => { initQ[i] = 1; });
+                                results.forEach((_: any, i: number) => { initQ[i] = 0; });
                                 setSelectedQuantities(initQ);
                               })
                               .catch((err) => {
@@ -812,7 +875,7 @@ export default function LabConfiguration() {
                                 type="number"
                                 min="1"
                                 max={item.quantity}
-                                value={Math.min(selectedQuantities[idx] || 1, item.quantity)}
+                                value={selectedQuantities[idx] ?? 0}
                                 onChange={(e) =>
                                   setSelectedQuantities((prev) => ({
                                     ...prev,
@@ -878,7 +941,39 @@ export default function LabConfiguration() {
                               )}
                             </div>
                             <button
-                              onClick={() => setEquipment((prev) => prev.filter((_, i) => i !== idx))}
+                              onClick={async () => {
+                                const eq = equipment[idx];
+                                const unassigned = eq.quantity - (eq.quantityAssigned || 0);
+                                if (unassigned <= 0) {
+                                  alert("All devices of this type are already assigned. Reset assignments first to remove them.");
+                                  return;
+                                }
+                                try {
+                                  const res = await fetch("http://127.0.0.1:5000/release_devices_from_lab", {
+                                    method: "POST",
+                                    headers: authHeaders(),
+                                    body: JSON.stringify({
+                                      labId: selectedLabId,
+                                      type: eq.type,
+                                      brand: eq.brand,
+                                      model: eq.model,
+                                      billId: eq.billId,
+                                      invoiceNumber: eq.invoiceNumber,
+                                      quantity: unassigned,
+                                    }),
+                                  });
+                                  const data = await res.json();
+                                  if (data.success) {
+                                    await refreshLabData(selectedLabId!);
+                                    await refreshSearch();
+                                  } else {
+                                    alert(data.error || "Failed to release devices");
+                                  }
+                                } catch (err) {
+                                  console.error(err);
+                                  alert("Error releasing devices");
+                                }
+                              }}
                               className="text-red-400 hover:text-red-600 ml-3"
                             >
                               Remove
@@ -1103,6 +1198,48 @@ export default function LabConfiguration() {
                 className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded transition"
               >
                 Save Link Group
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* ── Station QR Code Modal ──────────────────────────────────── */}
+      {stationQrModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center z-50 p-4">
+          <div className="bg-neutral-900 rounded-xl p-6 max-w-md w-full">
+            <h2 className="text-xl font-bold text-white mb-2">
+              Station QR — {stationQrModal.stationCode}
+            </h2>
+            <p className="text-gray-400 text-sm mb-4">
+              Scan this QR code to view all devices at this station.
+            </p>
+            <div className="flex justify-center mb-4 bg-white p-4 rounded-lg">
+              <QRCodeSVG
+                value={stationQrModal.qrValue || "NO_DATA"}
+                size={200}
+                level="M"
+              />
+            </div>
+            <div className="mb-4 bg-neutral-800 p-3 rounded-lg">
+              <h3 className="text-white font-semibold text-sm mb-2">Devices in this station:</h3>
+              <ul className="space-y-1">
+                {stationQrModal.devices.map((d, i) => (
+                  <li key={i} className="text-gray-300 text-sm flex justify-between">
+                    <span>{d.type}</span>
+                    <span className="text-green-400 font-mono text-xs">{d.assignedCode}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+            <p className="text-gray-500 text-xs mb-3 font-mono break-all">
+              {stationQrModal.qrValue}
+            </p>
+            <div className="flex justify-end">
+              <button
+                onClick={() => setStationQrModal(null)}
+                className="px-4 py-2 bg-neutral-700 hover:bg-neutral-600 text-white rounded transition"
+              >
+                Close
               </button>
             </div>
           </div>

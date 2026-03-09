@@ -100,7 +100,10 @@ const Reports: React.FC = () => {
             <p className="text-gray-300 text-sm mb-4">
               Find which batches had the most reported issues.
             </p>
-            <button className="px-4 py-2 bg-red-600 rounded-lg text-white font-semibold hover:bg-red-700 transition-colors">
+            <button
+              onClick={() => (window.location.href = "/reports/issue-trends")}
+              className="px-4 py-2 bg-red-600 rounded-lg text-white font-semibold hover:bg-red-700 transition-colors"
+            >
               View Report
             </button>
           </div>

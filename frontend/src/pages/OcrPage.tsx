@@ -23,6 +23,8 @@ interface Asset {
   model?: string;
   device_type?: string; // Auto-detected device type
   warranty?: string; // Warranty information
+  dept?: string; // Department
+  identityNumber?: string; // Prefix code for asset_code generation
 }
 
 interface BillInfo {
@@ -103,6 +105,18 @@ const OcrPage: React.FC = () => {
   const [isEditMode, setIsEditMode] = useState(false);
   const [editableBillInfo, setEditableBillInfo] = useState<BillInfo | null>(null);
   const [editableAssets, setEditableAssets] = useState<Asset[]>([]);
+
+  // OCR Prefix Code map (device type -> prefix code)
+  const [prefixCodeMap, setPrefixCodeMap] = useState<Record<string, string>>({});
+
+  // OCR Additional Fields (not captured by OCR, must be filled manually)
+  const [ocrDept, setOcrDept] = useState("");
+  const [ocrStockEntry, setOcrStockEntry] = useState("");
+  const [ocrOrderNo, setOcrOrderNo] = useState("");
+  const [ocrOrderDate, setOcrOrderDate] = useState("");
+  const [ocrCentralStoreNo, setOcrCentralStoreNo] = useState("");
+  const [ocrCentralStoreDate, setOcrCentralStoreDate] = useState("");
+  const [ocrRemarks, setOcrRemarks] = useState("");
 
   // Manual entry states
   const [showManualEntry, setShowManualEntry] = useState(false);
@@ -410,7 +424,7 @@ const OcrPage: React.FC = () => {
         vendorName: scanResult.bill_info.vendor_name,
         billDate: formattedBillDate,
         gstin: scanResult.bill_info.vendor_gstin || "",
-        stockEntry: "",
+        stockEntry: ocrStockEntry,
         taxAmount: scanResult.bill_info.tax_amount || 0,
         totalAmount: scanResult.bill_info.total_amount || 0,
         overwrite: overwrite
@@ -451,7 +465,7 @@ const OcrPage: React.FC = () => {
         id: (index + 1).toString(),
         deviceType: asset.device_type || asset.category || "Other",
         customDeviceType: "",
-        dept: "", // OCR doesn't capture department, will need to be filled later
+        dept: ocrDept,
         invoiceNo: scanResult.bill_info.bill_number,
         vendorName: scanResult.bill_info.vendor_name,
         materialDescription: asset.name,
@@ -461,14 +475,19 @@ const OcrPage: React.FC = () => {
         quantity: asset.quantity || 1,
         amountPerPcs: asset.unit_price || 0,
         totalAmount: asset.total_price || 0,
-        identityNumber: asset.asset_id || ""
+        identityNumber: asset.identityNumber || ""
       }));
 
       // STEP 3: Save devices information
       const devicesPayload = {
         invoiceNumber: scanResult.bill_info.bill_number,
         vendorName: scanResult.bill_info.vendor_name,
-        devices: transformedDevices
+        devices: transformedDevices,
+        orderNo: ocrOrderNo,
+        orderDate: ocrOrderDate,
+        centralStoreNo: ocrCentralStoreNo,
+        centralStoreDate: ocrCentralStoreDate,
+        remarks: ocrRemarks
       };
 
       console.log("Sending OCR devices payload:", JSON.stringify(devicesPayload, null, 2));
@@ -502,8 +521,8 @@ const OcrPage: React.FC = () => {
         deviceType: "",
         customDeviceType: "",
         dept: "",
-        invoiceNo: "",
-        vendorName: "",
+        invoiceNo: manualDevices[0]?.invoiceNo || "",
+        vendorName: manualDevices[0]?.vendorName || "",
         materialDescription: "",
         modelNo: "",
         brand: "",
@@ -967,19 +986,22 @@ const OcrPage: React.FC = () => {
                       />
                     </div>
 
-                    {/* Identity Number */}
+                    {/* Prefix Code (Identity Number) */}
                     <div>
-                      <Label htmlFor={`identityNumber-${device.id}`} className="text-gray-900 font-semibold">Identity Number</Label>
+                      <Label htmlFor={`identityNumber-${device.id}`} className="text-gray-900 font-semibold">
+                        Prefix Code <span className="text-red-600">*</span>
+                      </Label>
                       <Input
                         id={`identityNumber-${device.id}`}
                         type="text"
-                        placeholder="e.g., ID-2024-001"
+                        placeholder="e.g., APSIT/CS/LA"
                         value={device.identityNumber}
                         onChange={(e) =>
                           updateManualDevice(device.id, "identityNumber", e.target.value)
                         }
                         className="mt-1 bg-white border-2 border-gray-300 text-gray-900 placeholder-gray-500 font-medium"
                       />
+                      <p className="text-xs text-gray-500 mt-1">Devices will be: {device.identityNumber || 'PREFIX'}/1, {device.identityNumber || 'PREFIX'}/2, ...</p>
                     </div>
                   </div>
                 </div>
@@ -1600,6 +1622,193 @@ const OcrPage: React.FC = () => {
             )}
           </div>
 
+          {/* Additional Invoice Details */}
+          <div className="mb-6 p-6 rounded-lg border border-blue-600 bg-blue-900/20">
+            <h3 className="text-blue-300 text-xl font-semibold mb-4">📋 Additional Invoice Details</h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              <div>
+                <Label className="text-gray-300 font-semibold">Department <span className="text-red-400">*</span></Label>
+                <select
+                  value={ocrDept}
+                  onChange={(e) => setOcrDept(e.target.value)}
+                  className="w-full px-4 py-2 rounded-lg border border-gray-600 bg-gray-700 text-white focus:border-blue-500 focus:outline-none mt-1 font-medium"
+                >
+                  <option value="">Select Department</option>
+                  <option value="CS">CS</option>
+                  <option value="IT">IT</option>
+                  <option value="AIML">AIML</option>
+                  <option value="DS">DS</option>
+                  <option value="MECH">MECH</option>
+                  <option value="CIVIL">CIVIL</option>
+                </select>
+              </div>
+              <div>
+                <Label className="text-gray-300 font-semibold">Stock Entry</Label>
+                <Input
+                  type="text"
+                  placeholder="e.g., SE-2024-001"
+                  value={ocrStockEntry}
+                  onChange={(e) => setOcrStockEntry(e.target.value)}
+                  className="mt-1 bg-gray-700 border-gray-600 text-white placeholder-gray-400"
+                />
+              </div>
+              <div>
+                <Label className="text-gray-300 font-semibold">Order No.</Label>
+                <Input
+                  type="text"
+                  placeholder="e.g., ORD-2024-001"
+                  value={ocrOrderNo}
+                  onChange={(e) => setOcrOrderNo(e.target.value)}
+                  className="mt-1 bg-gray-700 border-gray-600 text-white placeholder-gray-400"
+                />
+              </div>
+              <div>
+                <Label className="text-gray-300 font-semibold">Order Date</Label>
+                <Input
+                  type="text"
+                  placeholder="DD/MM/YYYY"
+                  value={ocrOrderDate}
+                  onChange={(e) => {
+                    let value = e.target.value.replace(/[^0-9]/g, '');
+                    if (value.length >= 2) value = value.slice(0, 2) + '/' + value.slice(2);
+                    if (value.length >= 5) value = value.slice(0, 5) + '/' + value.slice(5, 9);
+                    setOcrOrderDate(value);
+                  }}
+                  maxLength={10}
+                  className="mt-1 bg-gray-700 border-gray-600 text-white placeholder-gray-400"
+                />
+              </div>
+              <div>
+                <Label className="text-gray-300 font-semibold">Central Store Inward No.</Label>
+                <Input
+                  type="text"
+                  placeholder="e.g., CSI-2024-001"
+                  value={ocrCentralStoreNo}
+                  onChange={(e) => setOcrCentralStoreNo(e.target.value)}
+                  className="mt-1 bg-gray-700 border-gray-600 text-white placeholder-gray-400"
+                />
+              </div>
+              <div>
+                <Label className="text-gray-300 font-semibold">Central Store Inward Date</Label>
+                <Input
+                  type="text"
+                  placeholder="DD/MM/YYYY"
+                  value={ocrCentralStoreDate}
+                  onChange={(e) => {
+                    let value = e.target.value.replace(/[^0-9]/g, '');
+                    if (value.length >= 2) value = value.slice(0, 2) + '/' + value.slice(2);
+                    if (value.length >= 5) value = value.slice(0, 5) + '/' + value.slice(5, 9);
+                    setOcrCentralStoreDate(value);
+                  }}
+                  maxLength={10}
+                  className="mt-1 bg-gray-700 border-gray-600 text-white placeholder-gray-400"
+                />
+              </div>
+              <div>
+                <Label className="text-gray-300 font-semibold">Remarks</Label>
+                <Input
+                  type="text"
+                  placeholder="Any additional notes or remarks"
+                  value={ocrRemarks}
+                  onChange={(e) => setOcrRemarks(e.target.value)}
+                  className="mt-1 bg-gray-700 border-gray-600 text-white placeholder-gray-400"
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Prefix Code Assignment - One per device type */}
+          {editableAssets.length > 0 && (() => {
+            const deviceTypes = Array.from(new Set(editableAssets.map(a => a.device_type || a.category || "Other")));
+            return (
+              <div className="mb-6 p-6 rounded-lg border border-purple-600 bg-purple-900/20">
+                <h3 className="text-purple-300 text-xl font-semibold mb-2">🏷️ Prefix Code Assignment</h3>
+                <p className="text-gray-400 text-sm mb-4">Assign a prefix code per device type. All devices of that type will use this prefix (e.g., APSIT/CS/LA → APSIT/CS/LA/1, /2, ...)</p>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {deviceTypes.map((dtype) => {
+                    const count = editableAssets.filter(a => (a.device_type || a.category || "Other") === dtype).length;
+                    const applied = editableAssets.filter(a => (a.device_type || a.category || "Other") === dtype && a.identityNumber).length;
+                    return (
+                      <div key={dtype} className="p-4 rounded-lg border border-gray-600 bg-gray-800/60">
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-white font-semibold">{dtype}</span>
+                          <span className="text-xs text-gray-400">{count} device{count > 1 ? 's' : ''}{applied > 0 ? ` · ${applied} assigned` : ''}</span>
+                        </div>
+                        <div className="flex gap-2">
+                          <Input
+                            value={prefixCodeMap[dtype] || ""}
+                            onChange={(e) => setPrefixCodeMap(prev => ({ ...prev, [dtype]: e.target.value }))}
+                            placeholder="e.g., APSIT/CS/LA"
+                            className="bg-gray-700 border-gray-600 text-white text-sm h-9 flex-1 placeholder-gray-500"
+                          />
+                          <button
+                            onClick={async () => {
+                              const prefix = prefixCodeMap[dtype];
+                              if (!prefix) {
+                                alert("Please enter a prefix code first.");
+                                return;
+                              }
+                              // Assign identityNumber and compute asset codes with counters
+                              const invoiceNo = editableBillInfo?.bill_number || scanResult?.bill_info.bill_number || "";
+                              const counters: Record<string, number> = {};
+                              const updatedAssets = editableAssets.map(a => {
+                                const assetDtype = a.device_type || a.category || "Other";
+                                if (assetDtype === dtype) {
+                                  if (!(prefix in counters)) counters[prefix] = 1;
+                                  const assetCode = `${prefix}/${counters[prefix]}`;
+                                  counters[prefix]++;
+                                  return { ...a, identityNumber: prefix, asset_id: assetCode };
+                                }
+                                return a;
+                              });
+
+                              // Generate QR codes for updated assets
+                              const qrItems = updatedAssets
+                                .map((a, idx) => ({ data: `${invoiceNo}|${a.asset_id}`, index: idx }))
+                                .filter((_, idx) => (updatedAssets[idx].device_type || updatedAssets[idx].category || "Other") === dtype);
+
+                              try {
+                                const token = localStorage.getItem("token");
+                                const headers: HeadersInit = { "Content-Type": "application/json" };
+                                if (token) headers["Authorization"] = `Bearer ${token}`;
+
+                                const resp = await fetch("http://127.0.0.1:5000/generate_qr", {
+                                  method: "POST",
+                                  headers,
+                                  body: JSON.stringify({ items: qrItems }),
+                                });
+                                if (resp.ok) {
+                                  const qrData = await resp.json();
+                                  const qrMap: Record<number, string> = {};
+                                  for (const qr of qrData.qr_codes) {
+                                    qrMap[qr.index] = qr.qr_code;
+                                  }
+                                  const finalAssets = updatedAssets.map((a, idx) => {
+                                    if (idx in qrMap) return { ...a, qr_code: qrMap[idx] };
+                                    return a;
+                                  });
+                                  setEditableAssets(finalAssets);
+                                } else {
+                                  setEditableAssets(updatedAssets);
+                                }
+                              } catch {
+                                setEditableAssets(updatedAssets);
+                              }
+                            }}
+                            className="px-4 py-1 bg-purple-600 hover:bg-purple-700 text-white rounded-lg text-sm font-semibold transition whitespace-nowrap"
+                          >
+                            Apply
+                          </button>
+                        </div>
+                        <p className="text-xs text-gray-500 mt-1">Devices: {prefixCodeMap[dtype] || 'PREFIX'}/1, /2, ...</p>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })()}
+
           {/* Edit Panel - Centralized Editing Interface (Grouped) */}
           {isEditMode && (
             <div className="mb-6 p-6 rounded-lg border-2 border-yellow-500 bg-gradient-to-br from-yellow-900/20 to-orange-900/20">
@@ -1624,7 +1833,8 @@ const OcrPage: React.FC = () => {
                       qr_code: "",
                       brand: "",
                       model: "",
-                      device_type: ""
+                      device_type: "",
+                      identityNumber: ""
                     };
                     setEditableAssets([...editableAssets, newAsset]);
                   }}
@@ -1852,7 +2062,17 @@ const OcrPage: React.FC = () => {
               </h3>
             </div>
             <div className="grid gap-4">
-              {editableAssets.map((asset, index) => (
+              {(() => {
+                const counters: Record<string, number> = {};
+                return editableAssets.map((asset, index) => {
+                  let fullCode = "";
+                  if (asset.identityNumber) {
+                    const prefix = asset.identityNumber;
+                    if (!(prefix in counters)) counters[prefix] = 1;
+                    fullCode = `${prefix}/${counters[prefix]}`;
+                    counters[prefix]++;
+                  }
+                  return (
                 <div
                   key={index}
                   className="border border-gray-700 rounded-lg p-4 bg-gray-900/50"
@@ -1896,6 +2116,12 @@ const OcrPage: React.FC = () => {
                           <p className="text-gray-200 font-medium">{asset.brand || "N/A"}</p>
                         </div>
                       </div>
+                      {fullCode && (
+                        <div className="mt-3">
+                          <span className="text-gray-400 text-xs">Asset Code: </span>
+                          <span className="text-purple-300 text-sm font-medium">{fullCode}</span>
+                        </div>
+                      )}
                       
                       {asset.model && (
                         <div className="mt-2">
@@ -1927,7 +2153,9 @@ const OcrPage: React.FC = () => {
                     </div>
                   </div>
                 </div>
-              ))}
+                  );
+                });
+              })()}
             </div>
           </div>
 
@@ -1962,6 +2190,14 @@ const OcrPage: React.FC = () => {
                 setEditableBillInfo(null);
                 setEditableAssets([]);
                 setIsEditMode(false);
+                setPrefixCodeMap({});
+                setOcrDept("");
+                setOcrStockEntry("");
+                setOcrOrderNo("");
+                setOcrOrderDate("");
+                setOcrCentralStoreNo("");
+                setOcrCentralStoreDate("");
+                setOcrRemarks("");
               }}
             >
               Scan Another Bill

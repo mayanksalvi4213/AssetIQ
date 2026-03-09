@@ -384,6 +384,7 @@ export default function Issues() {
           description: finalDescription,
           severity: finalSeverity,
           deactivate: shouldDeactivate,
+          reportedBy: user ? `${user.firstName} ${user.lastName}` : 'System',
         }),
       });
       const data = await response.json();
@@ -419,6 +420,7 @@ export default function Issues() {
         body: JSON.stringify({
           issueId: issueId,
           status: newStatus,
+          changedBy: user ? `${user.firstName} ${user.lastName}` : undefined,
         }),
       });
       const data = await response.json();

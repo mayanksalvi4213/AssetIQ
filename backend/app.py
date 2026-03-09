@@ -630,6 +630,49 @@ def verify_token():
     })
 
 # -----------------------------
+# Generate QR Codes Endpoint
+# -----------------------------
+@app.route("/generate_qr", methods=["POST"])
+def generate_qr():
+    """
+    Generate QR code images from a list of data strings.
+    Expects: { "items": [ { "data": "qr_string", "index": 0 }, ... ] }
+    Returns: { "qr_codes": [ { "index": 0, "qr_code": "data:image/png;base64,..." }, ... ] }
+    """
+    try:
+        import qrcode
+        from io import BytesIO
+        import base64
+
+        data = request.get_json()
+        items = data.get("items", [])
+
+        if not items:
+            return jsonify({"error": "No items provided"}), 400
+
+        results = []
+        for item in items:
+            qr_data = item.get("data", "")
+            idx = item.get("index", 0)
+
+            qr = qrcode.QRCode(version=1, box_size=10, border=5)
+            qr.add_data(qr_data)
+            qr.make(fit=True)
+            img = qr.make_image(fill_color="black", back_color="white")
+
+            buffered = BytesIO()
+            img.save(buffered, format="PNG")
+            qr_base64 = f"data:image/png;base64,{base64.b64encode(buffered.getvalue()).decode()}"
+
+            results.append({"index": idx, "qr_code": qr_base64})
+
+        return jsonify({"qr_codes": results})
+    except Exception as e:
+        print(f"Error generating QR codes: {str(e)}")
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+# -----------------------------
 # Manual Entry Endpoint
 # -----------------------------
 @app.route("/manual_entry", methods=["POST"])
@@ -661,6 +704,7 @@ def manual_entry():
         # Create assets from devices (for display only)
         assets_created = 0
         created_assets = []
+        prefix_counters = {}  # per-prefix counter so each prefix starts at 1
         
         for device in devices:
             device_type = device.get("deviceType", "")
@@ -668,14 +712,13 @@ def manual_entry():
             material_desc = device.get("materialDescription", "")
             model_no = device.get("modelNo", "")
             brand = device.get("brand", "")
-            asset_id_prefix = device.get("assetIdPrefix", "")
+            identity_number = device.get("identityNumber", "")
             quantity = device.get("quantity", 1)
             amount_per_pcs = device.get("amountPerPcs", 0)
 
-            # Use custom asset ID prefix from user or generate default
-            if asset_id_prefix:
-                # User provided custom prefix
-                asset_id_base = asset_id_prefix
+            # Use identityNumber (prefix code) from user or generate default
+            if identity_number:
+                asset_id_base = identity_number
             else:
                 # Fallback to auto-generated prefix
                 dept_prefix = ''.join([c for c in dept.upper() if c.isalnum()])[:5]
@@ -683,7 +726,10 @@ def manual_entry():
             
             # Create multiple assets if quantity > 1
             for i in range(quantity):
-                asset_counter = assets_created + 1
+                if asset_id_base not in prefix_counters:
+                    prefix_counters[asset_id_base] = 1
+                asset_counter = prefix_counters[asset_id_base]
+                prefix_counters[asset_id_base] += 1
                 asset_id = f"{asset_id_base}/{asset_counter}"
                 
                 # Generate QR code with invoice number + vendor name + device code
@@ -693,8 +739,7 @@ def manual_entry():
                 
                 # Get invoice and vendor from current device
                 device_invoice = device.get("invoiceNo", invoice_no)
-                device_vendor = device.get("vendorName", vendor_name)
-                qr_code_data = f"{device_invoice}|{device_vendor}|{asset_id}"
+                qr_code_data = f"{device_invoice}|{asset_id}"
                 
                 qr = qrcode.QRCode(version=1, box_size=10, border=5)
                 qr.add_data(qr_code_data)
@@ -980,7 +1025,34 @@ def save_devices():
         
         devices_saved = 0
         asset_counter = 1
-        
+
+        # Build prefix_counters from DB so numbering continues across bills
+        prefix_codes = set()
+        for device in devices:
+            id_num = device.get("identityNumber", "")
+            if id_num:
+                prefix_codes.add(id_num)
+
+        prefix_counters = {}
+        for prefix in prefix_codes:
+            cursor.execute(
+                "SELECT asset_code FROM devices WHERE asset_code LIKE %s",
+                (prefix + "/%",)
+            )
+            existing = cursor.fetchall()
+            max_counter = 0
+            for row in existing:
+                code = row['asset_code']
+                # The counter is the last segment after the prefix
+                suffix = code[len(prefix)+1:]  # strip "prefix/"
+                try:
+                    num = int(suffix)
+                    if num > max_counter:
+                        max_counter = num
+                except (ValueError, IndexError):
+                    pass
+            prefix_counters[prefix] = max_counter + 1
+
         # Save each device individually
         for device in devices:
             # Debug: Print entire device object
@@ -996,7 +1068,7 @@ def save_devices():
             warranty = device.get("warranty", "0")
             quantity = device.get("quantity", 1)
             unit_price = device.get("amountPerPcs", 0)
-            asset_code = device.get("assetCode", "")
+            identity_number = device.get("identityNumber", "")
             qr_value = device.get("qrValue", "")
             
             # Debug: Print extracted values
@@ -1021,14 +1093,19 @@ def save_devices():
             
             # Create individual device entries based on quantity
             for i in range(quantity):
-                # Generate asset_code if not provided
-                if not asset_code:
-                    # Generate asset code: DEPT/DEVICETYPE/COUNTER
+                # Generate asset_code using identity number prefix
+                if identity_number:
+                    # Use per-prefix counter so each prefix starts from 1
+                    if identity_number not in prefix_counters:
+                        prefix_counters[identity_number] = 1
+                    counter = prefix_counters[identity_number]
+                    generated_asset_code = f"{identity_number}/{counter}"
+                    prefix_counters[identity_number] += 1
+                else:
+                    # Fallback: Generate asset code from DEPT/DEVICETYPE/COUNTER
                     dept_prefix = dept.upper()  # Keep full department name
                     device_prefix = device_type.upper()[:2]
                     generated_asset_code = f"{dept_prefix}/{device_prefix}/{asset_counter}"
-                else:
-                    generated_asset_code = f"{asset_code}/{asset_counter}"
                 
                 # Generate QR value if not provided
                 if not qr_value:
@@ -1136,7 +1213,7 @@ def search_devices():
         cursor = conn.cursor()
         
         # Query to group devices by bill_id, brand, model, specification
-        # Only get devices with assigned_code = NULL or empty
+        # Only get devices that are truly free (no assigned_code AND not pooled to any lab)
         query = """
             SELECT 
                 type_id,
@@ -1151,6 +1228,7 @@ def search_devices():
             FROM devices
             WHERE type_id = %s 
                 AND (assigned_code IS NULL OR assigned_code = '')
+                AND lab_id IS NULL
             GROUP BY type_id, bill_id, brand, model, specification, unit_price, purchase_date, invoice_number
             ORDER BY brand, model
         """
@@ -1187,6 +1265,153 @@ def search_devices():
         print(f"Error searching devices: {str(e)}")
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
+
+# -----------------------------
+# Reserve Devices for Lab (pool by device_id)
+# -----------------------------
+@app.route("/reserve_devices_for_lab", methods=["POST"])
+def reserve_devices_for_lab():
+    """Reserve specific device rows for a lab by setting lab_id. Devices become part of the lab pool."""
+    try:
+        data = request.json
+        lab_id = data.get("labId", "").strip()
+        type_name = data.get("type", "")
+        brand = data.get("brand")
+        model = data.get("model")
+        bill_id = data.get("billId")
+        invoice_number = data.get("invoiceNumber")
+        quantity = int(data.get("quantity", 0))
+
+        if not lab_id:
+            return jsonify({"error": "labId is required"}), 400
+        if not type_name:
+            return jsonify({"error": "type is required"}), 400
+        if quantity <= 0:
+            return jsonify({"error": "quantity must be > 0"}), 400
+
+        conn = db.get_connection()
+        if not conn:
+            return jsonify({"error": "Database connection failed"}), 500
+        cursor = conn.cursor()
+
+        try:
+            # Find N free devices matching criteria (not pooled, not assigned)
+            cursor.execute("""
+                SELECT device_id FROM devices
+                WHERE type_id = (SELECT type_id FROM equipment_types WHERE name = %s LIMIT 1)
+                  AND brand IS NOT DISTINCT FROM %s
+                  AND model IS NOT DISTINCT FROM %s
+                  AND bill_id IS NOT DISTINCT FROM %s
+                  AND invoice_number IS NOT DISTINCT FROM %s
+                  AND (assigned_code IS NULL OR assigned_code = '')
+                  AND lab_id IS NULL
+                ORDER BY device_id
+                LIMIT %s
+            """, (type_name, brand, model, bill_id, invoice_number, quantity))
+            rows = cursor.fetchall()
+
+            if len(rows) < quantity:
+                return jsonify({"error": f"Only {len(rows)} devices available, requested {quantity}"}), 400
+
+            device_ids = [r['device_id'] for r in rows]
+
+            # Mark devices as pooled for this lab
+            cursor.execute(
+                "UPDATE devices SET lab_id = %s WHERE device_id = ANY(%s)",
+                (lab_id, device_ids)
+            )
+
+            conn.commit()
+            return jsonify({
+                "success": True,
+                "message": f"{quantity} {type_name}(s) reserved for lab {lab_id}",
+                "deviceIds": device_ids
+            })
+        except Exception as db_err:
+            conn.rollback()
+            raise db_err
+        finally:
+            cursor.close()
+            conn.close()
+    except Exception as e:
+        print(f"Error reserving devices: {e}")
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+# -----------------------------
+# Release Devices from Lab Pool
+# -----------------------------
+@app.route("/release_devices_from_lab", methods=["POST"])
+def release_devices_from_lab():
+    """Release pooled-but-unassigned devices from a lab back to free inventory."""
+    try:
+        data = request.json
+        lab_id = data.get("labId", "").strip()
+        type_name = data.get("type", "")
+        brand = data.get("brand")
+        model = data.get("model")
+        bill_id = data.get("billId")
+        invoice_number = data.get("invoiceNumber")
+        quantity = int(data.get("quantity", 0))
+
+        if not lab_id:
+            return jsonify({"error": "labId is required"}), 400
+        if quantity <= 0:
+            return jsonify({"error": "quantity must be > 0"}), 400
+
+        conn = db.get_connection()
+        if not conn:
+            return jsonify({"error": "Database connection failed"}), 500
+        cursor = conn.cursor()
+
+        try:
+            # Only release devices that are pooled but NOT yet assigned
+            cursor.execute("""
+                SELECT device_id FROM devices
+                WHERE lab_id = %s
+                  AND type_id = (SELECT type_id FROM equipment_types WHERE name = %s LIMIT 1)
+                  AND brand IS NOT DISTINCT FROM %s
+                  AND model IS NOT DISTINCT FROM %s
+                  AND bill_id IS NOT DISTINCT FROM %s
+                  AND invoice_number IS NOT DISTINCT FROM %s
+                  AND (assigned_code IS NULL OR assigned_code = '')
+                ORDER BY device_id
+                LIMIT %s
+            """, (lab_id, type_name, brand, model, bill_id, invoice_number, quantity))
+            rows = cursor.fetchall()
+            released_count = len(rows)
+
+            if released_count == 0:
+                return jsonify({
+                    "success": False,
+                    "error": "No unassigned devices of this type to release. Reset assignments first if they are already assigned."
+                }), 400
+
+            device_ids = [r['device_id'] for r in rows]
+            cursor.execute(
+                "UPDATE devices SET lab_id = NULL WHERE device_id = ANY(%s)",
+                (device_ids,)
+            )
+
+            conn.commit()
+            return jsonify({
+                "success": True,
+                "message": f"{released_count} device(s) released from lab {lab_id}",
+                "releasedCount": released_count,
+                "deviceIds": device_ids
+            })
+        except Exception as db_err:
+            conn.rollback()
+            raise db_err
+        finally:
+            cursor.close()
+            conn.close()
+    except Exception as e:
+        print(f"Error releasing devices: {e}")
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
 
 # -----------------------------
 # Get All Labs
@@ -1247,45 +1472,25 @@ def get_lab(lab_id):
                 "success": False
             }), 404
         
-        # Get equipment pool for this lab with unit prices from devices table
+        # Get equipment pool directly from devices table (source of truth)
         cursor.execute(
-            """SELECT lep.equipment_type, lep.brand, lep.model, lep.specification, 
-                      lep.quantity_added, lep.invoice_number, lep.bill_id,
-                      AVG(d.unit_price) as avg_unit_price
-               FROM lab_equipment_pool lep
-               LEFT JOIN devices d ON lep.bill_id = d.bill_id 
-                   AND lep.equipment_type = (
-                       CASE d.type_id
-                           WHEN 1 THEN 'Laptop'
-                           WHEN 2 THEN 'PC'
-                           WHEN 3 THEN 'AC'
-                           WHEN 4 THEN 'Smart Board'
-                           WHEN 5 THEN 'Projector'
-                           WHEN 6 THEN 'Printer'
-                           WHEN 7 THEN 'Scanner'
-                           WHEN 8 THEN 'UPS'
-                           WHEN 9 THEN 'Router'
-                           WHEN 10 THEN 'Switch'
-                           WHEN 11 THEN 'Server'
-                           WHEN 12 THEN 'Monitor'
-                           WHEN 13 THEN 'Keyboard'
-                           WHEN 14 THEN 'Mouse'
-                           WHEN 15 THEN 'Webcam'
-                           WHEN 16 THEN 'Headset'
-                           WHEN 17 THEN 'Other'
-                       END
-                   )
-                   AND lep.brand = d.brand
-                   AND lep.model = d.model
-               WHERE lep.lab_id = %s
-               GROUP BY lep.equipment_type, lep.brand, lep.model, lep.specification, 
-                        lep.quantity_added, lep.invoice_number, lep.bill_id""",
+            """SELECT et.name AS equipment_type, d.brand, d.model, d.specification,
+                      d.invoice_number, d.bill_id,
+                      AVG(d.unit_price) AS avg_unit_price,
+                      COUNT(*) AS quantity,
+                      COUNT(CASE WHEN d.assigned_code IS NOT NULL AND d.assigned_code != ''
+                            THEN 1 END) AS quantity_assigned
+               FROM devices d
+               JOIN equipment_types et ON d.type_id = et.type_id
+               WHERE d.lab_id = %s
+               GROUP BY et.name, d.brand, d.model, d.specification,
+                        d.invoice_number, d.bill_id""",
             (lab_id,)
         )
         equipment_pool = cursor.fetchall()
         print(f"📦 Equipment pool fetched: {len(equipment_pool)} items")
         for eq in equipment_pool:
-            print(f"  - {eq['equipment_type']} {eq['brand']} {eq['model']}: {eq['quantity_added']} units @ ₹{eq.get('avg_unit_price', 0) or 0}")
+            print(f"  - {eq['equipment_type']} {eq['brand']} {eq['model']}: {eq['quantity']} units ({eq['quantity_assigned']} assigned) @ ₹{eq.get('avg_unit_price', 0) or 0}")
         
         # Get grid cells to reconstruct seating arrangement
         cursor.execute(
@@ -1301,14 +1506,23 @@ def get_lab(lab_id):
         print(f"🗺️ Grid cells fetched: {len(grid_cells)} cells")
         
         # Get station devices for each station
+        # Check if station_qr_value column exists
         cursor.execute(
-            """SELECT lsd.station_id, lsd.device_id, lsd.device_type, lsd.brand, lsd.model,
+            """SELECT 1 FROM information_schema.columns
+               WHERE table_name = 'lab_stations' AND column_name = 'station_qr_value'"""
+        )
+        has_station_qr_col = cursor.fetchone() is not None
+
+        station_qr_select = ", ls.station_qr_value" if has_station_qr_col else ""
+        cursor.execute(
+            f"""SELECT lsd.station_id, lsd.device_id, lsd.device_type, lsd.brand, lsd.model,
                       lsd.specification, lsd.invoice_number, lsd.bill_id,
                       lsd.is_linked, lsd.linked_group_id,
                       ls.assigned_code,
                       d.is_active,
                       d.assigned_code AS device_assigned_code,
                       d.type_id
+                      {station_qr_select}
                FROM lab_station_devices lsd
                JOIN lab_stations ls ON lsd.station_id = ls.station_id
                LEFT JOIN devices d ON lsd.device_id = d.device_id
@@ -1320,13 +1534,6 @@ def get_lab(lab_id):
         print(f"🔧 Station devices fetched: {len(station_devices)} device assignments")
         for sd in station_devices:
             print(f"  - Station {sd['station_id']}: {sd['device_type']} {sd['brand']} {sd['model']} (device_id={sd['device_id']})")
-
-        # Check if severity column exists so we can shape queries without altering schema
-        cursor.execute(
-            """SELECT 1 FROM information_schema.columns
-               WHERE table_name = 'device_issues' AND column_name = 'severity'"""
-        )
-        severity_exists = cursor.fetchone() is not None
 
         # Existing station device ids
         device_ids = [sd['device_id'] for sd in station_devices if sd.get('device_id')]
@@ -1354,32 +1561,19 @@ def get_lab(lab_id):
         # Only fetch issues for devices that are currently in this lab
         issues_map = {}
         if merged_device_ids:
-            if severity_exists:
-                cursor.execute(
-                    """SELECT di.issue_id, di.device_id, di.issue_title, di.description,
-                              LOWER(di.status) AS status, di.reported_at, di.resolved_at,
-                              COALESCE(di.severity, 'medium') AS severity
-                       FROM device_issues di
-                       JOIN devices d ON di.device_id = d.device_id
-                       WHERE di.device_id = ANY(%s)
-                         AND (d.lab_id = %s OR d.assigned_code LIKE %s)
-                         AND LOWER(di.status) != 'resolved'
-                       ORDER BY di.reported_at DESC""",
-                    (merged_device_ids, lab_id, f"{lab_id}/%")
-                )
-            else:
-                cursor.execute(
-                    """SELECT di.issue_id, di.device_id, di.issue_title, di.description,
-                              LOWER(di.status) AS status, di.reported_at, di.resolved_at,
-                              'medium' AS severity
-                       FROM device_issues di
-                       JOIN devices d ON di.device_id = d.device_id
-                       WHERE di.device_id = ANY(%s)
-                         AND (d.lab_id = %s OR d.assigned_code LIKE %s)
-                         AND LOWER(di.status) != 'resolved'
-                       ORDER BY di.reported_at DESC""",
-                    (merged_device_ids, lab_id, f"{lab_id}/%")
-                )
+            cursor.execute(
+                """SELECT di.issue_id, di.device_id, di.issue_title, di.description,
+                          LOWER(di.status) AS status, di.reported_at, di.resolved_at,
+                          COALESCE(di.severity, 'medium') AS severity,
+                          COALESCE(di.reported_by, 'System') AS reported_by
+                   FROM device_issues di
+                   JOIN devices d ON di.device_id = d.device_id
+                   WHERE di.device_id = ANY(%s)
+                     AND (d.lab_id = %s OR d.assigned_code LIKE %s)
+                     AND LOWER(di.status) != 'resolved'
+                   ORDER BY di.reported_at DESC""",
+                (merged_device_ids, lab_id, f"{lab_id}/%")
+            )
             issues = cursor.fetchall()
             for issue in issues:
                 dev_id = issue['device_id']
@@ -1392,7 +1586,7 @@ def get_lab(lab_id):
                     "severity": issue['severity'],
                     "status": issue['status'],
                     "reportedDate": issue['reported_at'].isoformat() if issue['reported_at'] else None,
-                    "reportedBy": issue.get('reported_by', 'System'),
+                    "reportedBy": issue['reported_by'],
                 })
         
         # Build grid structure
@@ -1408,7 +1602,8 @@ def get_lab(lab_id):
             if station_id not in station_device_map:
                 station_device_map[station_id] = {
                     'devices': [],
-                    'assigned_code': sd['assigned_code']
+                    'assigned_code': sd['assigned_code'],
+                    'station_qr_value': sd.get('station_qr_value', '')
                 }
             station_device_map[station_id]['devices'].append({
                 'deviceId': sd['device_id'],
@@ -1466,9 +1661,17 @@ def get_lab(lab_id):
                 # Add device group if station has devices
                 station_id = cell['station_id']
                 if station_id and station_id in station_device_map:
+                    smap = station_device_map[station_id]
+                    # Build station QR on-the-fly if not stored in DB
+                    sqr = smap.get('station_qr_value') or ''
+                    if not sqr and smap['devices']:
+                        codes = [d.get('assignedCode', '') for d in smap['devices'] if d.get('assignedCode')]
+                        if codes:
+                            sqr = f"STATION|{smap['assigned_code']}|{','.join(codes)}"
                     grid_cell['deviceGroup'] = {
-                        'assignedCode': station_device_map[station_id]['assigned_code'],
-                        'devices': station_device_map[station_id]['devices']
+                        'assignedCode': smap['assigned_code'],
+                        'devices': smap['devices'],
+                        'stationQrValue': sqr
                     }
                 
                 grid[row_idx][col_idx] = grid_cell
@@ -1478,7 +1681,8 @@ def get_lab(lab_id):
         for eq in equipment_pool:
             equipment.append({
                 'type': eq['equipment_type'],
-                'quantity': eq['quantity_added'],
+                'quantity': eq['quantity'],
+                'quantityAssigned': eq['quantity_assigned'],
                 'brand': eq['brand'],
                 'model': eq['model'],
                 'specification': eq['specification'],
@@ -1546,17 +1750,18 @@ def get_lab_station_list(lab_id):
         
         if not lab:
             return jsonify({"success": False, "error": "Lab not found"}), 404
-        
-        # Check if severity column exists
+
+        # Check if station_qr_value column exists
         cursor.execute(
             """SELECT 1 FROM information_schema.columns
-               WHERE table_name = 'device_issues' AND column_name = 'severity'"""
+               WHERE table_name = 'lab_stations' AND column_name = 'station_qr_value'"""
         )
-        severity_exists = cursor.fetchone() is not None
+        has_station_qr = cursor.fetchone() is not None
+        sqr_col = ", ls.station_qr_value" if has_station_qr else ""
 
         # Get all stations with their devices
         cursor.execute(
-            """SELECT 
+            f"""SELECT 
                 ls.station_id,
                 ls.assigned_code,
                 lgc.row_number,
@@ -1577,7 +1782,9 @@ def get_lab_station_list(lab_id):
                 d.warranty_years,
                 d.purchase_date,
                 d.is_active,
-                d.qr_value
+                d.qr_value,
+                d.assigned_code AS device_assigned_code
+                {sqr_col}
             FROM lab_stations ls
             LEFT JOIN lab_grid_cells lgc ON ls.station_id = lgc.station_id
             LEFT JOIN lab_station_devices lsd ON ls.station_id = lsd.station_id
@@ -1594,28 +1801,17 @@ def get_lab_station_list(lab_id):
         # Fetch issues for all devices
         issues_map = {}
         if device_ids:
-            if severity_exists:
-                cursor.execute(
-                    """SELECT di.issue_id, di.device_id, di.issue_title, di.description,
-                              LOWER(di.status) AS status, di.reported_at,
-                              COALESCE(di.severity, 'medium') AS severity
-                       FROM device_issues di
-                       WHERE di.device_id = ANY(%s)
-                         AND LOWER(di.status) != 'resolved'
-                       ORDER BY di.reported_at DESC""",
-                    (device_ids,)
-                )
-            else:
-                cursor.execute(
-                    """SELECT di.issue_id, di.device_id, di.issue_title, di.description,
-                              LOWER(di.status) AS status, di.reported_at,
-                              'medium' AS severity
-                       FROM device_issues di
-                       WHERE di.device_id = ANY(%s)
-                         AND LOWER(di.status) != 'resolved'
-                       ORDER BY di.reported_at DESC""",
-                    (device_ids,)
-                )
+            cursor.execute(
+                """SELECT di.issue_id, di.device_id, di.issue_title, di.description,
+                          LOWER(di.status) AS status, di.reported_at,
+                          COALESCE(di.severity, 'medium') AS severity,
+                          COALESCE(di.reported_by, 'System') AS reported_by
+                   FROM device_issues di
+                   WHERE di.device_id = ANY(%s)
+                     AND LOWER(di.status) != 'resolved'
+                   ORDER BY di.reported_at DESC""",
+                (device_ids,)
+            )
             issues = cursor.fetchall()
             for issue in issues:
                 dev_id = issue['device_id']
@@ -1627,7 +1823,8 @@ def get_lab_station_list(lab_id):
                     'description': issue['description'],
                     'severity': issue['severity'],
                     'status': issue['status'],
-                    'reportedAt': issue['reported_at'].isoformat() if issue['reported_at'] else None
+                    'reportedAt': issue['reported_at'].isoformat() if issue['reported_at'] else None,
+                    'reportedBy': issue['reported_by'],
                 })
         
         # Group by station
@@ -1652,6 +1849,7 @@ def get_lab_station_list(lab_id):
                     'row': row['row_number'],
                     'column': row['column_number'],
                     'os': ', '.join(os_list) if os_list else 'N/A',
+                    'stationQrValue': row.get('station_qr_value', ''),
                     'devices': []
                 }
             
@@ -1665,6 +1863,7 @@ def get_lab_station_list(lab_id):
                     'model': row['model'],
                     'specification': row['specification'],
                     'assetCode': row['asset_code'],
+                    'prefixCode': row.get('device_assigned_code', ''),
                     'unitPrice': float(row['unit_price']) if row['unit_price'] else 0,
                     'warrantyYears': row['warranty_years'],
                     'purchaseDate': row['purchase_date'].strftime('%Y-%m-%d') if row['purchase_date'] else None,
@@ -1677,6 +1876,13 @@ def get_lab_station_list(lab_id):
                 }
                 stations_map[station_id]['devices'].append(device_data)
         
+        # Build station QR on-the-fly for stations missing stored value
+        for sid, sdata in stations_map.items():
+            if not sdata.get('stationQrValue') and sdata['devices']:
+                codes = [d.get('prefixCode') or d.get('assetCode', '') for d in sdata['devices'] if d.get('prefixCode') or d.get('assetCode')]
+                if codes:
+                    sdata['stationQrValue'] = f"STATION|{sdata['assignedCode']}|{','.join(codes)}"
+
         # Convert to list
         stations_list = list(stations_map.values())
         
@@ -1717,13 +1923,6 @@ def export_lab_station_pdf(lab_id):
         if not lab:
             return jsonify({"success": False, "error": "Lab not found"}), 404
         
-        # Check if severity column exists
-        cursor.execute(
-            """SELECT 1 FROM information_schema.columns
-               WHERE table_name = 'device_issues' AND column_name = 'severity'"""
-        )
-        severity_exists = cursor.fetchone() is not None
-        
         # Get all stations with their devices
         cursor.execute(
             """SELECT 
@@ -1746,7 +1945,8 @@ def export_lab_station_pdf(lab_id):
                 d.unit_price,
                 d.warranty_years,
                 d.purchase_date,
-                d.is_active
+                d.is_active,
+                d.assigned_code AS device_assigned_code
             FROM lab_stations ls
             LEFT JOIN lab_grid_cells lgc ON ls.station_id = lgc.station_id
             LEFT JOIN lab_station_devices lsd ON ls.station_id = lsd.station_id
@@ -1763,28 +1963,17 @@ def export_lab_station_pdf(lab_id):
         # Fetch issues for all devices
         issues_map = {}
         if device_ids:
-            if severity_exists:
-                cursor.execute(
-                    """SELECT di.issue_id, di.device_id, di.issue_title, di.description,
-                              LOWER(di.status) AS status, di.reported_at,
-                              COALESCE(di.severity, 'medium') AS severity
-                       FROM device_issues di
-                       WHERE di.device_id = ANY(%s)
-                         AND LOWER(di.status) != 'resolved'
-                       ORDER BY di.reported_at DESC""",
-                    (device_ids,)
-                )
-            else:
-                cursor.execute(
-                    """SELECT di.issue_id, di.device_id, di.issue_title, di.description,
-                              LOWER(di.status) AS status, di.reported_at,
-                              'medium' AS severity
-                       FROM device_issues di
-                       WHERE di.device_id = ANY(%s)
-                         AND LOWER(di.status) != 'resolved'
-                       ORDER BY di.reported_at DESC""",
-                    (device_ids,)
-                )
+            cursor.execute(
+                """SELECT di.issue_id, di.device_id, di.issue_title, di.description,
+                          LOWER(di.status) AS status, di.reported_at,
+                          COALESCE(di.severity, 'medium') AS severity,
+                          COALESCE(di.reported_by, 'System') AS reported_by
+                   FROM device_issues di
+                   WHERE di.device_id = ANY(%s)
+                     AND LOWER(di.status) != 'resolved'
+                   ORDER BY di.reported_at DESC""",
+                (device_ids,)
+            )
             issues = cursor.fetchall()
             for issue in issues:
                 dev_id = issue['device_id']
@@ -1796,7 +1985,8 @@ def export_lab_station_pdf(lab_id):
                     'description': issue['description'],
                     'severity': issue['severity'],
                     'status': issue['status'],
-                    'reportedAt': issue['reported_at'].isoformat() if issue['reported_at'] else None
+                    'reportedAt': issue['reported_at'].isoformat() if issue['reported_at'] else None,
+                    'reportedBy': issue['reported_by'],
                 })
         
         # Group by station
@@ -1877,8 +2067,11 @@ def export_lab_station_pdf(lab_id):
         elements.append(title)
         elements.append(Spacer(1, 0.2*inch))
         
-        # Create table data
+        # Create table data — skip empty stations
         for station in stations_list:
+            if not station['devices'] or len(station['devices']) == 0:
+                continue
+
             # Station header
             station_header = Paragraph(
                 f"<b>Station: {station['assignedCode']}</b> | OS: {station['os']}",
@@ -1887,36 +2080,34 @@ def export_lab_station_pdf(lab_id):
             elements.append(station_header)
             elements.append(Spacer(1, 0.1*inch))
             
-            if station['devices'] and len(station['devices']) > 0:
-                # Device table
-                table_data = [['Device', 'Brand/Model', 'Asset Code', 'Specification']]
-                
-                for device in station['devices']:
-                    table_data.append([
-                        device['type'],
-                        f"{device['brand']} {device['model']}",
-                        device['assetCode'] or 'N/A',
-                        device['specification'] or 'N/A'
-                    ])
-                
-                device_table = Table(table_data, colWidths=[1.3*inch, 2.2*inch, 1.8*inch, 1.5*inch])
-                device_table.setStyle(TableStyle([
-                    ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
-                    ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-                    ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-                    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                    ('FONTSIZE', (0, 0), (-1, 0), 10),
-                    ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-                    ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
-                    ('GRID', (0, 0), (-1, -1), 1, colors.black),
-                    ('FONTSIZE', (0, 1), (-1, -1), 8),
-                    ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-                ]))
-                elements.append(device_table)
-            else:
-                no_devices = Paragraph("<i>No devices assigned</i>", styles['Italic'])
-                elements.append(no_devices)
+            # Device table with more columns
+            table_data = [['Device', 'Brand/Model', 'Prefix Code', 'Asset Code', 'Spec', 'Price', 'Warranty']]
             
+            for device in station['devices']:
+                table_data.append([
+                    device['type'],
+                    f"{device['brand']} {device['model']}",
+                    device.get('assetCode') or 'N/A',
+                    device.get('assetCode') or 'N/A',
+                    (device['specification'] or 'N/A')[:30],
+                    f"Rs.{device['unitPrice']:.0f}" if device.get('unitPrice') else 'N/A',
+                    f"{device['warrantyYears']}y" if device.get('warrantyYears') else 'N/A'
+                ])
+            
+            device_table = Table(table_data, colWidths=[0.9*inch, 1.5*inch, 1.1*inch, 1.1*inch, 1.0*inch, 0.7*inch, 0.5*inch])
+            device_table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTSIZE', (0, 0), (-1, 0), 8),
+                ('BOTTOMPADDING', (0, 0), (-1, 0), 10),
+                ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+                ('GRID', (0, 0), (-1, -1), 1, colors.black),
+                ('FONTSIZE', (0, 1), (-1, -1), 7),
+                ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ]))
+            elements.append(device_table)
             elements.append(Spacer(1, 0.3*inch))
         
         # Build PDF
@@ -1956,6 +2147,7 @@ def raise_issue():
         description = (data.get("description") or "").strip()
         severity = (data.get("severity") or "medium").lower()
         deactivate = bool(data.get("deactivate"))
+        reported_by = (data.get("reportedBy") or "System").strip()
 
         if not device_id:
             return jsonify({"success": False, "error": "deviceId is required"}), 400
@@ -1964,13 +2156,6 @@ def raise_issue():
 
         conn = db.get_connection()
         cursor = conn.cursor()
-
-        # Check if severity column exists; if missing, we still create issue without it
-        cursor.execute(
-            """SELECT 1 FROM information_schema.columns
-               WHERE table_name = 'device_issues' AND column_name = 'severity'"""
-        )
-        severity_exists = cursor.fetchone() is not None
 
         # Validate device
         cursor.execute(
@@ -1983,30 +2168,22 @@ def raise_issue():
             conn.close()
             return jsonify({"success": False, "error": "Device not found"}), 404
 
-        # Insert issue
-        if severity_exists:
-            cursor.execute(
-                """INSERT INTO device_issues (device_id, issue_title, description, status, severity)
-                       VALUES (%s, %s, %s, %s, %s)
-                       RETURNING issue_id, reported_at""",
-                (device_id, title, description, "open", severity)
-            )
-        else:
-            cursor.execute(
-                """INSERT INTO device_issues (device_id, issue_title, description, status)
-                       VALUES (%s, %s, %s, %s)
-                       RETURNING issue_id, reported_at""",
-                (device_id, title, description, "open")
-            )
+        # Insert issue with severity and reported_by
+        cursor.execute(
+            """INSERT INTO device_issues (device_id, issue_title, description, status, severity, reported_by)
+                   VALUES (%s, %s, %s, %s, %s, %s)
+                   RETURNING issue_id, reported_at""",
+            (device_id, title, description, "open", severity, reported_by)
+        )
         issue_row = cursor.fetchone()
         issue_id = issue_row['issue_id']
         reported_at = issue_row['reported_at']
 
         # History log
         cursor.execute(
-            """INSERT INTO device_issue_history (issue_id, action, old_status, new_status, note)
-                   VALUES (%s, %s, %s, %s, %s)""",
-            (issue_id, "created", None, "open", f"severity={severity}")
+            """INSERT INTO device_issue_history (issue_id, action, old_status, new_status, note, changed_by)
+                   VALUES (%s, %s, %s, %s, %s, %s)""",
+            (issue_id, "created", None, "open", f"severity={severity}", reported_by)
         )
 
         # Optionally deactivate device
@@ -2030,6 +2207,7 @@ def raise_issue():
                 "severity": severity,
                 "status": "open",
                 "reportedDate": reported_at.isoformat() if reported_at else None,
+                "reportedBy": reported_by,
                 "deactivated": deactivate
             }
         })
@@ -2053,6 +2231,7 @@ def update_issue_status():
         data = request.get_json(force=True)
         issue_id = data.get("issueId")
         new_status = (data.get("status") or "").strip().lower()
+        changed_by = (data.get("changedBy") or "").strip() or None
 
         if not issue_id:
             return jsonify({"success": False, "error": "issueId is required"}), 400
@@ -2076,17 +2255,24 @@ def update_issue_status():
 
         old_status = issue_row['status']
 
-        # Update status
-        cursor.execute(
-            "UPDATE device_issues SET status = %s WHERE issue_id = %s",
-            (new_status, issue_id)
-        )
+        # Update status (+ resolved_at timestamp when resolving)
+        if new_status == "resolved":
+            cursor.execute(
+                "UPDATE device_issues SET status = %s, resolved_at = NOW() WHERE issue_id = %s",
+                (new_status, issue_id)
+            )
+        else:
+            cursor.execute(
+                "UPDATE device_issues SET status = %s, resolved_at = NULL WHERE issue_id = %s",
+                (new_status, issue_id)
+            )
 
-        # Log history
+        # Log history with who changed it
         cursor.execute(
-            """INSERT INTO device_issue_history (issue_id, action, old_status, new_status, note)
-                   VALUES (%s, %s, %s, %s, %s)""",
-            (issue_id, "status_updated", old_status, new_status, f"Status changed from {old_status} to {new_status}")
+            """INSERT INTO device_issue_history (issue_id, action, old_status, new_status, note, changed_by)
+                   VALUES (%s, %s, %s, %s, %s, %s)""",
+            (issue_id, "status_updated", old_status, new_status,
+             f"Status changed from {old_status} to {new_status}", changed_by)
         )
 
         conn.commit()
@@ -3532,15 +3718,12 @@ def auto_assign_devices():
     try:
         data = request.json
         lab_number = data.get("labNumber", "").strip()
-        equipment_list = data.get("equipment", [])
         code_prefixes = data.get("codePrefixes", {})  # {device_type_name: prefix}
         linked_groups = data.get("linkedDeviceGroups", [])
         os_selection = data.get("osSelection", {})  # {device_type_name: {windows, linux, other}}
 
         if not lab_number:
             return jsonify({"error": "Lab number is required"}), 400
-        if not equipment_list:
-            return jsonify({"error": "No equipment to assign"}), 400
 
         conn = db.get_connection()
         cursor = conn.cursor()
@@ -3593,10 +3776,10 @@ def auto_assign_devices():
             previous_codes = {r['device_id']: r['assigned_code']
                               for r in cursor.fetchall()}
 
-            # ── Reset existing assignments (counters are NOT reset) ─
+            # ── Reset existing assignments (keep lab_id so pool is preserved) ─
             cursor.execute(
                 """UPDATE devices
-                   SET lab_id = NULL, assigned_code = NULL,
+                   SET assigned_code = NULL,
                        qr_value = NULL, is_active = FALSE
                    WHERE lab_id = %s""",
                 (lab_number,)
@@ -3609,9 +3792,27 @@ def auto_assign_devices():
                 (lab_number,)
             )
             cursor.execute("DELETE FROM lab_stations WHERE lab_id = %s", (lab_number,))
-            cursor.execute("DELETE FROM lab_equipment_pool WHERE lab_id = %s", (lab_number,))
 
-            # ── Populate equipment pool table ───────────────────────
+            # ── Build equipment list from pooled devices in DB ──────
+            cursor.execute("""
+                SELECT et.name AS type, d.brand, d.model, d.bill_id,
+                       d.invoice_number, d.specification,
+                       COUNT(*) AS quantity
+                FROM devices d
+                JOIN equipment_types et ON d.type_id = et.type_id
+                WHERE d.lab_id = %s
+                  AND (d.assigned_code IS NULL OR d.assigned_code = '')
+                GROUP BY et.name, d.brand, d.model, d.bill_id,
+                         d.invoice_number, d.specification
+            """, (lab_number,))
+            pool_rows = cursor.fetchall()
+            equipment_list = [dict(r) for r in pool_rows]
+
+            if not equipment_list:
+                return jsonify({"error": "No devices pooled for this lab. Add equipment first."}), 400
+
+            # ── Sync lab_equipment_pool from actual device pool ──────
+            cursor.execute("DELETE FROM lab_equipment_pool WHERE lab_id = %s", (lab_number,))
             for eq in equipment_list:
                 cursor.execute(
                     """INSERT INTO lab_equipment_pool
@@ -3620,20 +3821,21 @@ def auto_assign_devices():
                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""",
                     (lab_number, eq.get('type'), eq.get('brand'),
                      eq.get('model'), eq.get('specification'),
-                     eq.get('quantity'), eq.get('invoiceNumber'),
-                     eq.get('billId'))
+                     eq.get('quantity'), eq.get('invoice_number'),
+                     eq.get('bill_id'))
                 )
 
             # ── Remaining-quantity tracker ───────────────────────────
             remaining = {}
             for eq in equipment_list:
                 key = (eq.get('type', ''), eq.get('brand', ''),
-                       eq.get('model', ''), eq.get('billId'))
+                       eq.get('model', ''), eq.get('bill_id'))
                 remaining[key] = remaining.get(key, 0) + eq.get('quantity', 0)
 
             used_device_ids = set()
             station_counter = 0
             devices_assigned = 0
+            station_device_codes = {}   # station_id → [device_code, ...]
 
             # ── In-memory counter for device codes (does NOT touch device_code_counters table) ──
             _type_counters = {}
@@ -3641,17 +3843,18 @@ def auto_assign_devices():
                 _type_counters[device_type] = _type_counters.get(device_type, 0) + 1
                 return _type_counters[device_type]
 
-            # ── Helper: find an unassigned device row ───────────────
+            # ── Helper: find an unassigned device row from lab pool ──
             def find_device(dtype, brand, model, bill_id, inv_no):
                 not_in_clause = ""
-                params = [dtype, brand, model, bill_id, inv_no]
+                params = [lab_number, dtype, brand, model, bill_id, inv_no]
                 if used_device_ids:
                     ph = ','.join(['%s'] * len(used_device_ids))
                     not_in_clause = f" AND device_id NOT IN ({ph})"
                     params.extend(list(used_device_ids))
                 cursor.execute(f"""
                     SELECT device_id, specification FROM devices
-                    WHERE type_id = (SELECT type_id FROM equipment_types
+                    WHERE lab_id = %s
+                      AND type_id = (SELECT type_id FROM equipment_types
                                      WHERE name = %s LIMIT 1)
                       AND brand IS NOT DISTINCT FROM %s
                       AND model IS NOT DISTINCT FROM %s
@@ -3698,6 +3901,7 @@ def auto_assign_devices():
                 )
                 devices_assigned += 1
                 used_device_ids.add(did)
+                station_device_codes.setdefault(station_id, []).append(device_code)
                 return device_code
 
             # ── Helper: try to place one device of a given type ─────
@@ -3708,19 +3912,19 @@ def auto_assign_devices():
                     if eq.get('type') != type_name:
                         continue
                     ek = (eq.get('type', ''), eq.get('brand', ''),
-                          eq.get('model', ''), eq.get('billId'))
+                          eq.get('model', ''), eq.get('bill_id'))
                     if remaining.get(ek, 0) <= 0:
                         continue
                     rec = find_device(
                         eq.get('type'), eq.get('brand'),
-                        eq.get('model'), eq.get('billId'),
-                        eq.get('invoiceNumber'))
+                        eq.get('model'), eq.get('bill_id'),
+                        eq.get('invoice_number'))
                     if rec:
                         remaining[ek] -= 1
                         assign_device(rec, type_name,
                                       eq.get('brand'), eq.get('model'),
-                                      eq.get('invoiceNumber'),
-                                      eq.get('billId'), station_id)
+                                      eq.get('invoice_number'),
+                                      eq.get('bill_id'), station_id)
                         return True
                 return False
 
@@ -3770,6 +3974,21 @@ def auto_assign_devices():
                         any_assigned = True
                         print(f"  ✅ Assigned {type_name} to station {station_code}")
 
+                # Generate station-level QR value encoding all devices at this station
+                if any_assigned and station_id in station_device_codes:
+                    device_codes_str = ",".join(station_device_codes[station_id])
+                    station_qr_val = f"STATION|{station_code}|{device_codes_str}"
+                    try:
+                        cursor.execute(
+                            """UPDATE lab_stations
+                               SET station_qr_value = %s
+                               WHERE station_id = %s""",
+                            (station_qr_val, station_id)
+                        )
+                    except Exception:
+                        # station_qr_value column may not exist yet
+                        pass
+
                 # Record grid cell — resolve OS flags from osSelection for assigned types
                 primary_type = allowed_names[0] if allowed_names else station_name
                 os_win = False
@@ -3813,12 +4032,26 @@ def auto_assign_devices():
                 WHERE lab_id = %s
             """, (lab_number,))
 
+            # ── Compute leftover (unassigned) devices ─────────────
+            unassigned_summary = []
+            for (dtype, brand, model, bill_id), qty_left in remaining.items():
+                if qty_left > 0:
+                    unassigned_summary.append({
+                        "type": dtype,
+                        "brand": brand,
+                        "model": model,
+                        "quantity": qty_left
+                    })
+            total_unassigned = sum(r["quantity"] for r in unassigned_summary)
+
             conn.commit()
             return jsonify({
                 "success": True,
                 "message": f"Devices assigned to lab '{lab_name}' ({lab_number})",
                 "stations_created": station_counter,
-                "devices_assigned": devices_assigned
+                "devices_assigned": devices_assigned,
+                "devices_unassigned": total_unassigned,
+                "unassigned_summary": unassigned_summary
             })
 
         except Exception as db_err:
@@ -3901,11 +4134,10 @@ def reset_lab_assignments(lab_id):
 # -----------------------------
 @app.route("/save_lab_config", methods=["POST"])
 def save_lab_config():
-    """Save the equipment pool and code prefixes for a lab without running auto-assign."""
+    """Sync the lab_equipment_pool table from the actual device pool and persist settings."""
     try:
         data = request.json
         lab_id = data.get("labNumber", "").strip()
-        equipment_list = data.get("equipment", [])
 
         if not lab_id:
             return jsonify({"error": "Lab number is required"}), 400
@@ -3913,24 +4145,24 @@ def save_lab_config():
         conn = db.get_connection()
         cursor = conn.cursor()
         try:
-            # Clear and repopulate equipment pool
+            # Sync lab_equipment_pool from actual devices table (source of truth)
             cursor.execute("DELETE FROM lab_equipment_pool WHERE lab_id = %s", (lab_id,))
-            for eq in equipment_list:
-                cursor.execute(
-                    """INSERT INTO lab_equipment_pool
-                       (lab_id, equipment_type, brand, model, specification,
-                        quantity_added, invoice_number, bill_id)
-                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""",
-                    (lab_id, eq.get('type'), eq.get('brand'),
-                     eq.get('model'), eq.get('specification'),
-                     eq.get('quantity'), eq.get('invoiceNumber'),
-                     eq.get('billId'))
-                )
+            cursor.execute("""
+                INSERT INTO lab_equipment_pool
+                (lab_id, equipment_type, brand, model, specification,
+                 quantity_added, invoice_number, bill_id)
+                SELECT %s, et.name, d.brand, d.model, d.specification,
+                       COUNT(*), d.invoice_number, d.bill_id
+                FROM devices d
+                JOIN equipment_types et ON d.type_id = et.type_id
+                WHERE d.lab_id = %s
+                GROUP BY et.name, d.brand, d.model, d.specification,
+                         d.invoice_number, d.bill_id
+            """, (lab_id, lab_id))
             conn.commit()
             return jsonify({
                 "success": True,
-                "message": f"Configuration saved for lab {lab_id}",
-                "equipment_count": len(equipment_list)
+                "message": f"Configuration saved for lab {lab_id}"
             })
         except Exception as db_err:
             conn.rollback()
@@ -3940,6 +4172,265 @@ def save_lab_config():
             conn.close()
     except Exception as e:
         print(f"Error saving lab config: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+# -----------------------------
+# Issue Trends Analytics
+# -----------------------------
+@app.route("/get_issue_trends", methods=["GET"])
+def get_issue_trends():
+    """
+    Comprehensive issue analytics for the Issue Trends report page.
+    Returns: timeline, severity breakdown, per-bill batch analysis,
+    repeat-offender devices, per-lab stats, per-device-type stats.
+    """
+    try:
+        conn = db.get_connection()
+        if not conn:
+            return jsonify({"error": "Database connection failed"}), 500
+
+        cursor = conn.cursor()
+
+        # 1. Monthly issue timeline (last 12 months)
+        cursor.execute("""
+            SELECT TO_CHAR(reported_at, 'YYYY-MM') AS month,
+                   COUNT(*) AS total,
+                   SUM(CASE WHEN LOWER(severity) = 'critical' THEN 1 ELSE 0 END) AS critical,
+                   SUM(CASE WHEN LOWER(severity) = 'high' THEN 1 ELSE 0 END) AS high,
+                   SUM(CASE WHEN LOWER(severity) = 'medium' THEN 1 ELSE 0 END) AS medium,
+                   SUM(CASE WHEN LOWER(severity) = 'low' THEN 1 ELSE 0 END) AS low
+            FROM device_issues
+            WHERE reported_at >= NOW() - INTERVAL '12 months'
+            GROUP BY TO_CHAR(reported_at, 'YYYY-MM')
+            ORDER BY month
+        """)
+        timeline = cursor.fetchall()
+
+        # 2. Issues by severity (overall)
+        cursor.execute("""
+            SELECT COALESCE(LOWER(severity), 'unknown') AS severity,
+                   COUNT(*) AS count
+            FROM device_issues
+            GROUP BY COALESCE(LOWER(severity), 'unknown')
+        """)
+        severity_breakdown = cursor.fetchall()
+
+        # 3. Issues by status
+        cursor.execute("""
+            SELECT LOWER(status) AS status, COUNT(*) AS count
+            FROM device_issues
+            GROUP BY LOWER(status)
+        """)
+        status_breakdown = cursor.fetchall()
+
+        # 4. Problematic batches – bills whose devices raise the most issues
+        cursor.execute("""
+            SELECT b.bill_id, b.invoice_number, b.vendor_name,
+                   b.bill_date,
+                   COUNT(di.issue_id) AS issue_count,
+                   COUNT(DISTINCT di.device_id) AS affected_devices,
+                   COUNT(DISTINCT d.device_id) AS total_devices_in_bill,
+                   SUM(CASE WHEN LOWER(di.severity) IN ('critical','high') THEN 1 ELSE 0 END) AS severe_issues
+            FROM device_issues di
+            JOIN devices d ON di.device_id = d.device_id
+            JOIN bills b ON d.bill_id = b.bill_id
+            GROUP BY b.bill_id, b.invoice_number, b.vendor_name, b.bill_date
+            ORDER BY issue_count DESC
+            LIMIT 15
+        """)
+        problematic_batches = cursor.fetchall()
+
+        # 5. Repeat-offender devices (most issues)
+        cursor.execute("""
+            SELECT d.device_id, d.asset_code AS asset_id,
+                   et.name AS type_name, d.brand, d.model,
+                   l.lab_name, d.assigned_code,
+                   d.is_active,
+                   COUNT(di.issue_id) AS issue_count,
+                   SUM(CASE WHEN LOWER(di.status) = 'open' THEN 1 ELSE 0 END) AS open_issues,
+                   SUM(CASE WHEN LOWER(di.severity) IN ('critical','high') THEN 1 ELSE 0 END) AS severe_issues,
+                   MIN(di.reported_at) AS first_issue,
+                   MAX(di.reported_at) AS last_issue
+            FROM device_issues di
+            JOIN devices d ON di.device_id = d.device_id
+            LEFT JOIN equipment_types et ON d.type_id = et.type_id
+            LEFT JOIN labs l ON d.lab_id = l.lab_id
+            GROUP BY d.device_id, d.asset_code, et.name, d.brand, d.model,
+                     l.lab_name, d.assigned_code, d.is_active
+            HAVING COUNT(di.issue_id) >= 2
+            ORDER BY issue_count DESC
+            LIMIT 20
+        """)
+        repeat_offenders = cursor.fetchall()
+
+        # 6. Issues per lab
+        cursor.execute("""
+            SELECT COALESCE(l.lab_name, 'Unassigned') AS lab_name,
+                   COUNT(di.issue_id) AS issue_count,
+                   SUM(CASE WHEN LOWER(di.status) = 'open' THEN 1 ELSE 0 END) AS open_issues,
+                   SUM(CASE WHEN LOWER(di.severity) IN ('critical','high') THEN 1 ELSE 0 END) AS severe_issues
+            FROM device_issues di
+            JOIN devices d ON di.device_id = d.device_id
+            LEFT JOIN labs l ON d.lab_id = l.lab_id
+            GROUP BY COALESCE(l.lab_name, 'Unassigned')
+            ORDER BY issue_count DESC
+        """)
+        issues_by_lab = cursor.fetchall()
+
+        # 7. Issues per device type
+        cursor.execute("""
+            SELECT COALESCE(et.name, 'Unknown') AS type_name,
+                   COUNT(di.issue_id) AS issue_count,
+                   COUNT(DISTINCT di.device_id) AS affected_devices,
+                   SUM(CASE WHEN LOWER(di.status) = 'open' THEN 1 ELSE 0 END) AS open_issues
+            FROM device_issues di
+            JOIN devices d ON di.device_id = d.device_id
+            LEFT JOIN equipment_types et ON d.type_id = et.type_id
+            GROUP BY COALESCE(et.name, 'Unknown')
+            ORDER BY issue_count DESC
+        """)
+        issues_by_type = cursor.fetchall()
+
+        # 8. Most common issue titles
+        cursor.execute("""
+            SELECT issue_title, COUNT(*) AS count,
+                   ROUND(AVG(CASE
+                       WHEN LOWER(severity) = 'critical' THEN 4
+                       WHEN LOWER(severity) = 'high' THEN 3
+                       WHEN LOWER(severity) = 'medium' THEN 2
+                       WHEN LOWER(severity) = 'low' THEN 1
+                       ELSE 2 END), 1) AS avg_severity_score
+            FROM device_issues
+            GROUP BY issue_title
+            ORDER BY count DESC
+            LIMIT 10
+        """)
+        common_issues = cursor.fetchall()
+
+        # 9. Average resolution time (for resolved issues with resolved_at)
+        cursor.execute("""
+            SELECT COALESCE(et.name, 'Unknown') AS type_name,
+                   ROUND(AVG(EXTRACT(EPOCH FROM (di.resolved_at - di.reported_at)) / 3600)::numeric, 1) AS avg_hours
+            FROM device_issues di
+            JOIN devices d ON di.device_id = d.device_id
+            LEFT JOIN equipment_types et ON d.type_id = et.type_id
+            WHERE di.resolved_at IS NOT NULL
+            GROUP BY COALESCE(et.name, 'Unknown')
+            ORDER BY avg_hours DESC
+        """)
+        avg_resolution = cursor.fetchall()
+
+        # 10. Summary stats
+        cursor.execute("""
+            SELECT COUNT(*) AS total_issues,
+                   SUM(CASE WHEN LOWER(status) = 'open' THEN 1 ELSE 0 END) AS open_issues,
+                   SUM(CASE WHEN LOWER(status) = 'in-progress' THEN 1 ELSE 0 END) AS in_progress,
+                   SUM(CASE WHEN LOWER(status) = 'resolved' THEN 1 ELSE 0 END) AS resolved,
+                   COUNT(DISTINCT device_id) AS affected_devices
+            FROM device_issues
+        """)
+        summary = cursor.fetchone()
+
+        cursor.close()
+        conn.close()
+
+        # Serialize dates for JSON
+        for b in problematic_batches:
+            if b.get('bill_date'):
+                b['bill_date'] = b['bill_date'].strftime('%Y-%m-%d') if hasattr(b['bill_date'], 'strftime') else str(b['bill_date'])
+        for r in repeat_offenders:
+            if r.get('first_issue'):
+                r['first_issue'] = r['first_issue'].isoformat() if hasattr(r['first_issue'], 'isoformat') else str(r['first_issue'])
+            if r.get('last_issue'):
+                r['last_issue'] = r['last_issue'].isoformat() if hasattr(r['last_issue'], 'isoformat') else str(r['last_issue'])
+
+        return jsonify({
+            "success": True,
+            "timeline": timeline,
+            "severity_breakdown": severity_breakdown,
+            "status_breakdown": status_breakdown,
+            "problematic_batches": problematic_batches,
+            "repeat_offenders": repeat_offenders,
+            "issues_by_lab": issues_by_lab,
+            "issues_by_type": issues_by_type,
+            "common_issues": common_issues,
+            "avg_resolution": avg_resolution,
+            "summary": summary
+        })
+
+    except Exception as e:
+        print(f"Error fetching issue trends: {str(e)}")
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+# -----------------------------
+# AI Issue Insights
+# -----------------------------
+@app.route("/get_issue_insights", methods=["POST"])
+def get_issue_insights():
+    """
+    Send issue analytics data to local LLM for AI-powered insights.
+    """
+    try:
+        data = request.get_json(force=True)
+        analytics = data.get("analytics", {})
+
+        prompt = f"""You are an IT asset management analyst. Analyze the following issue data and provide actionable insights.
+
+ISSUE SUMMARY:
+- Total issues: {analytics.get('total_issues', 0)}
+- Open: {analytics.get('open_issues', 0)}
+- In Progress: {analytics.get('in_progress', 0)}
+- Resolved: {analytics.get('resolved', 0)}
+- Affected devices: {analytics.get('affected_devices', 0)}
+
+PROBLEMATIC BATCHES (bills with most issues):
+{json.dumps(analytics.get('problematic_batches', [])[:5], indent=2, default=str)}
+
+REPEAT OFFENDER DEVICES (devices with recurring issues):
+{json.dumps(analytics.get('repeat_offenders', [])[:5], indent=2, default=str)}
+
+ISSUES BY DEVICE TYPE:
+{json.dumps(analytics.get('issues_by_type', []), indent=2, default=str)}
+
+COMMON ISSUE TYPES:
+{json.dumps(analytics.get('common_issues', [])[:5], indent=2, default=str)}
+
+Based on this data, provide:
+1. KEY FINDINGS: 2-3 critical observations
+2. BATCH ALERTS: Which purchase batches need attention and why
+3. DEVICE ALERTS: Which specific devices should be replaced or need urgent maintenance
+4. RECOMMENDATIONS: 3-4 actionable steps to reduce future issues
+5. PATTERNS: Any concerning patterns you notice
+
+Be concise and specific. Use device IDs and invoice numbers when referencing items."""
+
+        try:
+            resp = requests.post(
+                "http://localhost:8080/v1/chat/completions",
+                json={
+                    "model": "local-model",
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0.3
+                },
+                timeout=120
+            )
+            if resp.status_code == 200:
+                result = resp.json()
+                insight_text = result.get("choices", [{}])[0].get("message", {}).get("content", "")
+                return jsonify({"success": True, "insights": insight_text})
+            else:
+                return jsonify({"success": False, "error": f"LLM returned status {resp.status_code}"}), 502
+        except requests.exceptions.ConnectionError:
+            return jsonify({"success": False, "error": "Local AI model not available at port 8080"}), 503
+        except requests.exceptions.Timeout:
+            return jsonify({"success": False, "error": "AI model request timed out"}), 504
+
+    except Exception as e:
+        print(f"Error getting AI insights: {str(e)}")
+        traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
 

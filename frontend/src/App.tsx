@@ -19,6 +19,7 @@ import Issues from "./pages/Issues.tsx";
 import Documents from "./pages/Documents.tsx";
 import Transfers from "./pages/Transfers.tsx";
 import LabLayout from "./pages/LabLayout.tsx";
+import IssueTrends from "./pages/IssueTrends.tsx";
 
 const App: React.FC = () => {
   return (
@@ -66,6 +67,7 @@ const App: React.FC = () => {
           <Route path="/reports" element={<ProtectedRoute><Reports /></ProtectedRoute>} />
           <Route path="/warranty-expiry" element={<ProtectedRoute><WarrantyExpiry /></ProtectedRoute>} />
           <Route path="/reports/warranty" element={<ProtectedRoute><WarrantyExpiry /></ProtectedRoute>} />
+          <Route path="/reports/issue-trends" element={<ProtectedRoute><IssueTrends /></ProtectedRoute>} />
         </Routes>
       </AuthProvider>
     </Router>
