@@ -20,6 +20,8 @@ import Documents from "./pages/Documents.tsx";
 import Transfers from "./pages/Transfers.tsx";
 import LabLayout from "./pages/LabLayout.tsx";
 import IssueTrends from "./pages/IssueTrends.tsx";
+import Scrap from "./pages/Scrap.tsx";
+import { ScrapHoverButton } from "./components/ui/ScrapHoverButton.tsx";
 
 const App: React.FC = () => {
   return (
@@ -59,6 +61,7 @@ const App: React.FC = () => {
           
           {/* Operations - All roles */}
           <Route path="/transfers" element={<ProtectedRoute><Transfers /></ProtectedRoute>} />
+          <Route path="/scrap" element={<ProtectedRoute><Scrap /></ProtectedRoute>} />
           <Route path="/dashboard/issues" element={<ProtectedRoute><Issues /></ProtectedRoute>} />
           <Route path="/documents" element={<ProtectedRoute><Documents /></ProtectedRoute>} />
           <Route path="/dashboard/documents" element={<ProtectedRoute><Documents /></ProtectedRoute>} />
@@ -69,6 +72,7 @@ const App: React.FC = () => {
           <Route path="/reports/warranty" element={<ProtectedRoute><WarrantyExpiry /></ProtectedRoute>} />
           <Route path="/reports/issue-trends" element={<ProtectedRoute><IssueTrends /></ProtectedRoute>} />
         </Routes>
+        <ScrapHoverButton />
       </AuthProvider>
     </Router>
   );

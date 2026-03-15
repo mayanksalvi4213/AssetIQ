@@ -211,6 +211,7 @@ export default function Dashboard() {
               <HoveredLink href="/transfers">
                 Transfers
               </HoveredLink>{" "}
+              <HoveredLink href="/scrap">Scrap</HoveredLink>{" "}
               <HoveredLink href="/dashboard/issues">Issues</HoveredLink>{" "}
               <HoveredLink href="/dashboard/documents">Documents</HoveredLink>{" "}
             </div>{" "}

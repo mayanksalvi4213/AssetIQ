@@ -563,6 +563,7 @@ export default function LabConfiguration() {
           <MenuItem setActive={setActive} active={active} item="Operations">
             <div className="flex flex-col space-y-2 text-sm p-2">
               <HoveredLink href="/transfers">Transfers</HoveredLink>
+              <HoveredLink href="/scrap">Scrap</HoveredLink>
               <HoveredLink href="/dashboard/issues">Issues</HoveredLink>
               <HoveredLink href="/dashboard/documents">Documents</HoveredLink>
             </div>
