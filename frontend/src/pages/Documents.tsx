@@ -16,6 +16,7 @@ interface Bill {
   gstin: string;
   stockEntry: string;
   items: number;
+  path?: string | null;
 }
 
 interface DeadStockEntry {
@@ -24,14 +25,6 @@ interface DeadStockEntry {
   stationCode: string;
   itemDescription: string;
   deviceCount: number;
-  devices: Array<{
-    type: string;
-    brand: string;
-    model: string;
-    specification: string;
-    assetCode: string;
-    unitPrice: number;
-  }>;
   supplierInfo: string;
   orderNo: string;
   billNo: string;
@@ -43,9 +36,16 @@ interface DeadStockEntry {
   dateOfDelivery: string;
   dateOfInstallation: string;
   identityNo: string;
+  assignedCode?: string;
   remark: string;
   signOfLabInCharge: string;
   warrantyYears: number;
+  deviceType?: string;
+  brand?: string;
+  model?: string;
+  specification?: string;
+  assetCode?: string;
+  unitPrice?: number;
 }
 
 const Documents: React.FC = () => {
@@ -56,6 +56,52 @@ const Documents: React.FC = () => {
   const [deadStockData, setDeadStockData] = useState<DeadStockEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [deadstockLabFilter, setDeadstockLabFilter] = useState<string>("all");
+  const [deadstockYearFilter, setDeadstockYearFilter] = useState<string>("all");
+  const [deadstockDeviceTypeFilter, setDeadstockDeviceTypeFilter] = useState<string>("all");
+
+  const getYearFromDate = (value: string) => {
+    if (!value) return "";
+    const trimmed = value.trim();
+    const slashMatch = trimmed.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+    if (slashMatch) return slashMatch[3];
+    const isoMatch = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (isoMatch) return isoMatch[1];
+    const yearMatch = trimmed.match(/(\d{4})/);
+    return yearMatch ? yearMatch[1] : "";
+  };
+
+  const handleViewBill = async (bill: Bill) => {
+    if (!bill.path) {
+      alert("No bill file is available for this record.");
+      return;
+    }
+
+    try {
+      const token = localStorage.getItem("token");
+      const headers: HeadersInit = {};
+      if (token) {
+        headers["Authorization"] = `Bearer ${token}`;
+      }
+
+      const response = await fetch(`http://localhost:5000/${bill.path}`, {
+        method: "GET",
+        headers,
+      });
+
+      if (!response.ok) {
+        throw new Error("Failed to fetch bill file");
+      }
+
+      const blob = await response.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      window.open(blobUrl, "_blank", "noopener,noreferrer");
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
+    } catch (err) {
+      console.error("Error opening bill file:", err);
+      alert("Failed to open bill file. Please try again.");
+    }
+  };
 
   // Export Bills to CSV
   const exportBillsToCSV = () => {
@@ -136,81 +182,52 @@ const Documents: React.FC = () => {
   };
 
   // Export Dead Stock to CSV
-  const exportDeadStockToCSV = () => {
+  const exportDeadStockToCSV = (data: DeadStockEntry[]) => {
+    const formatDeviceDisplay = (item: DeadStockEntry) => {
+      const main = `${item.deviceType || "Unknown"}: ${item.brand || ""} ${item.model || ""}`.trim();
+      const spec = item.specification ? ` | ${item.specification}` : "";
+      const asset = item.assetCode ? ` | ${item.assetCode}` : "";
+      const price = typeof item.unitPrice === "number" ? ` | ₹${item.unitPrice.toFixed(2)}` : "";
+      return `${main}${spec}${asset}${price}`.trim();
+    };
+
     const headers = [
       "Sr. No.",
       "Lab",
       "Station",
-      "Device Type",
-      "Brand",
-      "Model",
-      "Specification",
-      "Asset Code",
-      "Unit Price",
-      "Supplier",
+      "Device",
+      "Name & Add. of Supplier",
       "Order No.",
-      "Bill No.",
-      "Bill Date",
-      "Central Store",
-      "Quantity",
-      "Rate/Unit",
+      "Bill No. & Date",
+      "Central Store No.",
+      "Qty",
+      "Rate / Unit",
       "Cost",
-      "Delivery Date",
+      "Date of Delivery",
       "Identity No.",
+      "Assigned Code",
       "Warranty"
     ];
     
     const rows: string[] = [];
-    deadStockData.forEach(item => {
-      if (item.devices && item.devices.length > 0) {
-        item.devices.forEach(device => {
-          rows.push([
-            item.srNo,
-            item.labName,
-            item.stationCode,
-            device.type,
-            device.brand,
-            device.model,
-            device.specification || "",
-            device.assetCode || "",
-            device.unitPrice.toString(),
-            item.supplierInfo,
-            item.orderNo,
-            item.billNo,
-            item.billDate,
-            item.centralStore,
-            item.quantity,
-            item.ratePerUnit,
-            item.cost,
-            item.dateOfDelivery,
-            item.identityNo,
-            `${item.warrantyYears}y`
-          ].map(val => `"${val}"`).join(","));
-        });
-      } else {
-        rows.push([
-          item.srNo,
-          item.labName,
-          item.stationCode,
-          "",
-          "",
-          "",
-          "",
-          "",
-          "",
-          item.supplierInfo,
-          item.orderNo,
-          item.billNo,
-          item.billDate,
-          item.centralStore,
-          item.quantity,
-          item.ratePerUnit,
-          item.cost,
-          item.dateOfDelivery,
-          item.identityNo,
-          `${item.warrantyYears}y`
-        ].map(val => `"${val}"`).join(","));
-      }
+    data.forEach(item => {
+      rows.push([
+        item.srNo,
+        item.labName,
+        item.stationCode,
+        formatDeviceDisplay(item),
+        item.supplierInfo,
+        item.orderNo,
+        `${item.billNo}${item.billDate ? ` | ${item.billDate}` : ""}`,
+        item.centralStore,
+        item.quantity,
+        item.ratePerUnit,
+        item.cost,
+        item.dateOfDelivery,
+        item.identityNo,
+        item.assignedCode || "",
+        `${item.warrantyYears}y`
+      ].map(val => `"${val}"`).join(","));
     });
 
     const csvContent = [headers.join(","), ...rows].join("\n");
@@ -227,7 +244,7 @@ const Documents: React.FC = () => {
   };
 
   // Export Dead Stock to PDF
-  const exportDeadStockToPDF = async () => {
+  const exportDeadStockToPDF = async (data: DeadStockEntry[]) => {
     try {
       const doc = new jsPDF('l', 'mm', 'a4'); // landscape orientation
       
@@ -242,70 +259,64 @@ const Documents: React.FC = () => {
       });
       
       // Add header image
-      doc.addImage(headerImg, 'PNG', 0, 0, 297, 40);
+      doc.addImage(headerImg, 'PNG', 0, 0, 297, 25);
       
-      doc.setFontSize(18);
-      doc.text("Dead Stock Register", 14, 48);
-      doc.setFontSize(12);
-      doc.text("A. P. SHAH INSTITUTE OF TECHNOLOGY", 14, 55);
-      doc.setFontSize(9);
-      doc.text("Survey No. 12, Opp. Hypercity Mall, Kasarvadavali, Ghodbunder Road, Thane (W)-400 615.", 14, 60);
-      doc.text(`Generated on: ${new Date().toLocaleDateString()}`, 14, 65);
+      doc.setFontSize(14);
+      doc.text("Dead Stock Register", 14, 32);
+      doc.setFontSize(10);
+      doc.text("A. P. SHAH INSTITUTE OF TECHNOLOGY", 14, 38);
+      doc.setFontSize(7);
+      doc.text("Survey No. 12, Opp. Hypercity Mall, Kasarvadavali, Ghodbunder Road, Thane (W)-400 615.", 14, 42);
+      doc.text(`Generated on: ${new Date().toLocaleDateString()}`, 14, 46);
 
     const tableData: any[] = [];
-    deadStockData.forEach(item => {
-      if (item.devices && item.devices.length > 0) {
-        item.devices.forEach((device, idx) => {
-          tableData.push([
-            idx === 0 ? item.srNo : "",
-            idx === 0 ? item.labName : "",
-            idx === 0 ? item.stationCode : "",
-            `${device.type}: ${device.brand} ${device.model}${device.specification ? '\n' + device.specification : ''}${device.assetCode ? '\n' + device.assetCode : ''}`,
-            idx === 0 ? item.supplierInfo : "",
-            idx === 0 ? item.orderNo : "",
-            idx === 0 ? `${item.billNo}\n${item.billDate}` : "",
-            idx === 0 ? item.quantity : "",
-            idx === 0 ? item.cost : "",
-            idx === 0 ? item.dateOfDelivery : "",
-            idx === 0 ? `${item.warrantyYears}y` : ""
-          ]);
-        });
-      } else {
-        tableData.push([
-          item.srNo,
-          item.labName,
-          item.stationCode,
-          "",
-          item.supplierInfo,
-          item.orderNo,
-          `${item.billNo}\n${item.billDate}`,
-          item.quantity,
-          item.cost,
-          item.dateOfDelivery,
-          `${item.warrantyYears}y`
-        ]);
-      }
+    data.forEach(item => {
+      const deviceDisplay = `${item.deviceType || "Unknown"}: ${item.brand || ""} ${item.model || ""}`.trim();
+      const specLine = item.specification ? `\n${item.specification}` : "";
+      const assetLine = item.assetCode ? `\n${item.assetCode}` : "";
+      const priceLine = typeof item.unitPrice === "number" ? `\n₹${item.unitPrice.toFixed(2)}` : "";
+      tableData.push([
+        item.srNo,
+        item.labName,
+        item.stationCode,
+        `${deviceDisplay}${specLine}${assetLine}${priceLine}`.trim(),
+        item.supplierInfo,
+        item.orderNo,
+        `${item.billNo}${item.billDate ? `\n${item.billDate}` : ""}`,
+        item.centralStore,
+        item.quantity,
+        item.ratePerUnit,
+        item.cost,
+        item.dateOfDelivery,
+        item.identityNo,
+        item.assignedCode || "",
+        `${item.warrantyYears}y`
+      ]);
     });
 
     autoTable(doc, {
-      head: [["Sr.", "Lab", "Station", "Devices", "Supplier", "Order", "Bill", "Qty", "Cost", "Delivery", "Warranty"]],
+      head: [["Sr.", "Lab", "Station", "Device", "Name & Add. of Supplier", "Order No.", "Bill No. & Date", "Central Store No.", "Qty", "Rate / Unit", "Cost", "Date of Delivery", "Identity No.", "Assigned Code", "Warranty"]],
       body: tableData,
-      startY: 70,
+      startY: 50,
       theme: 'grid',
-      styles: { fontSize: 8, cellPadding: 2 },
-      headStyles: { fillColor: [59, 130, 246], fontSize: 9, fontStyle: 'bold' },
+      styles: { fontSize: 7, cellPadding: 1 },
+      headStyles: { fillColor: [59, 130, 246], fontSize: 7, fontStyle: 'bold' },
       columnStyles: {
-        0: { cellWidth: 10 },
-        1: { cellWidth: 25 },
-        2: { cellWidth: 20 },
-        3: { cellWidth: 60 },
-        4: { cellWidth: 35 },
-        5: { cellWidth: 20 },
-        6: { cellWidth: 25 },
-        7: { cellWidth: 15 },
-        8: { cellWidth: 20 },
-        9: { cellWidth: 20 },
-        10: { cellWidth: 15 }
+        0: { cellWidth: 8 },
+        1: { cellWidth: 18 },
+        2: { cellWidth: 16 },
+        3: { cellWidth: 50 },
+        4: { cellWidth: 25 },
+        5: { cellWidth: 16 },
+        6: { cellWidth: 22 },
+        7: { cellWidth: 20 },
+        8: { cellWidth: 10 },
+        9: { cellWidth: 14 },
+        10: { cellWidth: 14 },
+        11: { cellWidth: 16 },
+        12: { cellWidth: 20 },
+        13: { cellWidth: 18 },
+        14: { cellWidth: 8 }
       }
     });
 
@@ -453,7 +464,7 @@ const Documents: React.FC = () => {
       </div>
 
       {/* Content Area */}
-      <div className="w-full max-w-7xl relative z-20">
+      <div className="w-full max-w-[95vw] relative z-20">
         {error && (
           <div className="mb-4 p-4 bg-red-600/20 border border-red-600 rounded-lg text-red-200">
             <p className="font-semibold">Error:</p>
@@ -531,7 +542,10 @@ const Documents: React.FC = () => {
                             <td className="px-4 py-3">₹{bill.taxAmount.toLocaleString()}</td>
                             <td className="px-4 py-3">{bill.items}</td>
                             <td className="px-4 py-3">
-                              <button className="px-3 py-1 bg-blue-600 rounded hover:bg-blue-700 transition-colors text-sm">
+                              <button
+                                onClick={() => handleViewBill(bill)}
+                                className="px-3 py-1 bg-blue-600 rounded hover:bg-blue-700 transition-colors text-sm"
+                              >
                                 View
                               </button>
                             </td>
@@ -546,18 +560,70 @@ const Documents: React.FC = () => {
 
             {/* Dead Stock Register Section */}
             {activeTab === "deadstock" && (
+              (() => {
+                const labOptions = Array.from(new Set(deadStockData.map(item => item.labName))).filter(Boolean);
+                const yearOptions = Array.from(new Set(deadStockData.map(item => getYearFromDate(item.billDate || item.dateOfDelivery || "")))).filter(Boolean);
+                const deviceTypeOptions = Array.from(new Set(deadStockData.map(item => item.deviceType).filter(Boolean))).filter(Boolean) as string[];
+                const filteredDeadStockData = deadStockData.filter((item) => {
+                  const matchesLab = deadstockLabFilter === "all" || item.labName === deadstockLabFilter;
+                  const itemYear = getYearFromDate(item.billDate || item.dateOfDelivery || "");
+                  const matchesYear = deadstockYearFilter === "all" || itemYear === deadstockYearFilter;
+                  const matchesDeviceType = deadstockDeviceTypeFilter === "all" || item.deviceType === deadstockDeviceTypeFilter;
+                  return matchesLab && matchesYear && matchesDeviceType;
+                });
+
+                return (
               <div className="p-6 bg-neutral-800/95 rounded-2xl backdrop-blur-sm">
                 <div className="mb-6">
-                  <div className="flex justify-between items-start mb-2">
+                  <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-4 mb-2">
                     <div>
                       <h2 className="text-2xl font-semibold text-white">Dead Stock Register</h2>
                       <p className="text-sm text-gray-400 mt-1">A. P. SHAH INSTITUTE OF TECHNOLOGY</p>
                       <p className="text-xs text-gray-500">Survey No. 12, Opp. Hypercity Mall, Kasarvadavali, Ghodbunder Road, Thane (W)-400 615.</p>
                     </div>
-                    <div className="flex gap-3">
+                    <div className="flex flex-wrap gap-3">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs text-gray-400">Lab</span>
+                        <select
+                          value={deadstockLabFilter}
+                          onChange={(e) => setDeadstockLabFilter(e.target.value)}
+                          className="px-3 py-2 bg-neutral-700 text-white rounded-lg text-sm border border-neutral-600"
+                        >
+                          <option value="all">All</option>
+                          {labOptions.map((lab) => (
+                            <option key={lab} value={lab}>{lab}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs text-gray-400">Year</span>
+                        <select
+                          value={deadstockYearFilter}
+                          onChange={(e) => setDeadstockYearFilter(e.target.value)}
+                          className="px-3 py-2 bg-neutral-700 text-white rounded-lg text-sm border border-neutral-600"
+                        >
+                          <option value="all">All</option>
+                          {yearOptions.map((year) => (
+                            <option key={year} value={year}>{year}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs text-gray-400">Device</span>
+                        <select
+                          value={deadstockDeviceTypeFilter}
+                          onChange={(e) => setDeadstockDeviceTypeFilter(e.target.value)}
+                          className="px-3 py-2 bg-neutral-700 text-white rounded-lg text-sm border border-neutral-600"
+                        >
+                          <option value="all">All</option>
+                          {deviceTypeOptions.map((deviceType) => (
+                            <option key={deviceType} value={deviceType}>{deviceType}</option>
+                          ))}
+                        </select>
+                      </div>
                       <button
-                        onClick={exportDeadStockToCSV}
-                        disabled={deadStockData.length === 0}
+                        onClick={() => exportDeadStockToCSV(filteredDeadStockData)}
+                        disabled={filteredDeadStockData.length === 0}
                         className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors disabled:bg-gray-600 disabled:cursor-not-allowed flex items-center gap-2"
                       >
                         <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -566,8 +632,8 @@ const Documents: React.FC = () => {
                         Export CSV
                       </button>
                       <button
-                        onClick={exportDeadStockToPDF}
-                        disabled={deadStockData.length === 0}
+                        onClick={() => exportDeadStockToPDF(filteredDeadStockData)}
+                        disabled={filteredDeadStockData.length === 0}
                         className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors disabled:bg-gray-600 disabled:cursor-not-allowed flex items-center gap-2"
                       >
                         <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -580,13 +646,13 @@ const Documents: React.FC = () => {
                 </div>
                 
                 <div className="overflow-x-auto">
-                  <table className="w-full text-left text-white text-sm border border-gray-600">
+                  <table className="w-full min-w-[1400px] text-left text-white text-sm border border-gray-600">
                     <thead className="bg-neutral-700/80">
                       <tr>
                         <th className="px-2 py-2 border border-gray-600">Sr. No.</th>
                         <th className="px-2 py-2 border border-gray-600">Lab</th>
                         <th className="px-2 py-2 border border-gray-600">Station</th>
-                        <th className="px-2 py-2 border border-gray-600">Linked Devices</th>
+                        <th className="px-2 py-2 border border-gray-600">Device</th>
                         <th className="px-2 py-2 border border-gray-600">Name & Add. of Supplier</th>
                         <th className="px-2 py-2 border border-gray-600">Order No.</th>
                         <th className="px-2 py-2 border border-gray-600">Bill No. & Date</th>
@@ -596,18 +662,19 @@ const Documents: React.FC = () => {
                         <th className="px-2 py-2 border border-gray-600">Cost</th>
                         <th className="px-2 py-2 border border-gray-600">Date of Delivery</th>
                         <th className="px-2 py-2 border border-gray-600">Identity No.</th>
+                        <th className="px-2 py-2 border border-gray-600">Assigned Code</th>
                         <th className="px-2 py-2 border border-gray-600">Warranty</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {deadStockData.length === 0 ? (
+                      {filteredDeadStockData.length === 0 ? (
                         <tr>
                           <td colSpan={14} className="px-4 py-8 text-center text-gray-400">
                             No dead stock entries found. Configure labs first.
                           </td>
                         </tr>
                       ) : (
-                        deadStockData.map((item, index) => (
+                        filteredDeadStockData.map((item, index) => (
                           <tr
                             key={index}
                             className="border-b border-gray-700 hover:bg-neutral-700/30"
@@ -616,21 +683,19 @@ const Documents: React.FC = () => {
                             <td className="px-2 py-3 border border-gray-600 font-semibold text-blue-400">{item.labName}</td>
                             <td className="px-2 py-3 border border-gray-600 font-bold text-green-400">{item.stationCode}</td>
                             <td className="px-3 py-3 border border-gray-600">
-                              <div className="space-y-2">
-                                {item.devices && item.devices.map((device, idx) => (
-                                  <div key={idx} className="bg-neutral-800/50 p-2 rounded border border-neutral-600">
-                                    <div className="font-semibold text-white text-xs">
-                                      {device.type}: {device.brand} {device.model}
-                                    </div>
-                                    {device.specification && (
-                                      <div className="text-gray-400 text-xs italic">{device.specification}</div>
-                                    )}
-                                    {device.assetCode && (
-                                      <div className="text-blue-400 text-xs font-mono">{device.assetCode}</div>
-                                    )}
-                                    <div className="text-green-400 text-xs">₹{device.unitPrice.toFixed(2)}</div>
-                                  </div>
-                                ))}
+                              <div className="bg-neutral-800/50 p-2 rounded border border-neutral-600">
+                                <div className="font-semibold text-white text-xs">
+                                  {item.deviceType || "Unknown"}: {item.brand || ""} {item.model || ""}
+                                </div>
+                                {item.specification && (
+                                  <div className="text-gray-400 text-xs italic">{item.specification}</div>
+                                )}
+                                {item.assetCode && (
+                                  <div className="text-blue-400 text-xs font-mono">{item.assetCode}</div>
+                                )}
+                                {typeof item.unitPrice === "number" && (
+                                  <div className="text-green-400 text-xs">₹{item.unitPrice.toFixed(2)}</div>
+                                )}
                               </div>
                             </td>
                             <td className="px-2 py-3 border border-gray-600">{item.supplierInfo}</td>
@@ -645,6 +710,7 @@ const Documents: React.FC = () => {
                             <td className="px-2 py-3 border border-gray-600 font-semibold text-green-400">{item.cost}</td>
                             <td className="px-2 py-3 border border-gray-600 text-xs">{item.dateOfDelivery}</td>
                             <td className="px-2 py-3 border border-gray-600 text-xs font-mono">{item.identityNo}</td>
+                            <td className="px-2 py-3 border border-gray-600 text-xs font-mono">{item.assignedCode || ""}</td>
                             <td className="px-2 py-3 border border-gray-600 text-center">{item.warrantyYears}y</td>
                           </tr>
                         ))
@@ -655,9 +721,11 @@ const Documents: React.FC = () => {
 
                 <div className="mt-4 text-xs text-gray-400">
                   <p>* Dead Stock Register is a comprehensive record of all non-consumable items purchased by the institute.</p>
-                  <p className="mt-1">Total Entries: {deadStockData.length}</p>
+                  <p className="mt-1">Total Entries: {filteredDeadStockData.length}</p>
                 </div>
               </div>
+                );
+              })()
             )}
           </>
         )}

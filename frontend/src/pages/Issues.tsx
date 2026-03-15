@@ -529,18 +529,22 @@ export default function Issues() {
       <div className="pt-32 px-6 max-w-7xl mx-auto">
         <h1 className="text-3xl font-bold mb-8">Lab Issues & Support Tickets</h1>
 
+        {loadingLabs && (
+          <div className="text-center py-12">
+            <p className="text-gray-400">Loading labs...</p>
+          </div>
+        )}
+
         {labError && (
-          <div className="mb-4 rounded-lg border border-red-500 bg-red-900/40 text-red-200 px-4 py-3 text-sm">
-            {labError}
+          <div className="text-center py-12">
+            <p className="text-red-500">{labError}</p>
           </div>
         )}
 
         {/* Lab Cards List */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-          {loadingLabs && (
-            <div className="text-gray-400">Loading labs...</div>
-          )}
-          {!loadingLabs && labs.map((lab) => (
+        {!loadingLabs && !labError && (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+            {labs.map((lab) => (
             <div
               key={lab.lab_id}
               onClick={() => fetchLabDetails(lab.lab_id)}
@@ -555,8 +559,15 @@ export default function Issues() {
                 </p>
               </WobbleCard>
             </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        )}
+
+        {!loadingLabs && !labError && labs.length === 0 && (
+          <div className="text-center py-12">
+            <p className="text-gray-400">No labs found. Create a lab in Lab Configuration first.</p>
+          </div>
+        )}
 
         {/* Selected Lab Floor Plan */}
         {selectedLab && (
@@ -568,14 +579,19 @@ export default function Issues() {
           >
             <BackgroundGradient className="p-8 rounded-xl shadow-xl">
               <div className="flex items-center justify-between mb-6">
-                <h2 className="text-2xl font-bold">
-                  {selectedLab.labName || selectedLab.labNumber} - Device Issues
-                </h2>
+                <div>
+                  <h2 className="text-2xl font-bold">
+                    {selectedLab.labName || selectedLab.labNumber} - Device Issues
+                  </h2>
+                  <p className="text-gray-400 text-sm">
+                    Lab ID: {selectedLab.labNumber} | Grid: {selectedLab.seatingArrangement?.rows ?? 0}×{selectedLab.seatingArrangement?.columns ?? 0}
+                  </p>
+                </div>
                 <button
                   onClick={() => setSelectedLab(null)}
-                  className="text-gray-400 hover:text-white"
+                  className="px-4 py-2 bg-neutral-700 hover:bg-neutral-600 rounded-lg transition"
                 >
-                  ✕ Close
+                  Close
                 </button>
               </div>
 
@@ -589,7 +605,7 @@ export default function Issues() {
                           const deviceGroup = (cell as any).deviceGroup;
                           const devices: Device[] = deviceGroup?.devices || [];
                           const primaryDevice = devices.find((d) => d.type?.toLowerCase() === "pc") || devices[0];
-                          const stationId = cell.id || deviceGroup?.assignedCode;
+                          const stationId = deviceGroup?.assignedCode || cell.id || primaryDevice?.assignedCode;
                           const hasDevices = devices.length > 0;
                           
                           // Check if ANY device at this station has issues or is inactive
@@ -599,10 +615,11 @@ export default function Issues() {
                           const hasAnyInactive = devices.some(d => d.isActive === false);
                           
                           const isActive = !hasAnyInactive && !hasAnyIssue;
+                          const deviceCount = devices.length;
                           const background = hasDevices
                             ? isActive
-                              ? "bg-green-600 border-green-400 hover:bg-green-700"
-                              : "bg-red-600 border-red-400 hover:bg-red-700"
+                              ? "bg-green-900/60 border-green-500 hover:bg-green-900/80"
+                              : "bg-red-900/60 border-red-500 hover:bg-red-900/80"
                             : "bg-neutral-800 border-gray-600";
 
                           const emoji = (() => {
@@ -635,10 +652,11 @@ export default function Issues() {
                                 }
                               }}
                               className={`
-                                w-24 h-24 rounded-lg border-2 flex flex-col items-center justify-center transition relative
+                                w-28 rounded-lg border-2 flex flex-col items-center justify-center transition relative p-1
                                 ${hasDevices ? "cursor-pointer" : ""}
                                 ${background}
                               `}
+                              style={{ minHeight: hasDevices ? `${Math.max(96, 60 + deviceCount * 14)}px` : "96px" }}
                             >
                               {hasDevices ? (
                                 <>
@@ -647,20 +665,27 @@ export default function Issues() {
                                       {openIssuesCount}
                                     </div>
                                   )}
-                                  <div className="text-white font-bold text-sm">
-                                    {cell.id || primaryDevice?.assignedCode}
+                                  <div className="text-white font-bold text-[10px] truncate w-full text-center">
+                                    {stationId || "—"}
                                   </div>
-                                  <div className="text-white text-2xl">{emoji}</div>
-                                  <div className="flex gap-1 mt-1">
-                                    {cell.os.includes("Windows") && (
-                                      <div className="text-xs px-1 py-0.5 bg-blue-800 text-white rounded">
-                                        Win
+                                  <div className="text-white text-lg leading-none">{emoji}</div>
+                                  <div className="text-center w-full space-y-0.5 mt-0.5">
+                                    {devices.map((d, di) => (
+                                      <div
+                                        key={di}
+                                        className="text-green-300 text-[9px] font-mono leading-tight truncate"
+                                        title={d.assignedCode || ""}
+                                      >
+                                        {d.assignedCode || d.type}
                                       </div>
+                                    ))}
+                                  </div>
+                                  <div className="flex gap-1 mt-0.5 flex-wrap justify-center">
+                                    {cell.os.includes("Windows") && (
+                                      <div className="text-[8px] px-1 bg-blue-800 text-white rounded">Win</div>
                                     )}
                                     {cell.os.includes("Linux") && (
-                                      <div className="text-xs px-1 py-0.5 bg-orange-600 text-white rounded">
-                                        Linux
-                                      </div>
+                                      <div className="text-[8px] px-1 bg-orange-600 text-white rounded">Linux</div>
                                     )}
                                   </div>
                                 </>

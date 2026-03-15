@@ -71,6 +71,7 @@ export default function Labplan() {
     qrValue: string;
     devices: { type: string; prefixCode: string; brand: string; model: string }[];
   } | null>(null);
+  const [pendingOutgoingDeviceIds, setPendingOutgoingDeviceIds] = useState<Set<number>>(new Set());
 
   // Fetch all labs on component mount
   useEffect(() => {
@@ -105,6 +106,8 @@ export default function Labplan() {
         setSelectedLab(data.lab);
         // Fetch station list as well
         fetchStationList(labId);
+        // Fetch pending transfer info
+        fetchPendingTransferInfo(labId);
       } else {
         setError("Failed to fetch lab details");
       }
@@ -134,6 +137,18 @@ export default function Labplan() {
 
   const handleLabClick = (lab: LabListItem) => {
     fetchLabDetails(lab.lab_id);
+  };
+
+  const fetchPendingTransferInfo = async (labId: string) => {
+    try {
+      const response = await fetch(`http://localhost:5000/get_lab_pending_transfer_info/${labId}`);
+      const data = await response.json();
+      if (data.success) {
+        setPendingOutgoingDeviceIds(new Set((data.outgoing_device_ids || []).map(Number)));
+      }
+    } catch (err) {
+      console.error("Error fetching pending transfer info:", err);
+    }
   };
 
   // Computed stats
@@ -546,7 +561,9 @@ export default function Labplan() {
                             >
                               {hasDevices ? (
                                 <>
-                                  <div className="text-white font-bold text-[10px] truncate w-full text-center">{cell.id}</div>
+                                  <div className="text-white font-bold text-[10px] truncate w-full text-center">
+                                    {cell.deviceGroup?.assignedCode || cell.id || "—"}
+                                  </div>
                                   <div className="text-white text-lg leading-none">{emoji}</div>
                                   {/* Device prefix codes */}
                                   <div className="text-center w-full space-y-0.5 mt-0.5">
@@ -568,9 +585,10 @@ export default function Labplan() {
                                       e.stopPropagation();
                                       const stQr = cell.deviceGroup?.stationQrValue || '';
                                       const codes = cell.deviceGroup!.devices.map((d: any) => d.assignedCode || '').filter(Boolean);
-                                      const fallbackQr = stQr || `STATION|${cell.id}|${codes.join(',')}`;
+                                      const stationCode = cell.deviceGroup?.assignedCode || cell.id || `R${rowIdx}C${colIdx}`;
+                                      const fallbackQr = stQr || `STATION|${stationCode}|${codes.join(',')}`;
                                       setStationQrModal({
-                                        stationCode: cell.id || `R${rowIdx}C${colIdx}`,
+                                        stationCode: stationCode,
                                         qrValue: fallbackQr,
                                         devices: cell.deviceGroup!.devices.map((d: any) => ({
                                           type: d.type,
@@ -583,6 +601,12 @@ export default function Labplan() {
                                   >
                                     📱 QR
                                   </button>
+                                  {/* Pending transfer badge */}
+                                  {cell.deviceGroup!.devices.some((d: any) => pendingOutgoingDeviceIds.has(d.deviceId)) && (
+                                    <div className="text-[8px] px-1.5 py-0.5 rounded bg-orange-600 text-white font-semibold mt-0.5">
+                                      ⏳ Transfer Pending
+                                    </div>
+                                  )}
                                 </>
                               ) : isStationType ? (
                                 <>
@@ -619,6 +643,10 @@ export default function Labplan() {
                     <div className="flex items-center gap-2">
                       <div className="w-4 h-4 bg-neutral-800 border border-gray-600 rounded"></div>
                       <span className="text-sm text-gray-300">Empty</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <div className="w-4 h-4 bg-orange-800 border border-orange-500 rounded"></div>
+                      <span className="text-sm text-gray-300">Transfer Pending (outgoing)</span>
                     </div>
                   </div>
                 </div>

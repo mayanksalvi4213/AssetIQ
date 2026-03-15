@@ -203,26 +203,7 @@ export default function Settings() {
                   />
                 </LabelInputContainer>
 
-                {/* Role */}
-                <LabelInputContainer>
-                  <Label htmlFor="role" className="text-white">Role</Label>
-                  <select
-                    id="role"
-                    className="h-10 w-full rounded-md border border-neutral-600 bg-neutral-800/50 px-3 text-sm text-white focus:border-blue-500 focus:ring-blue-500"
-                    value={role}
-                    onChange={(e) => {
-                      const value = e.target.value as Role | "";
-                      setRole(value);
-                      if (value !== "Lab Incharge") setLab("");
-                    }}
-                    required
-                  >
-                    <option value="" disabled>Select role</option>
-                    <option value="HOD">HOD</option>
-                    <option value="Lab Assistant">Lab Assistant</option>
-                    <option value="Lab Incharge">Lab Incharge</option>
-                  </select>
-                </LabelInputContainer>
+                
 
                 {/* Lab selection */}
                 {role === "Lab Incharge" && (

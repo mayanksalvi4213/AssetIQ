@@ -90,6 +90,7 @@ export default function LabConfiguration() {
   const [rawSearchResults, setRawSearchResults] = useState<Equipment[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [selectedQuantities, setSelectedQuantities] = useState<Record<number, number>>({});
+  const [releaseQuantities, setReleaseQuantities] = useState<Record<number, number>>({});
 
   // Derive displayed search results — backend already excludes pooled/assigned devices,
   // so we just use rawSearchResults directly.
@@ -143,6 +144,7 @@ export default function LabConfiguration() {
   // Assignment
   const [isAssigning, setIsAssigning] = useState(false);
   const [isResetting, setIsResetting] = useState(false);
+  const [isResettingCounters, setIsResettingCounters] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
 
   // ── Auth ─────────────────────────────────────────────────────────
@@ -198,6 +200,11 @@ export default function LabConfiguration() {
       if (data.success && data.lab) {
         const labData = data.lab;
         setEquipment(labData.equipment || []);
+        const releaseInit: Record<number, number> = {};
+        (labData.equipment || []).forEach((_: Equipment, i: number) => {
+          releaseInit[i] = 1;
+        });
+        setReleaseQuantities(releaseInit);
 
         // Store seating arrangement grid (has assigned device data)
         if (labData.seatingArrangement?.grid) {
@@ -310,6 +317,7 @@ export default function LabConfiguration() {
     setRawSearchResults([]);
     setEquipmentDropdown("");
     setSelectedQuantities({});
+    setReleaseQuantities({});
   };
 
   // ── Reset Assignments (backend) ──────────────────────────────────
@@ -335,6 +343,30 @@ export default function LabConfiguration() {
       alert("Error resetting assignments");
     } finally {
       setIsResetting(false);
+    }
+  };
+
+  const resetDeviceCounters = async () => {
+    if (!selectedLabId) return;
+    if (!confirm("This will reset device code counters for this lab. New assignments will start from 1 again. Continue?"))
+      return;
+    setIsResettingCounters(true);
+    try {
+      const res = await fetch(`http://127.0.0.1:5000/reset_device_counters/${selectedLabId}`, {
+        method: "POST",
+        headers: authHeaders(),
+      });
+      const data = await res.json();
+      if (data.success) {
+        alert(`✅ ${data.message}`);
+      } else {
+        alert(data.error || "Failed to reset device code counters");
+      }
+    } catch (err) {
+      console.error(err);
+      alert("Error resetting device code counters");
+    } finally {
+      setIsResettingCounters(false);
     }
   };
 
@@ -381,6 +413,11 @@ export default function LabConfiguration() {
       const data = await res.json();
       if (data.success && data.lab) {
         setEquipment(data.lab.equipment || []);
+        const releaseInit: Record<number, number> = {};
+        (data.lab.equipment || []).forEach((_: Equipment, i: number) => {
+          releaseInit[i] = 1;
+        });
+        setReleaseQuantities(releaseInit);
         if (data.lab.seatingArrangement?.grid) {
           setSeatingGrid(data.lab.seatingArrangement.grid);
         }
@@ -626,6 +663,13 @@ export default function LabConfiguration() {
                       className="px-4 py-2 bg-red-700 hover:bg-red-600 text-white rounded-lg transition text-sm disabled:opacity-50"
                     >
                       {isResetting ? "Resetting…" : "Reset Assignments"}
+                    </button>
+                    <button
+                      onClick={resetDeviceCounters}
+                      disabled={isResettingCounters}
+                      className="px-4 py-2 bg-amber-700 hover:bg-amber-600 text-white rounded-lg transition text-sm disabled:opacity-50"
+                    >
+                      {isResettingCounters ? "Resetting…" : "Reset Code Counters"}
                     </button>
                     <button
                       onClick={resetForm}
@@ -940,44 +984,61 @@ export default function LabConfiguration() {
                                 <div className="text-gray-400 text-sm">Invoice: {eq.invoiceNumber}</div>
                               )}
                             </div>
-                            <button
-                              onClick={async () => {
-                                const eq = equipment[idx];
-                                const unassigned = eq.quantity - (eq.quantityAssigned || 0);
-                                if (unassigned <= 0) {
-                                  alert("All devices of this type are already assigned. Reset assignments first to remove them.");
-                                  return;
+                            <div className="flex items-center gap-2">
+                              <label className="text-gray-300 text-sm">Qty:</label>
+                              <Input
+                                type="number"
+                                min="1"
+                                max={Math.max(1, eq.quantity - (eq.quantityAssigned || 0))}
+                                value={releaseQuantities[idx] ?? 1}
+                                onChange={(e) =>
+                                  setReleaseQuantities((prev) => ({
+                                    ...prev,
+                                    [idx]: Math.max(1, parseInt(e.target.value) || 1),
+                                  }))
                                 }
-                                try {
-                                  const res = await fetch("http://127.0.0.1:5000/release_devices_from_lab", {
-                                    method: "POST",
-                                    headers: authHeaders(),
-                                    body: JSON.stringify({
-                                      labId: selectedLabId,
-                                      type: eq.type,
-                                      brand: eq.brand,
-                                      model: eq.model,
-                                      billId: eq.billId,
-                                      invoiceNumber: eq.invoiceNumber,
-                                      quantity: unassigned,
-                                    }),
-                                  });
-                                  const data = await res.json();
-                                  if (data.success) {
-                                    await refreshLabData(selectedLabId!);
-                                    await refreshSearch();
-                                  } else {
-                                    alert(data.error || "Failed to release devices");
+                                className="w-20 bg-neutral-700 text-white text-center"
+                              />
+                              <button
+                                onClick={async () => {
+                                  const eq = equipment[idx];
+                                  const unassigned = eq.quantity - (eq.quantityAssigned || 0);
+                                  if (unassigned <= 0) {
+                                    alert("All devices of this type are already assigned. Reset assignments first to remove them.");
+                                    return;
                                   }
-                                } catch (err) {
-                                  console.error(err);
-                                  alert("Error releasing devices");
-                                }
-                              }}
-                              className="text-red-400 hover:text-red-600 ml-3"
-                            >
-                              Remove
-                            </button>
+                                  const qty = Math.min(releaseQuantities[idx] ?? 1, unassigned);
+                                  try {
+                                    const res = await fetch("http://127.0.0.1:5000/release_devices_from_lab", {
+                                      method: "POST",
+                                      headers: authHeaders(),
+                                      body: JSON.stringify({
+                                        labId: selectedLabId,
+                                        type: eq.type,
+                                        brand: eq.brand,
+                                        model: eq.model,
+                                        billId: eq.billId,
+                                        invoiceNumber: eq.invoiceNumber,
+                                        quantity: qty,
+                                      }),
+                                    });
+                                    const data = await res.json();
+                                    if (data.success) {
+                                      await refreshLabData(selectedLabId!);
+                                      await refreshSearch();
+                                    } else {
+                                      alert(data.error || "Failed to release devices");
+                                    }
+                                  } catch (err) {
+                                    console.error(err);
+                                    alert("Error releasing devices");
+                                  }
+                                }}
+                                className="text-red-400 hover:text-red-600 ml-2"
+                              >
+                                Remove
+                              </button>
+                            </div>
                           </div>
                         </li>
                       ))}
