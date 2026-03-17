@@ -6070,6 +6070,282 @@ Be concise and specific. Use device IDs and invoice numbers when referencing ite
 
 
 # -----------------------------
+# Scrap Devices + Scrap Register
+# -----------------------------
+def _ensure_scrapped_devices_table(cursor):
+    # Create table if missing (fresh DB)
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS scrapped_devices (
+            scrap_id UUID PRIMARY KEY,
+            device_id INTEGER,
+            asset_code TEXT,
+            device_type TEXT,
+            brand TEXT,
+            model TEXT,
+            specification TEXT,
+            lab_id TEXT,
+            station_code TEXT,
+            scrapped_by TEXT,
+            scrapped_by_user_id INTEGER,
+            scrapped_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+
+    # Backward-compatible auto-migration for older schemas
+    # (If table exists but is missing some columns, add them.)
+    cursor.execute("ALTER TABLE scrapped_devices ADD COLUMN IF NOT EXISTS scrap_id UUID")
+    cursor.execute("ALTER TABLE scrapped_devices ADD COLUMN IF NOT EXISTS device_id INTEGER")
+    cursor.execute("ALTER TABLE scrapped_devices ADD COLUMN IF NOT EXISTS asset_code TEXT")
+    cursor.execute("ALTER TABLE scrapped_devices ADD COLUMN IF NOT EXISTS device_type TEXT")
+    cursor.execute("ALTER TABLE scrapped_devices ADD COLUMN IF NOT EXISTS brand TEXT")
+    cursor.execute("ALTER TABLE scrapped_devices ADD COLUMN IF NOT EXISTS model TEXT")
+    cursor.execute("ALTER TABLE scrapped_devices ADD COLUMN IF NOT EXISTS specification TEXT")
+    cursor.execute("ALTER TABLE scrapped_devices ADD COLUMN IF NOT EXISTS lab_id TEXT")
+    cursor.execute("ALTER TABLE scrapped_devices ADD COLUMN IF NOT EXISTS station_code TEXT")
+    # Older deployments may have scrapped_by as INTEGER. Keep that column as-is and
+    # store human-readable user/email in a separate text column.
+    cursor.execute("ALTER TABLE scrapped_devices ADD COLUMN IF NOT EXISTS scrapped_by_text TEXT")
+    cursor.execute("ALTER TABLE scrapped_devices ADD COLUMN IF NOT EXISTS scrapped_by_user_id INTEGER")
+    cursor.execute(
+        "ALTER TABLE scrapped_devices ADD COLUMN IF NOT EXISTS scrapped_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP"
+    )
+
+    # NOTE: Do not attempt to coerce legacy columns (like scrapped_by INTEGER) here,
+    # because we want to remain compatible with existing data and constraints.
+
+    # Ensure a primary key exists (if possible)
+    cursor.execute(
+        """
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM information_schema.table_constraints
+                WHERE table_name = 'scrapped_devices'
+                  AND constraint_type = 'PRIMARY KEY'
+            ) THEN
+                -- If the table existed without a PK, try to set one on scrap_id.
+                -- Note: this assumes existing rows may have NULL scrap_id; PK will still be valid for new inserts.
+                ALTER TABLE scrapped_devices ADD PRIMARY KEY (scrap_id);
+            END IF;
+        EXCEPTION WHEN others THEN
+            -- Ignore if we cannot add a primary key due to existing duplicates/nulls.
+            NULL;
+        END $$;
+        """
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_scrapped_devices_device_id ON scrapped_devices(device_id)"
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_scrapped_devices_scrapped_at ON scrapped_devices(scrapped_at DESC)"
+    )
+
+
+@app.route("/scrap_devices", methods=["POST"])
+def scrap_devices():
+    """
+    Scrap (dispose) a list of devices.
+    Expects JSON: { deviceIds: number[] }
+    - Stores a record in scrapped_devices
+    - Removes device mappings from lab_station_devices
+    - Marks devices inactive and clears lab_id
+    """
+    try:
+        user = get_current_user()
+        if not user:
+            return jsonify({"success": False, "error": "Unauthorized"}), 401
+
+        data = request.get_json(force=True) or {}
+        device_ids = data.get("deviceIds") or []
+        if not isinstance(device_ids, list) or not device_ids:
+            return jsonify({"success": False, "error": "deviceIds must be a non-empty array"}), 400
+
+        # Normalize and keep only positive ints
+        normalized_ids = []
+        for x in device_ids:
+            try:
+                xi = int(x)
+                if xi > 0:
+                    normalized_ids.append(xi)
+            except Exception:
+                continue
+
+        if not normalized_ids:
+            return jsonify({"success": False, "error": "No valid device IDs provided"}), 400
+
+        conn = db.get_connection()
+        if not conn:
+            return jsonify({"success": False, "error": "Database connection failed"}), 500
+        cursor = conn.cursor()
+
+        try:
+            # Ensure schema exists and COMMIT DDL before DML.
+            # If we do DDL+insert in one transaction and the insert fails,
+            # Postgres rolls back the DDL, causing repeat failures.
+            _ensure_scrapped_devices_table(cursor)
+            conn.commit()
+
+            # Fetch details for all devices (best-effort; some joins may be null)
+            cursor.execute(
+                """
+                SELECT
+                    d.device_id,
+                    d.asset_code,
+                    d.assigned_code AS device_assigned_code,
+                    d.lab_id AS device_lab_id,
+                    lsd.device_type,
+                    lsd.brand,
+                    lsd.model,
+                    lsd.specification,
+                    ls.lab_id AS station_lab_id,
+                    ls.assigned_code AS station_code
+                FROM devices d
+                LEFT JOIN lab_station_devices lsd ON d.device_id = lsd.device_id
+                LEFT JOIN lab_stations ls ON lsd.station_id = ls.station_id
+                WHERE d.device_id = ANY(%s)
+                """,
+                (normalized_ids,),
+            )
+            rows = cursor.fetchall() or []
+            by_id = {}
+            for r in rows:
+                by_id[r["device_id"]] = r
+
+            scrapped_by_text = (getattr(user, "email", None) or f"user:{getattr(user, 'id', None)}")
+            # Some deployments encode email into JWT user_id; keep numeric-only column best-effort.
+            scrapped_by_user_id = None
+            try:
+                raw_uid = getattr(user, "id", None)
+                if raw_uid is not None and str(raw_uid).strip() != "":
+                    scrapped_by_user_id = int(raw_uid)
+            except Exception:
+                scrapped_by_user_id = None
+
+            # Insert scrapped records
+            inserted = 0
+            for did in normalized_ids:
+                info = by_id.get(did, {})
+                cursor.execute(
+                    """
+                    INSERT INTO scrapped_devices
+                      (scrap_id, device_id, asset_code, device_type, brand, model, specification,
+                       lab_id, station_code, scrapped_by_text, scrapped_by_user_id)
+                    VALUES
+                      (%s, %s, %s, %s, %s, %s, %s,
+                       %s, %s, %s, %s)
+                    """,
+                    (
+                        str(uuid.uuid4()),
+                        did,
+                        info.get("asset_code"),
+                        info.get("device_type"),
+                        info.get("brand"),
+                        info.get("model"),
+                        info.get("specification"),
+                        info.get("station_lab_id") or info.get("device_lab_id"),
+                        info.get("station_code"),
+                        scrapped_by_text,
+                        scrapped_by_user_id,
+                    ),
+                )
+                inserted += 1
+
+            # Remove from lab mapping so they no longer appear in station lists
+            cursor.execute(
+                "DELETE FROM lab_station_devices WHERE device_id = ANY(%s)",
+                (normalized_ids,),
+            )
+
+            # Mark devices inactive and clear lab assignment
+            cursor.execute(
+                "UPDATE devices SET is_active = FALSE, lab_id = NULL WHERE device_id = ANY(%s)",
+                (normalized_ids,),
+            )
+
+            conn.commit()
+            return jsonify(
+                {
+                    "success": True,
+                    "message": f"Scrapped {inserted} device(s) successfully",
+                    "count": inserted,
+                }
+            )
+
+        except Exception as e:
+            conn.rollback()
+            raise e
+        finally:
+            cursor.close()
+            conn.close()
+
+    except Exception as e:
+        print(f"Error scrapping devices: {str(e)}")
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/get_scrapped_devices", methods=["GET"])
+def get_scrapped_devices():
+    """
+    Scrap register list.
+    Returns: { success: true, items: [...] }
+    """
+    try:
+        user = get_current_user()
+        if not user:
+            return jsonify({"success": False, "error": "Unauthorized"}), 401
+
+        conn = db.get_connection()
+        if not conn:
+            return jsonify({"success": False, "error": "Database connection failed"}), 500
+
+        cursor = conn.cursor()
+        try:
+            _ensure_scrapped_devices_table(cursor)
+            conn.commit()
+            cursor.execute(
+                """
+                SELECT scrap_id, device_id, asset_code, device_type, brand, model, specification,
+                       lab_id, station_code,
+                       COALESCE(scrapped_by_text, scrapped_by::text) AS scrapped_by,
+                       scrapped_at
+                FROM scrapped_devices
+                ORDER BY scrapped_at DESC
+                LIMIT 500
+                """
+            )
+            rows = cursor.fetchall() or []
+            items = []
+            for r in rows:
+                items.append(
+                    {
+                        "scrap_id": str(r.get("scrap_id")) if r.get("scrap_id") is not None else None,
+                        "device_id": r.get("device_id"),
+                        "asset_code": r.get("asset_code"),
+                        "device_type": r.get("device_type"),
+                        "brand": r.get("brand"),
+                        "model": r.get("model"),
+                        "specification": r.get("specification"),
+                        "lab_id": r.get("lab_id"),
+                        "station_code": r.get("station_code"),
+                        "scrapped_by": r.get("scrapped_by"),
+                        "scrapped_at": r.get("scrapped_at").isoformat() if r.get("scrapped_at") else None,
+                    }
+                )
+            return jsonify({"success": True, "items": items})
+        finally:
+            cursor.close()
+            conn.close()
+
+    except Exception as e:
+        print(f"Error fetching scrapped devices: {str(e)}")
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+# -----------------------------
 # Run App
 # -----------------------------
 if __name__ == "__main__":
