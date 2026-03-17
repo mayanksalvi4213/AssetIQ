@@ -2844,7 +2844,10 @@ def get_all_devices():
         cursor = conn.cursor()
         
         # Query to get all devices with equipment type name and lab name
-        query = """
+        include_inactive = (request.args.get("include_inactive") in ["1", "true", "True", "yes", "YES"])
+        active_filter = "" if include_inactive else "WHERE d.is_active = TRUE"
+
+        query = f"""
             SELECT 
                 d.device_id,
                 d.asset_code as asset_id,
@@ -2871,6 +2874,7 @@ def get_all_devices():
             FROM devices d
             LEFT JOIN equipment_types et ON d.type_id = et.type_id
             LEFT JOIN labs l ON d.lab_id = l.lab_id
+            {active_filter}
             ORDER BY et.name, d.brand, d.model, d.device_id
         """
         
@@ -6103,6 +6107,7 @@ def _ensure_scrapped_devices_table(cursor):
     cursor.execute("ALTER TABLE scrapped_devices ADD COLUMN IF NOT EXISTS model TEXT")
     cursor.execute("ALTER TABLE scrapped_devices ADD COLUMN IF NOT EXISTS specification TEXT")
     cursor.execute("ALTER TABLE scrapped_devices ADD COLUMN IF NOT EXISTS lab_id TEXT")
+    cursor.execute("ALTER TABLE scrapped_devices ADD COLUMN IF NOT EXISTS lab_name TEXT")
     cursor.execute("ALTER TABLE scrapped_devices ADD COLUMN IF NOT EXISTS station_code TEXT")
     # Older deployments may have scrapped_by as INTEGER. Keep that column as-is and
     # store human-readable user/email in a separate text column.
@@ -6111,6 +6116,10 @@ def _ensure_scrapped_devices_table(cursor):
     cursor.execute(
         "ALTER TABLE scrapped_devices ADD COLUMN IF NOT EXISTS scrapped_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP"
     )
+    cursor.execute("ALTER TABLE scrapped_devices ADD COLUMN IF NOT EXISTS dead_stock_number TEXT")
+    cursor.execute("ALTER TABLE scrapped_devices ADD COLUMN IF NOT EXISTS cost NUMERIC")
+    cursor.execute("ALTER TABLE scrapped_devices ADD COLUMN IF NOT EXISTS justification_for_scrapping TEXT")
+    cursor.execute("ALTER TABLE scrapped_devices ADD COLUMN IF NOT EXISTS approval_of_hod TEXT")
 
     # NOTE: Do not attempt to coerce legacy columns (like scrapped_by INTEGER) here,
     # because we want to remain compatible with existing data and constraints.
@@ -6195,15 +6204,18 @@ def scrap_devices():
                     d.asset_code,
                     d.assigned_code AS device_assigned_code,
                     d.lab_id AS device_lab_id,
+                    l.lab_name,
                     lsd.device_type,
                     lsd.brand,
                     lsd.model,
                     lsd.specification,
                     ls.lab_id AS station_lab_id,
-                    ls.assigned_code AS station_code
+                    ls.assigned_code AS station_code,
+                    d.unit_price
                 FROM devices d
                 LEFT JOIN lab_station_devices lsd ON d.device_id = lsd.device_id
                 LEFT JOIN lab_stations ls ON lsd.station_id = ls.station_id
+                LEFT JOIN labs l ON d.lab_id = l.lab_id
                 WHERE d.device_id = ANY(%s)
                 """,
                 (normalized_ids,),
@@ -6231,9 +6243,11 @@ def scrap_devices():
                     """
                     INSERT INTO scrapped_devices
                       (scrap_id, device_id, asset_code, device_type, brand, model, specification,
-                       lab_id, station_code, scrapped_by_text, scrapped_by_user_id)
+                       lab_id, lab_name, station_code, scrapped_by_text, scrapped_by_user_id,
+                       dead_stock_number, cost, justification_for_scrapping, approval_of_hod)
                     VALUES
                       (%s, %s, %s, %s, %s, %s, %s,
+                       %s, %s, %s, %s, %s,
                        %s, %s, %s, %s)
                     """,
                     (
@@ -6245,9 +6259,14 @@ def scrap_devices():
                         info.get("model"),
                         info.get("specification"),
                         info.get("station_lab_id") or info.get("device_lab_id"),
+                        info.get("lab_name"),
                         info.get("station_code"),
                         scrapped_by_text,
                         scrapped_by_user_id,
+                        info.get("asset_code"),  # existing dead stock number
+                        info.get("unit_price"),
+                        None,
+                        None,
                     ),
                 )
                 inserted += 1
@@ -6308,7 +6327,8 @@ def get_scrapped_devices():
             cursor.execute(
                 """
                 SELECT scrap_id, device_id, asset_code, device_type, brand, model, specification,
-                       lab_id, station_code,
+                       lab_id, lab_name, station_code,
+                       dead_stock_number, cost, justification_for_scrapping, approval_of_hod,
                        COALESCE(scrapped_by_text, scrapped_by::text) AS scrapped_by,
                        scrapped_at
                 FROM scrapped_devices
@@ -6329,7 +6349,12 @@ def get_scrapped_devices():
                         "model": r.get("model"),
                         "specification": r.get("specification"),
                         "lab_id": r.get("lab_id"),
+                        "lab_name": r.get("lab_name"),
                         "station_code": r.get("station_code"),
+                        "dead_stock_number": r.get("dead_stock_number"),
+                        "cost": float(r.get("cost")) if r.get("cost") is not None else None,
+                        "justification_for_scrapping": r.get("justification_for_scrapping"),
+                        "approval_of_hod": r.get("approval_of_hod"),
                         "scrapped_by": r.get("scrapped_by"),
                         "scrapped_at": r.get("scrapped_at").isoformat() if r.get("scrapped_at") else None,
                     }

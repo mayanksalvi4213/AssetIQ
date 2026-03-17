@@ -3,6 +3,8 @@ import React, { useState, useEffect } from "react";
 import { motion } from "motion/react";
 import { Menu, MenuItem, HoveredLink } from "@/components/ui/navbar-menu";
 import { LogoButton } from "@/components/ui/logo-button";
+import jsPDF from "jspdf";
+import autoTable from "jspdf-autotable";
 import { WobbleCard } from "@/components/ui/wobble-card";
 import { useAuth } from "@/contexts/AuthContext";
 
@@ -86,6 +88,11 @@ const Scrap: React.FC = () => {
   const [scrapRegisterLoading, setScrapRegisterLoading] = useState(false);
   const [scrapRegisterError, setScrapRegisterError] = useState<string | null>(null);
   const [scrapRegisterItems, setScrapRegisterItems] = useState<any[]>([]);
+
+  // Grid click device modal (station-level quick scrap)
+  const [showGridDevices, setShowGridDevices] = useState(false);
+  const [gridDevicesTitle, setGridDevicesTitle] = useState<string>("");
+  const [gridDevices, setGridDevices] = useState<Device[]>([]);
 
   // ── Auth header ─────────────────────────────────────────────────────────────
   const authHeaders = (): HeadersInit => {
@@ -229,6 +236,7 @@ const Scrap: React.FC = () => {
   };
 
   const toggleDeviceSelection = (deviceId: number) => {
+    if (typeof deviceId !== "number" || deviceId <= 0) return;
     setSelectedDeviceIds(prev => 
       prev.includes(deviceId) 
         ? prev.filter(id => id !== deviceId) 
@@ -254,6 +262,122 @@ const Scrap: React.FC = () => {
       setScrapRegisterError("Error connecting to server");
     } finally {
       setScrapRegisterLoading(false);
+    }
+  };
+
+  const exportScrapRegisterToCSV = () => {
+    const headers = [
+      "Sr. No.",
+      "Scrap ID",
+      "Existing Dead Stock S. Number",
+      "Name of Lab",
+      "Item Description",
+      "Specification",
+      "Cost",
+      "Justification for Scrapping",
+      "Approval of HOD",
+    ];
+
+    const rows = scrapRegisterItems.map((it, idx) => {
+      const itemDescription = `${it.device_type ?? ""} ${it.brand ?? ""} ${it.model ?? ""}`.trim();
+      return [
+        String(idx + 1),
+        it.scrap_id ?? "",
+        it.dead_stock_number ?? it.asset_code ?? "",
+        it.lab_name ?? it.lab_id ?? "",
+        itemDescription,
+        it.specification ?? "",
+        it.cost != null ? String(it.cost) : "",
+        it.justification_for_scrapping ?? "",
+        it.approval_of_hod ?? "",
+      ].map((v) => `"${String(v).replaceAll('"', '""')}"`).join(",");
+    });
+
+    const csvContent = [headers.join(","), ...rows].join("\n");
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const link = document.createElement("a");
+    const url = URL.createObjectURL(blob);
+    link.setAttribute("href", url);
+    link.setAttribute("download", `scrap_register_${new Date().toISOString().split("T")[0]}.csv`);
+    link.style.visibility = "hidden";
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const exportScrapRegisterToPDF = async () => {
+    try {
+      const doc = new jsPDF("l", "mm", "a4");
+
+      const headerImg = new Image();
+      headerImg.src = "/header.png";
+      await new Promise((resolve, reject) => {
+        headerImg.onload = resolve;
+        headerImg.onerror = () => reject(new Error("Failed to load header image"));
+      });
+
+      doc.addImage(headerImg, "PNG", 0, 0, 297, 25);
+      doc.setFontSize(14);
+      doc.text("Scrap Register", 14, 32);
+      doc.setFontSize(10);
+      doc.text("A. P. SHAH INSTITUTE OF TECHNOLOGY", 14, 38);
+      doc.setFontSize(7);
+      doc.text(
+        "Survey No. 12, Opp. Hypercity Mall, Kasarvadavali, Ghodbunder Road, Thane (W)-400 615.",
+        14,
+        42
+      );
+      doc.text(`Generated on: ${new Date().toLocaleDateString()}`, 14, 46);
+
+      const tableData = scrapRegisterItems.map((it, idx) => {
+        const itemDescription = `${it.device_type ?? ""} ${it.brand ?? ""} ${it.model ?? ""}`.trim();
+        return [
+          String(idx + 1),
+          it.scrap_id ?? "",
+          it.dead_stock_number ?? it.asset_code ?? "",
+          it.lab_name ?? it.lab_id ?? "",
+          itemDescription,
+          it.specification ?? "",
+          it.cost != null ? `₹${Number(it.cost).toFixed(2)}` : "",
+          it.justification_for_scrapping ?? "",
+          it.approval_of_hod ?? "",
+        ];
+      });
+
+      autoTable(doc, {
+        head: [[
+          "Sr. No.",
+          "Scrap ID",
+          "Existing Dead Stock S. Number",
+          "Name of Lab",
+          "Item Description",
+          "Specification",
+          "Cost",
+          "Justification for Scrapping",
+          "Approval of HOD",
+        ]],
+        body: tableData,
+        startY: 50,
+        theme: "grid",
+        styles: { fontSize: 7, cellPadding: 1 },
+        headStyles: { fillColor: [59, 130, 246], fontSize: 7, fontStyle: "bold" },
+        columnStyles: {
+          0: { cellWidth: 10 },
+          1: { cellWidth: 32 },
+          2: { cellWidth: 28 },
+          3: { cellWidth: 22 },
+          4: { cellWidth: 45 },
+          5: { cellWidth: 50 },
+          6: { cellWidth: 15 },
+          7: { cellWidth: 45 },
+          8: { cellWidth: 20 },
+        },
+      });
+
+      doc.save(`scrap_register_${new Date().toISOString().split("T")[0]}.pdf`);
+    } catch (e) {
+      console.error("Error generating PDF:", e);
+      alert("Failed to generate PDF. Please try again.");
     }
   };
 
@@ -507,8 +631,11 @@ const Scrap: React.FC = () => {
                                       
                                       if (cellAssignedCodes.length > 0) {
                                         // Match by assigned code (e.g. PC-01)
-                                        const matchingStation = stationList.find(
-                                          s => cellAssignedCodes.includes(s.assigned_code)
+                                        const wanted = cellAssignedCodes
+                                          .map((c) => String(c).trim().toLowerCase())
+                                          .filter(Boolean);
+                                        const matchingStation = stationList.find((s) =>
+                                          wanted.includes(String(s.assigned_code).trim().toLowerCase())
                                         );
                                         if (matchingStation) {
                                           fullStationDevices = matchingStation.devices;
@@ -530,11 +657,17 @@ const Scrap: React.FC = () => {
                                         }));
                                       }
 
-                                      setSelectedComponentType({
-                                        type_name: cell.stationTypeLabel + " (" + (cellAssignedCodes[0] || "Station") + ")",
-                                        count: fullStationDevices.length,
-                                        devices: fullStationDevices
-                                      });
+                                      // Open station device modal so user can select + scrap from grid click
+                                      setSelectedDeviceIds([]);
+                                      setGridDevicesTitle(
+                                        cell.stationTypeLabel +
+                                          " (" +
+                                          (cellAssignedCodes[0] || "Station") +
+                                          ")"
+                                      );
+                                      // Show all devices; only devices with real DB ids can be scrapped.
+                                      setGridDevices(fullStationDevices);
+                                      setShowGridDevices(true);
                                     }
                                   }}
                                   className={`w-28 rounded-lg border-2 flex flex-col items-center justify-center p-2 transition-all ${
@@ -693,15 +826,6 @@ const Scrap: React.FC = () => {
                 </p>
               </div>
               <div className="flex gap-2">
-                {selectedDeviceIds.length > 0 && (
-                  <button
-                    onClick={handleScrapDevices}
-                    disabled={scrapping}
-                    className="px-4 py-2 bg-red-600 hover:bg-red-700 disabled:opacity-50 rounded-lg transition text-white text-sm font-semibold flex items-center gap-2"
-                  >
-                    🗑️ {scrapping ? "Scrapping..." : `Scrap Selected (${selectedDeviceIds.length})`}
-                  </button>
-                )}
                 <button
                   onClick={() => {
                     setSelectedComponentType(null);
@@ -720,35 +844,131 @@ const Scrap: React.FC = () => {
                   <p className="text-gray-400">No devices of this type</p>
                 </div>
               ) : (
+                <>
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    {selectedComponentType.devices.map((device, idx) => (
+                      <motion.div
+                        key={device.device_id ?? idx}
+                        initial={{ opacity: 0, y: 10 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ delay: idx * 0.04 }}
+                        onClick={() => toggleDeviceSelection(device.device_id)}
+                        className={`relative border rounded-lg p-4 bg-gradient-to-br from-neutral-900 to-neutral-900/50 cursor-pointer transition-all ${
+                          selectedDeviceIds.includes(device.device_id)
+                            ? "border-red-500 ring-1 ring-red-500/50 bg-red-500/10"
+                            : "border-neutral-600 hover:border-neutral-500"
+                        }`}
+                      >
+                        {/* Checkbox Overlay */}
+                        <div className="absolute top-4 right-4 z-10">
+                          <input
+                            type="checkbox"
+                            checked={selectedDeviceIds.includes(device.device_id)}
+                            onChange={() => {}} // Controlled by parent div click
+                            className="w-4 h-4 rounded border-gray-300 text-red-600 focus:ring-red-500"
+                          />
+                        </div>
+
+                        <div className="flex items-start justify-between mb-3 pr-8">
+                          <h3 className="text-lg font-semibold text-white">{device.brand}</h3>
+                          <span className="text-2xl">
+                            {getComponentEmoji(selectedComponentType.type_name.split(" (")[0])}
+                          </span>
+                        </div>
+                        <div className="space-y-2 text-sm">
+                          <div>
+                            <p className="text-gray-400 text-xs">Model</p>
+                            <p className="text-white font-semibold">{device.model}</p>
+                          </div>
+                          {device.specification && (
+                            <div>
+                              <p className="text-gray-400 text-xs">Specification</p>
+                              <p className="text-white text-xs leading-snug">
+                                {device.specification}
+                              </p>
+                            </div>
+                          )}
+                          <div className="border-t border-neutral-700 pt-2 mt-2">
+                            <p className="text-gray-400 text-xs">Asset Code</p>
+                            <p className="text-blue-400 font-mono text-sm">{device.asset_id}</p>
+                          </div>
+                        </div>
+                      </motion.div>
+                    ))}
+                  </div>
+
+                  {/* Scrap Selected button moved below */}
+                  {selectedDeviceIds.length > 0 && (
+                    <div className="mt-6 flex items-center justify-center">
+                      <button
+                        onClick={handleScrapDevices}
+                        disabled={scrapping}
+                        className="px-5 py-3 bg-red-600 hover:bg-red-700 disabled:opacity-50 rounded-lg transition text-white text-sm font-semibold flex items-center gap-2"
+                      >
+                        🗑️ {scrapping ? "Scrapping..." : `Scrap Selected (${selectedDeviceIds.length})`}
+                      </button>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          </motion.div>
+        )}
+      </div>
+
+      {/* Grid station devices modal (scrap from grid click) */}
+      {showGridDevices && (
+        <div className="fixed inset-0 z-[75] flex items-center justify-center bg-black/70 p-4">
+          <div className="w-full max-w-5xl bg-neutral-900 border border-neutral-700 rounded-2xl overflow-hidden">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-neutral-800">
+              <div>
+                <h2 className="text-xl font-bold text-white">{gridDevicesTitle}</h2>
+                <p className="text-xs text-gray-400 mt-0.5">Select equipment/components to scrap</p>
+              </div>
+              <button
+                onClick={() => {
+                  setShowGridDevices(false);
+                  setSelectedDeviceIds([]);
+                }}
+                className="px-3 py-2 bg-neutral-700 hover:bg-neutral-600 rounded-lg transition text-white text-sm"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="p-6 max-h-[70vh] overflow-auto">
+              {gridDevices.length === 0 ? (
+                <p className="text-gray-400">No devices found for this station.</p>
+              ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                  {selectedComponentType.devices.map((device, idx) => (
+                  {gridDevices.map((device, idx) => (
                     <motion.div
                       key={device.device_id ?? idx}
                       initial={{ opacity: 0, y: 10 }}
                       animate={{ opacity: 1, y: 0 }}
-                      transition={{ delay: idx * 0.04 }}
+                      transition={{ delay: idx * 0.03 }}
                       onClick={() => toggleDeviceSelection(device.device_id)}
                       className={`relative border rounded-lg p-4 bg-gradient-to-br from-neutral-900 to-neutral-900/50 cursor-pointer transition-all ${
                         selectedDeviceIds.includes(device.device_id)
                           ? "border-red-500 ring-1 ring-red-500/50 bg-red-500/10"
-                          : "border-neutral-600 hover:border-neutral-500"
+                          : device.device_id > 0
+                            ? "border-neutral-600 hover:border-neutral-500"
+                            : "border-neutral-800 opacity-60 cursor-not-allowed"
                       }`}
                     >
-                      {/* Checkbox Overlay */}
                       <div className="absolute top-4 right-4 z-10">
                         <input
                           type="checkbox"
                           checked={selectedDeviceIds.includes(device.device_id)}
-                          onChange={() => {}} // Controlled by parent div click
+                          onChange={() => {}}
+                          disabled={!(device.device_id > 0)}
                           className="w-4 h-4 rounded border-gray-300 text-red-600 focus:ring-red-500"
                         />
                       </div>
 
                       <div className="flex items-start justify-between mb-3 pr-8">
                         <h3 className="text-lg font-semibold text-white">{device.brand}</h3>
-                        <span className="text-2xl">
-                          {getComponentEmoji(selectedComponentType.type_name.split(' (')[0])}
-                        </span>
+                        <span className="text-2xl">{getComponentEmoji(device.type_name)}</span>
                       </div>
                       <div className="space-y-2 text-sm">
                         <div>
@@ -758,24 +978,46 @@ const Scrap: React.FC = () => {
                         {device.specification && (
                           <div>
                             <p className="text-gray-400 text-xs">Specification</p>
-                            <p className="text-white text-xs leading-snug">
-                              {device.specification}
-                            </p>
+                            <p className="text-white text-xs leading-snug">{device.specification}</p>
                           </div>
                         )}
                         <div className="border-t border-neutral-700 pt-2 mt-2">
                           <p className="text-gray-400 text-xs">Asset Code</p>
                           <p className="text-blue-400 font-mono text-sm">{device.asset_id}</p>
                         </div>
+                        {!(device.device_id > 0) && (
+                          <p className="text-[11px] text-yellow-400 mt-2">
+                            Not linked to database ID (view-only)
+                          </p>
+                        )}
                       </div>
                     </motion.div>
                   ))}
                 </div>
               )}
+
+              {selectedDeviceIds.filter((id) => id > 0).length > 0 && (
+                <div className="mt-6 flex items-center justify-center">
+                  <button
+                    onClick={async () => {
+                      await handleScrapDevices();
+                      await fetchScrapRegister();
+                      setShowGridDevices(false);
+                    }}
+                    disabled={scrapping}
+                    className="px-5 py-3 bg-red-600 hover:bg-red-700 disabled:opacity-50 rounded-lg transition text-white text-sm font-semibold flex items-center gap-2"
+                  >
+                    🗑️{" "}
+                    {scrapping
+                      ? "Scrapping..."
+                      : `Scrap Selected (${selectedDeviceIds.filter((id) => id > 0).length})`}
+                  </button>
+                </div>
+              )}
             </div>
-          </motion.div>
-        )}
-      </div>
+          </div>
+        </div>
+      )}
 
       {/* Scrap Register Modal */}
       {showScrapRegister && (
@@ -787,6 +1029,26 @@ const Scrap: React.FC = () => {
                 <p className="text-xs text-gray-400 mt-0.5">All scrapped equipment/components and their details</p>
               </div>
               <div className="flex gap-2">
+                <button
+                  onClick={exportScrapRegisterToCSV}
+                  disabled={scrapRegisterItems.length === 0}
+                  className="px-3 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors disabled:bg-gray-600 disabled:cursor-not-allowed flex items-center gap-2 text-sm"
+                >
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                  </svg>
+                  Export as CSV
+                </button>
+                <button
+                  onClick={exportScrapRegisterToPDF}
+                  disabled={scrapRegisterItems.length === 0}
+                  className="px-3 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors disabled:bg-gray-600 disabled:cursor-not-allowed flex items-center gap-2 text-sm"
+                >
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
+                  </svg>
+                  Export as PDF
+                </button>
                 <button
                   onClick={fetchScrapRegister}
                   className="px-3 py-2 bg-neutral-800 hover:bg-neutral-700 rounded-lg transition text-white text-sm"
@@ -815,31 +1077,34 @@ const Scrap: React.FC = () => {
                   <table className="w-full text-sm">
                     <thead className="text-gray-300">
                       <tr className="border-b border-neutral-800">
-                        <th className="text-left py-2 pr-3">Scrapped At</th>
-                        <th className="text-left py-2 pr-3">Asset Code</th>
-                        <th className="text-left py-2 pr-3">Type</th>
-                        <th className="text-left py-2 pr-3">Brand</th>
-                        <th className="text-left py-2 pr-3">Model</th>
+                        <th className="text-left py-2 pr-3">Sr No</th>
+                        <th className="text-left py-2 pr-3">Scrap ID</th>
+                        <th className="text-left py-2 pr-3">Existing Dead Stock S. Number</th>
+                        <th className="text-left py-2 pr-3">Name of Lab</th>
+                        <th className="text-left py-2 pr-3">Item Description</th>
                         <th className="text-left py-2 pr-3">Specification</th>
-                        <th className="text-left py-2 pr-3">Lab</th>
-                        <th className="text-left py-2 pr-3">Station</th>
-                        <th className="text-left py-2 pr-3">Scrapped By</th>
+                        <th className="text-left py-2 pr-3">Cost</th>
+                        <th className="text-left py-2 pr-3">Justification for Scrapping</th>
+                        <th className="text-left py-2 pr-3">Approval of HOD</th>
                       </tr>
                     </thead>
                     <tbody className="text-gray-200">
-                      {scrapRegisterItems.map((it, i) => (
-                        <tr key={it.scrap_id ?? i} className="border-b border-neutral-800/70">
-                          <td className="py-2 pr-3 whitespace-nowrap">{it.scrapped_at ?? "-"}</td>
-                          <td className="py-2 pr-3 font-mono text-blue-300">{it.asset_code ?? "-"}</td>
-                          <td className="py-2 pr-3">{it.device_type ?? "-"}</td>
-                          <td className="py-2 pr-3">{it.brand ?? "-"}</td>
-                          <td className="py-2 pr-3">{it.model ?? "-"}</td>
-                          <td className="py-2 pr-3 text-xs text-gray-300">{it.specification ?? "-"}</td>
-                          <td className="py-2 pr-3">{it.lab_id ?? "-"}</td>
-                          <td className="py-2 pr-3">{it.station_code ?? "-"}</td>
-                          <td className="py-2 pr-3">{it.scrapped_by ?? "-"}</td>
-                        </tr>
-                      ))}
+                      {scrapRegisterItems.map((it, i) => {
+                        const itemDescription = `${it.device_type ?? ""} ${it.brand ?? ""} ${it.model ?? ""}`.trim();
+                        return (
+                          <tr key={it.scrap_id ?? i} className="border-b border-neutral-800/70">
+                            <td className="py-2 pr-3 whitespace-nowrap">{i + 1}</td>
+                            <td className="py-2 pr-3 font-mono text-gray-300">{it.scrap_id ?? "-"}</td>
+                            <td className="py-2 pr-3 font-mono text-blue-300">{it.dead_stock_number ?? it.asset_code ?? "-"}</td>
+                            <td className="py-2 pr-3">{it.lab_name ?? it.lab_id ?? "-"}</td>
+                            <td className="py-2 pr-3">{itemDescription || "-"}</td>
+                            <td className="py-2 pr-3 text-xs text-gray-300">{it.specification ?? "-"}</td>
+                            <td className="py-2 pr-3">{it.cost != null ? `₹${Number(it.cost).toFixed(2)}` : "-"}</td>
+                            <td className="py-2 pr-3">{it.justification_for_scrapping ?? "-"}</td>
+                            <td className="py-2 pr-3">{it.approval_of_hod ?? "-"}</td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
