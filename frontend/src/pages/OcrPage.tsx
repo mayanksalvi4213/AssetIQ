@@ -94,6 +94,7 @@ interface ManualDevice {
 const OcrPage: React.FC = () => {
   const { logout } = useAuth();
   const [file, setFile] = useState<File | null>(null);
+  const [manualBillFile, setManualBillFile] = useState<File | null>(null);
   const [scanResult, setScanResult] = useState<ScanResult | null>(null);
   const [active, setActive] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -177,6 +178,18 @@ const OcrPage: React.FC = () => {
     "Other",
   ];
 
+  const billFileTypes = [
+    "application/pdf",
+    "image/jpeg",
+    "image/jpg",
+    "image/png",
+  ];
+
+  const isSupportedBillFile = (uploadedFile?: File | null) => {
+    if (!uploadedFile) return false;
+    return billFileTypes.includes(uploadedFile.type);
+  };
+
   const handleFileUpload = (files: File[]) => {
     if (file) {
       alert("You can only upload one file at a time. Please remove the current file first.");
@@ -185,19 +198,8 @@ const OcrPage: React.FC = () => {
     const uploadedFile = files[0];
     
     // Check if file type is supported (PDF or Image)
-    const supportedTypes = [
-      'application/pdf',
-      'image/jpeg',
-      'image/jpg', 
-      'image/png',
-      'image/bmp',
-      'image/tiff',
-      'image/gif',
-      'image/webp'
-    ];
-    
-    if (uploadedFile && !supportedTypes.includes(uploadedFile.type)) {
-      alert("Please upload PDF or Image files only (PDF, JPG, PNG, BMP, TIFF, GIF, WebP).");
+    if (uploadedFile && !isSupportedBillFile(uploadedFile)) {
+      alert("Please upload PDF or Image files only (PDF, JPG, JPEG, PNG).");
       return;
     }
     
@@ -209,6 +211,70 @@ const OcrPage: React.FC = () => {
   const handleRemoveFile = () => {
     setFile(null);
     setScanResult(null);
+  };
+
+  const handleManualBillUpload = (files: File[]) => {
+    if (manualBillFile) {
+      alert("You can only upload one file at a time. Please remove the current file first.");
+      return;
+    }
+
+    const uploadedFile = files[0];
+    if (uploadedFile && !isSupportedBillFile(uploadedFile)) {
+      alert("Please upload PDF or Image files only (PDF, JPG, JPEG, PNG).");
+      return;
+    }
+
+    setManualBillFile(uploadedFile);
+  };
+
+  const handleRemoveManualBillFile = () => {
+    setManualBillFile(null);
+  };
+
+  const uploadBillFile = async (upload: File, invoiceNumber: string, vendorName: string) => {
+    const token = localStorage.getItem("token");
+    const headers: HeadersInit = {};
+    if (token) {
+      headers["Authorization"] = `Bearer ${token}`;
+    }
+
+    const formData = new FormData();
+    formData.append("file", upload);
+    formData.append("invoiceNumber", invoiceNumber);
+    formData.append("vendorName", vendorName);
+
+    const response = await fetch("http://127.0.0.1:5000/upload_bill_file", {
+      method: "POST",
+      headers,
+      body: formData,
+    });
+
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(err?.error || "Failed to upload bill file");
+    }
+
+    const data = await response.json();
+    return data.path as string;
+  };
+
+  const deleteBillFile = async (path: string) => {
+    if (!path) return;
+
+    const token = localStorage.getItem("token");
+    const headers: HeadersInit = {
+      "Content-Type": "application/json",
+    };
+    if (token) {
+      headers["Authorization"] = `Bearer ${token}`;
+    }
+
+    await fetch("http://127.0.0.1:5000/delete_bill_file", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ path }),
+    });
   };
 
   const handleScan = async () => {
@@ -268,7 +334,7 @@ const OcrPage: React.FC = () => {
     return `₹${amount.toLocaleString('en-IN', { minimumFractionDigits: 2 })}`;
   };
 
-  const handleSaveRegister = async (overwrite: boolean = false) => {
+  const handleSaveRegister = async (overwrite: boolean = false, uploadedPath?: string) => {
     // Validate required fields
     if (!manualDevices[0]?.invoiceNo || !manualDevices[0]?.vendorName) {
       alert("Invoice Number and Vendor Name are required to save the bill.");
@@ -277,6 +343,11 @@ const OcrPage: React.FC = () => {
 
     if (!manualBillDate) {
       alert("Bill Date is required to save the bill.");
+      return;
+    }
+
+    if (!manualBillFile) {
+      alert("Please upload the bill file (PDF or image) before saving.");
       return;
     }
 
@@ -291,6 +362,12 @@ const OcrPage: React.FC = () => {
     }
 
     try {
+      const billFilePath = uploadedPath || await uploadBillFile(
+        manualBillFile,
+        manualDevices[0].invoiceNo,
+        manualDevices[0].vendorName
+      );
+
       const token = localStorage.getItem("token");
       const headers: HeadersInit = {
         "Content-Type": "application/json",
@@ -309,6 +386,7 @@ const OcrPage: React.FC = () => {
         stockEntry: manualStockEntry,
         taxAmount: manualTaxAmount,
         totalAmount: manualGrandTotal,
+        billFilePath: billFilePath,
         overwrite: overwrite
       };
 
@@ -328,7 +406,9 @@ const OcrPage: React.FC = () => {
         
         if (confirmOverwrite) {
           // Retry with overwrite flag
-          await handleSaveRegister(true);
+          await handleSaveRegister(true, billFilePath);
+        } else {
+          await deleteBillFile(billFilePath);
         }
         return;
       }
@@ -371,20 +451,22 @@ const OcrPage: React.FC = () => {
     }
   };
 
-  const handleSaveOcrRegister = async (overwrite: boolean = false) => {
+  const handleSaveOcrRegister = async (overwrite: boolean = false, uploadedPath?: string) => {
     // Validate that scanResult exists
     if (!scanResult || !scanResult.bill_info) {
       alert("No scan result available to save.");
       return;
     }
 
+    const billInfo = editableBillInfo || scanResult.bill_info;
+
     // Validate required fields
-    if (!scanResult.bill_info.bill_number || !scanResult.bill_info.vendor_name) {
+    if (!billInfo.bill_number || !billInfo.vendor_name) {
       alert("Invoice Number and Vendor Name are required to save the bill.");
       return;
     }
 
-    if (!scanResult.bill_info.bill_date) {
+    if (!billInfo.bill_date) {
       alert("Bill Date is required to save the bill.");
       return;
     }
@@ -395,7 +477,18 @@ const OcrPage: React.FC = () => {
       return;
     }
 
+    if (!file) {
+      alert("Please upload the bill file (PDF or image) before saving.");
+      return;
+    }
+
     try {
+      const billFilePath = uploadedPath || await uploadBillFile(
+        file,
+        billInfo.bill_number,
+        billInfo.vendor_name
+      );
+
       const token = localStorage.getItem("token");
       const headers: HeadersInit = {
         "Content-Type": "application/json",
@@ -408,7 +501,8 @@ const OcrPage: React.FC = () => {
       // STEP 1: Save bill information
       // Convert date to DD/MM/YYYY format expected by backend
       let formattedBillDate = scanResult.bill_info.bill_date;
-      if (formattedBillDate) {
+      if (billInfo.bill_date) {
+        formattedBillDate = billInfo.bill_date;
         // Check if date is in YYYY-MM-DD format and convert to DD/MM/YYYY
         if (formattedBillDate.includes('-')) {
           const parts = formattedBillDate.split('-');
@@ -420,13 +514,14 @@ const OcrPage: React.FC = () => {
       }
 
       const billPayload = {
-        invoiceNumber: scanResult.bill_info.bill_number,
-        vendorName: scanResult.bill_info.vendor_name,
+        invoiceNumber: billInfo.bill_number,
+        vendorName: billInfo.vendor_name,
         billDate: formattedBillDate,
-        gstin: scanResult.bill_info.vendor_gstin || "",
+        gstin: billInfo.vendor_gstin || "",
         stockEntry: ocrStockEntry,
-        taxAmount: scanResult.bill_info.tax_amount || 0,
-        totalAmount: scanResult.bill_info.total_amount || 0,
+        taxAmount: billInfo.tax_amount || 0,
+        totalAmount: billInfo.total_amount || 0,
+        billFilePath: billFilePath,
         overwrite: overwrite
       };
 
@@ -449,7 +544,9 @@ const OcrPage: React.FC = () => {
         
         if (confirmOverwrite) {
           // Retry with overwrite flag
-          await handleSaveOcrRegister(true);
+          await handleSaveOcrRegister(true, billFilePath);
+        } else {
+          await deleteBillFile(billFilePath);
         }
         return;
       }
@@ -466,12 +563,12 @@ const OcrPage: React.FC = () => {
         deviceType: asset.device_type || asset.category || "Other",
         customDeviceType: "",
         dept: ocrDept,
-        invoiceNo: scanResult.bill_info.bill_number,
-        vendorName: scanResult.bill_info.vendor_name,
+        invoiceNo: billInfo.bill_number,
+        vendorName: billInfo.vendor_name,
         materialDescription: asset.name,
         modelNo: asset.model || "",
         brand: asset.brand || "",
-        warranty: asset.warranty || scanResult.bill_info.warranty_info || "",
+        warranty: asset.warranty || billInfo.warranty_info || "",
         quantity: asset.quantity || 1,
         amountPerPcs: asset.unit_price || 0,
         totalAmount: asset.total_price || 0,
@@ -480,8 +577,8 @@ const OcrPage: React.FC = () => {
 
       // STEP 3: Save devices information
       const devicesPayload = {
-        invoiceNumber: scanResult.bill_info.bill_number,
-        vendorName: scanResult.bill_info.vendor_name,
+        invoiceNumber: billInfo.bill_number,
+        vendorName: billInfo.vendor_name,
         devices: transformedDevices,
         orderNo: ocrOrderNo,
         orderDate: ocrOrderDate,
@@ -566,6 +663,11 @@ const OcrPage: React.FC = () => {
   };
 
   const handleGenerateManualAssets = async () => {
+    if (!manualBillFile) {
+      alert("Please upload the bill file (PDF or image) before generating assets.");
+      return;
+    }
+
     // Validate required fields
     const hasEmptyFields = manualDevices.some(
       (device) =>
@@ -791,6 +893,43 @@ const OcrPage: React.FC = () => {
             <h2 className="text-2xl font-bold text-gray-100 mb-6 flex items-center gap-2">
               ✍️ Manual Device Entry
             </h2>
+
+            {/* Manual Bill Upload */}
+            <div className="mb-6">
+              <h3 className="text-lg font-semibold text-gray-100 mb-3">📄 Upload Bill (Required)</h3>
+              <div
+                className="border border-dashed rounded-lg p-6 border-gray-500 shadow-md [&_p]:!text-white [&_.text-neutral-700]:!text-white [&_.text-neutral-400]:!text-gray-200 [&_.dark\:text-neutral-300]:!text-white [&_.dark\:text-neutral-400]:!text-gray-200"
+                style={{ backgroundColor: "#2c2c2c", color: "#f3f4f6" }}
+              >
+                {!manualBillFile ? (
+                  <FileUpload onChange={handleManualBillUpload} />
+                ) : (
+                  <div className="flex items-center justify-between p-4">
+                    <div className="flex items-center gap-4">
+                      <div className={`w-12 h-12 ${manualBillFile.type === 'application/pdf' ? 'bg-red-600' : 'bg-blue-600'} rounded-lg flex items-center justify-center`}>
+                        <span className="text-white font-bold text-sm">
+                          {manualBillFile.type === 'application/pdf' ? 'PDF' : 'IMG'}
+                        </span>
+                      </div>
+                      <div>
+                        <p className="text-gray-200 font-medium">{manualBillFile.name}</p>
+                        <p className="text-gray-400 text-sm">
+                          {(manualBillFile.size / 1024 / 1024).toFixed(2)} MB
+                        </p>
+                      </div>
+                    </div>
+                    <HoverBorderGradient
+                      as="button"
+                      containerClassName="rounded-full"
+                      className="px-4 py-2 bg-red-600 text-white font-semibold text-sm"
+                      onClick={handleRemoveManualBillFile}
+                    >
+                      Remove
+                    </HoverBorderGradient>
+                  </div>
+                )}
+              </div>
+            </div>
 
             {/* Devices List */}
             <div className="space-y-6">
@@ -1413,6 +1552,7 @@ const OcrPage: React.FC = () => {
                     setManualCentralStoreDate("");
                     setManualRemarks("");
                     setManualScanResult(null);
+                    setManualBillFile(null);
                   }}
                 >
                   ➕ Create New Entry

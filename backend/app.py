@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, send_file
+from flask import Flask, request, jsonify, send_file, send_from_directory
 from flask_cors import CORS
 import pytesseract
 from pdf2image import convert_from_bytes
@@ -12,6 +12,7 @@ from typing import Dict, List, Optional, Any
 import bcrypt
 import jwt
 import os
+import uuid
 import requests
 import time
 from dotenv import load_dotenv
@@ -22,6 +23,7 @@ from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, 
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
 from reportlab.lib.enums import TA_CENTER, TA_LEFT
+from werkzeug.utils import secure_filename
 
 # Load env variables
 load_dotenv()
@@ -46,10 +48,59 @@ except ImportError:
 app = Flask(__name__)
 CORS(app)
 
+UPLOAD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "uploads")
+ALLOWED_BILL_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png"}
+
 pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
 # Initialize OCR regex extractor (uses classifier + regex templates)
 extractor = OcrRegexExtractor()
+
+
+def _slugify_filename(value: str, fallback: str = "bill") -> str:
+    value = (value or "").strip().lower()
+    if not value:
+        return fallback
+    value = re.sub(r"[^a-z0-9]+", "_", value).strip("_")
+    return value or fallback
+
+
+def _save_bill_file(upload, invoice_number: str = "", vendor_name: str = "") -> str:
+    if not upload or not upload.filename:
+        raise ValueError("No file provided")
+
+    original_name = secure_filename(upload.filename)
+    _, ext = os.path.splitext(original_name)
+    ext = ext.lower()
+
+    if ext not in ALLOWED_BILL_EXTENSIONS:
+        raise ValueError("Only PDF, JPG, JPEG, and PNG files are supported")
+
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+    vendor_slug = _slugify_filename(vendor_name, "vendor")
+    invoice_slug = _slugify_filename(invoice_number, "invoice")
+    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    unique_suffix = uuid.uuid4().hex[:8]
+    filename = f"{vendor_slug}_{invoice_slug}_{timestamp}_{unique_suffix}{ext}"
+
+    full_path = os.path.join(UPLOAD_DIR, filename)
+    upload.save(full_path)
+
+    return f"uploads/{filename}"
+
+
+def _delete_bill_file(relative_path: str) -> None:
+    if not relative_path:
+        return
+
+    filename = os.path.basename(relative_path)
+    if not filename:
+        return
+
+    full_path = os.path.join(UPLOAD_DIR, filename)
+    if os.path.exists(full_path):
+        os.remove(full_path)
 
 
 @app.route("/llm-status", methods=["GET"])
@@ -449,6 +500,64 @@ def enhanced_ocr_scan():
         }), 500
 
 
+@app.route("/upload_bill_file", methods=["POST"])
+def upload_bill_file():
+    """Upload a bill PDF/image and return its stored path"""
+    try:
+        current_user = get_current_user()
+        if not current_user:
+            return jsonify({"error": "Unauthorized"}), 401
+
+        if "file" not in request.files:
+            return jsonify({"error": "No file uploaded"}), 400
+
+        upload = request.files["file"]
+        invoice_number = request.form.get("invoiceNumber", "")
+        vendor_name = request.form.get("vendorName", "")
+
+        stored_path = _save_bill_file(upload, invoice_number, vendor_name)
+        return jsonify({"success": True, "path": stored_path})
+    except Exception as e:
+        print(f"Error uploading bill file: {str(e)}")
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/delete_bill_file", methods=["POST"])
+def delete_bill_file():
+    """Delete a previously uploaded bill file"""
+    try:
+        current_user = get_current_user()
+        if not current_user:
+            return jsonify({"error": "Unauthorized"}), 401
+
+        data = request.get_json() or {}
+        file_path = (data.get("path") or "").strip()
+        if not file_path:
+            return jsonify({"error": "No file path provided"}), 400
+
+        _delete_bill_file(file_path)
+        return jsonify({"success": True})
+    except Exception as e:
+        print(f"Error deleting bill file: {str(e)}")
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/uploads/<path:filename>", methods=["GET"])
+def serve_bill_file(filename: str):
+    """Serve a stored bill file from uploads directory (auth required)"""
+    current_user = get_current_user()
+    if not current_user:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    safe_name = os.path.basename(filename)
+    if not safe_name:
+        return jsonify({"error": "Invalid filename"}), 400
+
+    return send_from_directory(UPLOAD_DIR, safe_name, as_attachment=False)
+
+
 @app.route("/save", methods=["POST"])
 def save_ocr_result():
     """Legacy save endpoint - kept for backward compatibility"""
@@ -814,6 +923,7 @@ def save_bill():
         tax_amount = data.get("taxAmount", 0)
         total_amount = data.get("totalAmount", 0)
         overwrite = data.get("overwrite", False)
+        bill_file_path = (data.get("billFilePath") or "").strip()
         
         # Validate required fields
         if not invoice_number or not vendor_name:
@@ -837,7 +947,7 @@ def save_bill():
         # Check for existing bill with same vendor_name and invoice_number
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT bill_id FROM bills WHERE vendor_name = %s AND invoice_number = %s",
+            "SELECT bill_id, path FROM bills WHERE vendor_name = %s AND invoice_number = %s",
             (vendor_name, invoice_number)
         )
         existing_bill = cursor.fetchone()
@@ -852,14 +962,26 @@ def save_bill():
         
         if existing_bill and overwrite:
             # Update existing bill
+            existing_path = existing_bill.get("path") if existing_bill else None
+            if bill_file_path and existing_path and bill_file_path != existing_path:
+                _delete_bill_file(existing_path)
+
             cursor.execute(
                 """
                 UPDATE bills 
                 SET gstin = %s, stock_entry = %s, tax_amount = %s, 
-                    total_amount = %s, bill_date = %s
+                    total_amount = %s, bill_date = %s, path = %s
                 WHERE bill_id = %s
                 """,
-                (gstin, stock_entry, tax_amount, total_amount, db_bill_date, existing_bill['bill_id'])
+                (
+                    gstin,
+                    stock_entry,
+                    tax_amount,
+                    total_amount,
+                    db_bill_date,
+                    bill_file_path or existing_path,
+                    existing_bill['bill_id']
+                )
             )
             conn.commit()
             cursor.close()
@@ -874,11 +996,11 @@ def save_bill():
             cursor.execute(
                 """
                 INSERT INTO bills 
-                (invoice_number, vendor_name, gstin, stock_entry, tax_amount, total_amount, bill_date)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                (invoice_number, vendor_name, gstin, stock_entry, tax_amount, total_amount, bill_date, path)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING bill_id
                 """,
-                (invoice_number, vendor_name, gstin, stock_entry, tax_amount, total_amount, db_bill_date)
+                (invoice_number, vendor_name, gstin, stock_entry, tax_amount, total_amount, db_bill_date, bill_file_path)
             )
             result = cursor.fetchone()
             bill_id = result['bill_id']
@@ -1459,7 +1581,7 @@ def get_lab(lab_id):
         
         # Get lab basic info
         cursor.execute(
-            """SELECT lab_id, lab_name, rows, columns 
+            """SELECT lab_id, lab_name, rows, columns, layout_id
                FROM labs 
                WHERE lab_id = %s""",
             (lab_id,)
@@ -1504,6 +1626,35 @@ def get_lab(lab_id):
         )
         grid_cells = cursor.fetchall()
         print(f"🗺️ Grid cells fetched: {len(grid_cells)} cells")
+
+        # Fetch layout blueprint cells (station types) to render empty stations
+        layout_map = {}
+        layout_id = lab.get('layout_id')
+        if layout_id:
+            cursor.execute(
+                """SELECT lc.row_number, lc.column_number,
+                          lc.station_type_id, lc.os_windows, lc.os_linux, lc.os_other,
+                          st.name AS station_type_name, st.name AS station_type_label
+                   FROM lab_layout_cells lc
+                   LEFT JOIN station_types st ON lc.station_type_id = st.station_type_id
+                   WHERE lc.layout_id = %s""",
+                (layout_id,)
+            )
+            layout_cells = cursor.fetchall()
+            for cell in layout_cells:
+                if cell['station_type_id'] is None:
+                    continue
+                os_list = []
+                if cell['os_windows']:
+                    os_list.append("Windows")
+                if cell['os_linux']:
+                    os_list.append("Linux")
+                if cell['os_other']:
+                    os_list.append("Other")
+                layout_map[(cell['row_number'], cell['column_number'])] = {
+                    'stationTypeLabel': cell['station_type_label'] or cell['station_type_name'] or 'Empty',
+                    'os': os_list
+                }
         
         # Get station devices for each station
         # Check if station_qr_value column exists
@@ -1651,10 +1802,14 @@ def get_lab(lab_id):
                     os_list.append("Linux")
                 if cell['os_other']:
                     os_list.append("Other")
+
+                layout_info = layout_map.get((row_idx, col_idx))
+                if not os_list and layout_info:
+                    os_list = layout_info['os']
                 
                 grid_cell = {
                     "id": cell['assigned_code'],
-                    "equipmentType": cell['equipment_type'] or "Empty",
+                    "equipmentType": cell['equipment_type'] or (layout_info['stationTypeLabel'] if layout_info else "Empty"),
                     "os": os_list
                 }
                 
@@ -1675,6 +1830,14 @@ def get_lab(lab_id):
                     }
                 
                 grid[row_idx][col_idx] = grid_cell
+
+        # Fill grid with layout station types where no lab_grid_cells row exists
+        for (row_idx, col_idx), layout_info in layout_map.items():
+            if row_idx < rows and col_idx < columns:
+                if grid[row_idx][col_idx].get("equipmentType") == "Empty":
+                    grid[row_idx][col_idx]["equipmentType"] = layout_info['stationTypeLabel']
+                if not grid[row_idx][col_idx].get("os"):
+                    grid[row_idx][col_idx]["os"] = layout_info['os']
         
         # Format equipment for frontend
         equipment = []
@@ -2857,7 +3020,8 @@ def get_all_bills():
                 "taxAmount": float(bill['tax_amount']) if bill['tax_amount'] else 0,
                 "gstin": bill['gstin'],
                 "stockEntry": bill['stock_entry'],
-                "items": bill['items_count']
+                "items": bill['items_count'],
+                "path": bill.get("path")
             })
         
         return jsonify({
@@ -2900,6 +3064,7 @@ def get_deadstock_register():
                 lsd.is_linked,
                 lsd.linked_group_id,
                 d.asset_code,
+                d.assigned_code AS device_assigned_code,
                 d.unit_price,
                 d.warranty_years,
                 d.purchase_date,
@@ -2919,101 +3084,132 @@ def get_deadstock_register():
         
         cursor.execute(query)
         results = cursor.fetchall()
-        cursor.close()
-        conn.close()
         
-        # Group by station
-        stations_map = {}
-        for row in results:
-            station_key = f"{row['lab_id']}_{row['station_id']}"
-            
-            if station_key not in stations_map:
-                stations_map[station_key] = {
-                    "stationId": row['station_id'],
-                    "assignedCode": row['assigned_code'],
-                    "labId": row['lab_id'],
-                    "labName": row['lab_name'],
-                    "devices": [],
-                    "totalCost": 0,
-                    "billInfo": {
-                        "vendorName": row['vendor_name'] or "",
-                        "gstin": row['gstin'] or "",
-                        "invoiceNumber": row['invoice_number'] or "",
-                        "billDate": row['bill_date'].strftime("%d/%m/%Y") if row['bill_date'] else "",
-                        "stockEntry": row['stock_entry'] or ""
-                    }
-                }
-            
-            # Add device to station
-            if row['device_id']:
-                device_info = {
-                    "deviceId": row['device_id'],
-                    "type": row['device_type'],
-                    "brand": row['brand'],
-                    "model": row['model'],
-                    "specification": row['specification'],
-                    "assetCode": row['asset_code'],
-                    "unitPrice": float(row['unit_price']) if row['unit_price'] else 0,
-                    "warrantyYears": row['warranty_years'],
-                    "purchaseDate": row['purchase_date'].strftime("%d/%m/%Y") if row['purchase_date'] else "",
-                    "dept": row['dept'] or "",
-                    "isLinked": row['is_linked'],
-                    "linkedGroupId": row['linked_group_id']
-                }
-                stations_map[station_key]["devices"].append(device_info)
-                stations_map[station_key]["totalCost"] += device_info["unitPrice"]
-        
-        # Format for dead stock register
         deadstock_entries = []
         sr_no = 1
-        
-        for station_key, station in stations_map.items():
-            if not station["devices"]:
+
+        for row in results:
+            if not row['device_id']:
                 continue
-                
-            # Create item description from all devices
-            device_descriptions = []
-            for device in station["devices"]:
-                desc_parts = [device["type"]]
-                if device["brand"]:
-                    desc_parts.append(device["brand"])
-                if device["model"]:
-                    desc_parts.append(device["model"])
-                device_descriptions.append(" ".join(desc_parts))
-            
-            item_description = " + ".join(device_descriptions)
-            
-            # Get identity numbers
-            identity_nos = [device["assetCode"] for device in station["devices"] if device["assetCode"]]
-            identity_display = ", ".join(identity_nos)
-            
-            # Get purchase date (use first device's date)
-            purchase_date = station["devices"][0]["purchaseDate"] if station["devices"] else ""
-            
-            # Get warranty (max of all devices)
-            max_warranty = max([d["warrantyYears"] or 0 for d in station["devices"]])
-            
+
+            device_type = row['device_type'] or "Unknown"
+            desc_parts = [device_type]
+            if row['brand']:
+                desc_parts.append(row['brand'])
+            if row['model']:
+                desc_parts.append(row['model'])
+            item_description = " ".join(desc_parts)
+
+            unit_price = float(row['unit_price']) if row['unit_price'] else 0
+            purchase_date = row['purchase_date'].strftime("%d/%m/%Y") if row['purchase_date'] else ""
+
             deadstock_entries.append({
                 "srNo": str(sr_no),
-                "labName": station["labName"],
-                "stationCode": station["assignedCode"],
+                "labName": row['lab_name'],
+                "stationCode": row['assigned_code'],
                 "itemDescription": item_description,
-                "deviceCount": len(station["devices"]),
-                "devices": station["devices"],
-                "supplierInfo": station["billInfo"]["vendorName"],
-                "orderNo": station["billInfo"]["gstin"],
-                "billNo": station["billInfo"]["invoiceNumber"],
-                "billDate": station["billInfo"]["billDate"],
-                "centralStore": station["billInfo"]["stockEntry"],
-                "quantity": str(len(station["devices"])).zfill(2),
-                "ratePerUnit": f"{station['totalCost'] / len(station['devices']):.2f}/-" if station["devices"] else "0.00/-",
-                "cost": f"{station['totalCost']:.2f}/-",
+                "deviceCount": 1,
+                "devices": [],
+                "supplierInfo": row['vendor_name'] or "",
+                "orderNo": row['gstin'] or "",
+                "billNo": row['invoice_number'] or "",
+                "billDate": row['bill_date'].strftime("%d/%m/%Y") if row['bill_date'] else "",
+                "centralStore": row['stock_entry'] or "",
+                "quantity": "01",
+                "ratePerUnit": f"{unit_price:.2f}/-",
+                "cost": f"{unit_price:.2f}/-",
                 "dateOfDelivery": purchase_date,
                 "dateOfInstallation": purchase_date,
-                "identityNo": identity_display,
-                "remark": station["devices"][0]["dept"] if station["devices"] else "",
+                "identityNo": row['asset_code'] or "",
+                "assignedCode": row['device_assigned_code'] or "",
+                "remark": row['dept'] or "",
                 "signOfLabInCharge": "",
-                "warrantyYears": max_warranty
+                "warrantyYears": row['warranty_years'] or 0,
+                "deviceType": device_type,
+                "brand": row['brand'] or "",
+                "model": row['model'] or "",
+                "specification": row['specification'] or "",
+                "assetCode": row['asset_code'] or "",
+                "unitPrice": unit_price
+            })
+            sr_no += 1
+
+        # Also include unassigned devices (not in any station and not pooled)
+        unassigned_query = """
+            SELECT
+                d.device_id,
+                d.type_id,
+                et.name AS device_type,
+                d.brand,
+                d.model,
+                d.specification,
+                d.unit_price,
+                d.warranty_years,
+                d.purchase_date,
+                d.dept,
+                d.asset_code,
+            d.assigned_code,
+                d.bill_id,
+                d.invoice_number,
+                b.vendor_name,
+                b.gstin,
+                b.bill_date,
+                b.stock_entry
+            FROM devices d
+            LEFT JOIN bills b ON d.bill_id = b.bill_id
+            LEFT JOIN equipment_types et ON d.type_id = et.type_id
+            LEFT JOIN lab_station_devices lsd ON d.device_id = lsd.device_id
+            WHERE lsd.device_id IS NULL
+              AND (d.assigned_code IS NULL OR d.assigned_code = '')
+              AND d.lab_id IS NULL
+            ORDER BY b.bill_date DESC, d.device_id
+        """
+
+        cursor.execute(unassigned_query)
+        unassigned_rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+
+        for row in unassigned_rows:
+            device_type = row['device_type'] or "Unknown"
+            desc_parts = [device_type]
+            if row['brand']:
+                desc_parts.append(row['brand'])
+            if row['model']:
+                desc_parts.append(row['model'])
+            item_description = " ".join(desc_parts)
+
+            unit_price = float(row['unit_price']) if row['unit_price'] else 0
+            purchase_date = row['purchase_date'].strftime("%d/%m/%Y") if row['purchase_date'] else ""
+
+            deadstock_entries.append({
+                "srNo": str(sr_no),
+                "labName": "Unassigned",
+                "stationCode": "UNASSIGNED",
+                "itemDescription": item_description,
+                "deviceCount": 1,
+                "devices": [],
+                "supplierInfo": row['vendor_name'] or "",
+                "orderNo": row['gstin'] or "",
+                "billNo": row['invoice_number'] or "",
+                "billDate": row['bill_date'].strftime("%d/%m/%Y") if row['bill_date'] else "",
+                "centralStore": row['stock_entry'] or "",
+                "quantity": "01",
+                "ratePerUnit": f"{unit_price:.2f}/-",
+                "cost": f"{unit_price:.2f}/-",
+                "dateOfDelivery": purchase_date,
+                "dateOfInstallation": purchase_date,
+                "identityNo": row['asset_code'] or "",
+                "assignedCode": row['assigned_code'] or "",
+                "remark": row['dept'] or "",
+                "signOfLabInCharge": "",
+                "warrantyYears": row['warranty_years'] or 0,
+                "deviceType": device_type,
+                "brand": row['brand'] or "",
+                "model": row['model'] or "",
+                "specification": row['specification'] or "",
+                "assetCode": row['asset_code'] or "",
+                "unitPrice": unit_price
             })
             sr_no += 1
         
@@ -3091,6 +3287,326 @@ def get_lab_devices(lab_id):
         traceback.print_exc()
         return jsonify({'success': False, 'error': str(e)}), 500
 
+def getDeviceEmojiPy(type_name: str) -> str:
+    t = (type_name or '').lower()
+    if t == 'laptop': return '💻'
+    if t in ('pc', 'monitor'): return '🖥️'
+    if t == 'ac': return '❄️'
+    if 'smart board' in t: return '📺'
+    if 'projector' in t: return '📽️'
+    if 'printer' in t: return '🖨️'
+    if 'scanner' in t: return '📠'
+    if 'ups' in t: return '🔋'
+    if 'router' in t: return '📡'
+    if 'switch' in t: return '🔌'
+    if 'server' in t: return '🗄️'
+    if 'passage' in t or 'walkway' in t: return '🚶'
+    if 'door' in t: return '🚪'
+    if 'network' in t: return '🌐'
+    if 'window' in t: return '🪟'
+    if 'wall' in t: return '🧱'
+    if not t or t == 'empty': return '⬜'
+    return '🔧'
+
+@app.route('/get_dest_lab_layout/<lab_id>', methods=['GET'])
+def get_dest_lab_layout(lab_id):
+    """Get destination lab's blueprint grid with station types, allowed device types, and current occupancy.
+    
+    Primary source: lab_layout_cells (blueprint template linked to the lab).
+    Fallback source: lab_grid_cells + lab_stations (runtime grid from lab configuration).
+    """
+    try:
+        conn = db.get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("SELECT lab_id, lab_name, rows, columns, layout_id FROM labs WHERE lab_id = %s", (lab_id,))
+        lab = cursor.fetchone()
+        if not lab:
+            return jsonify({'success': False, 'error': 'Lab not found'}), 404
+
+        layout_id = lab['layout_id']
+
+        # ── PRIMARY: Query lab_layout_cells blueprint ──────────────────────
+        cells = []
+        use_blueprint = False
+        if layout_id:
+            cursor.execute("""
+                SELECT lc.cell_id, lc.row_number, lc.column_number,
+                       lc.station_type_id, lc.label AS station_label,
+                       lc.os_windows, lc.os_linux, lc.os_other,
+                       st.name AS station_type_name, st.name AS station_type_label,
+                       st.icon, st.color,
+                       st.allowed_device_types
+                FROM lab_layout_cells lc
+                LEFT JOIN station_types st ON lc.station_type_id = st.station_type_id
+                WHERE lc.layout_id = %s
+                ORDER BY lc.row_number, lc.column_number
+            """, (layout_id,))
+            cells = cursor.fetchall()
+            if cells:
+                use_blueprint = True
+
+        if use_blueprint:
+            # ── allowed_device_types is already TEXT[] of device type names ──
+            # No additional lookup needed
+
+            # ── Current device occupancy via lab_stations / lab_grid_cells ──
+            cursor.execute("""
+                SELECT lgc.row_number, lgc.column_number,
+                       lsd.device_type, lsd.device_id, lsd.brand, lsd.model,
+                       d.assigned_code AS device_prefix_code, d.asset_code
+                FROM lab_stations ls
+                JOIN lab_grid_cells lgc ON ls.station_id = lgc.station_id
+                JOIN lab_station_devices lsd ON ls.station_id = lsd.station_id
+                LEFT JOIN devices d ON lsd.device_id = d.device_id
+                WHERE ls.lab_id = %s
+            """, (lab_id,))
+            occupancy_map = {}
+            for orow in cursor.fetchall():
+                key = f"{orow['row_number']}-{orow['column_number']}"
+                occupancy_map.setdefault(key, []).append({
+                    'deviceType': orow['device_type'],
+                    'deviceId': orow['device_id'],
+                    'brand': orow['brand'],
+                    'model': orow['model'],
+                    'prefixCode': orow['device_prefix_code'] or '',
+                    'assetCode': orow['asset_code'] or '',
+                })
+
+            grid = []
+            for cell in cells:
+                r, c = cell['row_number'], cell['column_number']
+                allowed_names = cell['allowed_device_types'] or []
+                key = f"{r}-{c}"
+                current_devices = occupancy_map.get(key, [])
+                current_type_names = [d['deviceType'] for d in current_devices]
+
+                os_list = []
+                if cell.get('os_windows'): os_list.append('Windows')
+                if cell.get('os_linux'): os_list.append('Linux')
+                if cell.get('os_other'): os_list.append('Other')
+
+                grid.append({
+                    'row': r,
+                    'column': c,
+                    'cellId': cell['cell_id'],
+                    'stationTypeId': cell['station_type_id'],
+                    'stationTypeName': cell['station_type_name'] or 'empty',
+                    'stationTypeLabel': cell['station_type_label'] or 'Empty',
+                    'icon': cell['icon'] or '⬜',
+                    'color': cell['color'] or '#6b7280',
+                    'stationLabel': cell['station_label'],
+                    'os': os_list,
+                    'allowedDeviceTypes': allowed_names,
+                    'currentDevices': current_devices,
+                    'currentDeviceTypes': current_type_names,
+                    'freeForTypes': [t for t in allowed_names if t not in current_type_names],
+                })
+
+        else:
+            # ── FALLBACK: Query lab_grid_cells (runtime grid from lab config) ──
+            # Use cell_id = station_id as proxy (lab_layout_cells may not exist)
+            cursor.execute("""
+                SELECT lgc.cell_id AS grid_cell_id,
+                       lgc.station_id,
+                       lgc.row_number, lgc.column_number,
+                       lgc.assigned_code, lgc.equipment_type,
+                       lgc.os_windows, lgc.os_linux, lgc.os_other,
+                       lgc.is_empty,
+                       ls.station_id AS ls_station_id
+                FROM lab_grid_cells lgc
+                LEFT JOIN lab_stations ls ON lgc.station_id = ls.station_id
+                WHERE lgc.lab_id = %s
+                ORDER BY lgc.row_number, lgc.column_number
+            """, (lab_id,))
+            grid_cells = cursor.fetchall()
+
+            # Fetch all occupancy for this lab
+            cursor.execute("""
+                SELECT lgc.row_number, lgc.column_number,
+                       lsd.device_type, lsd.device_id, lsd.brand, lsd.model,
+                       d.assigned_code AS device_prefix_code, d.asset_code
+                FROM lab_stations ls
+                JOIN lab_grid_cells lgc ON ls.station_id = lgc.station_id
+                JOIN lab_station_devices lsd ON ls.station_id = lsd.station_id
+                LEFT JOIN devices d ON lsd.device_id = d.device_id
+                WHERE ls.lab_id = %s
+            """, (lab_id,))
+            occupancy_map = {}
+            for orow in cursor.fetchall():
+                key = f"{orow['row_number']}-{orow['column_number']}"
+                occupancy_map.setdefault(key, []).append({
+                    'deviceType': orow['device_type'],
+                    'deviceId': orow['device_id'],
+                    'brand': orow['brand'],
+                    'model': orow['model'],
+                    'prefixCode': orow['device_prefix_code'] or '',
+                    'assetCode': orow['asset_code'] or '',
+                })
+
+            # Map equipment_type text → allowed_device_types list
+            # equipment_type in lab_grid_cells is the primary type (e.g. "PC", "Laptop")
+            # We'll treat it as: this station allows devices of that type
+            def infer_allowed(eq_type: str):
+                if not eq_type:
+                    return []
+                t = eq_type.lower()
+                # Compound types (e.g. teacher station allows both PC and Laptop)
+                type_map = {
+                    'pc': ['PC'],
+                    'laptop': ['Laptop'],
+                    'ac': ['AC'],
+                    'projector': ['Projector', 'Smart Board'],
+                    'printer': ['Printer'],
+                    'scanner': ['Scanner'],
+                    'ups': ['UPS'],
+                    'server': ['Server'],
+                    'router': ['Router'],
+                    'switch': ['Network Switch'],
+                    'network': ['Router', 'Network Switch'],
+                    'teacher': ['PC', 'Laptop'],
+                }
+                for key, val in type_map.items():
+                    if key in t:
+                        return val
+                return [eq_type]  # return as-is if no match
+
+            grid = []
+            for gc in grid_cells:
+                r, c = gc['row_number'], gc['column_number']
+                eq_type = gc['equipment_type'] or ''
+                key = f"{r}-{c}"
+                current_devices = occupancy_map.get(key, [])
+                current_type_names = [d['deviceType'] for d in current_devices]
+                is_empty_type = not eq_type or gc['is_empty']
+                allowed_names = [] if is_empty_type else infer_allowed(eq_type)
+
+                os_list = []
+                if gc.get('os_windows'): os_list.append('Windows')
+                if gc.get('os_linux'): os_list.append('Linux')
+                if gc.get('os_other'): os_list.append('Other')
+
+                # Use station_id as a stand-in for cellId so the frontend can pass it back
+                # The approve endpoint will handle finding/creating the station
+                grid.append({
+                    'row': r,
+                    'column': c,
+                    'cellId': gc['station_id'] or gc['grid_cell_id'],  # used as dest_cell_id reference
+                    'stationTypeId': 0,
+                    'stationTypeName': eq_type.lower() if eq_type else 'empty',
+                    'stationTypeLabel': eq_type or 'Empty',
+                    'icon': getDeviceEmojiPy(eq_type),
+                    'color': '#6b7280',
+                    'stationLabel': gc['assigned_code'],
+                    'os': os_list,
+                    'allowedDeviceTypes': allowed_names,
+                    'currentDevices': current_devices,
+                    'currentDeviceTypes': current_type_names,
+                    'freeForTypes': [t for t in allowed_names if t not in current_type_names],
+                })
+
+        cursor.close()
+        conn.close()
+
+        return jsonify({
+            'success': True,
+            'lab': {
+                'labId': lab['lab_id'],
+                'labName': lab['lab_name'],
+                'rows': lab.get('rows') or 6,
+                'columns': lab.get('columns') or 6,
+            },
+            'grid': grid,
+            'source': 'blueprint' if use_blueprint else 'runtime'
+        })
+
+    except Exception as e:
+        print(f"Error fetching dest lab layout: {str(e)}")
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/check_destination_capacity', methods=['POST'])
+def check_destination_capacity():
+    """Check if destination lab has free station slots for the device types being transferred."""
+    try:
+        data = request.json
+        to_lab_id = data.get('to_lab_id')
+        device_types = data.get('device_types', [])  # list of type names e.g. ['PC', 'Monitor']
+        transfer_type = data.get('transfer_type', 'individual')  # 'station' or 'individual'
+
+        if not to_lab_id or not device_types:
+            return jsonify({'success': False, 'error': 'Missing required fields'}), 400
+
+        conn = db.get_connection()
+        cursor = conn.cursor()
+
+        # Find all stations in the destination lab and their currently assigned device types
+        cursor.execute("""
+            SELECT ls.station_id, ls.assigned_code,
+                   lgc.equipment_type,
+                   COALESCE(
+                       (SELECT st.allowed_device_types
+                        FROM lab_layout_cells lc
+                        JOIN station_types st ON lc.station_type_id = st.station_type_id
+                        WHERE lc.layout_id = l.layout_id
+                          AND lc.row_number = lgc.row_number
+                          AND lc.column_number = lgc.column_number
+                        LIMIT 1),
+                       ARRAY[]::text[]
+                   ) AS allowed_device_types
+            FROM lab_stations ls
+            JOIN lab_grid_cells lgc ON ls.station_id = lgc.station_id
+            JOIN labs l ON ls.lab_id = l.lab_id
+            WHERE ls.lab_id = %s
+        """, (to_lab_id,))
+        dest_stations = cursor.fetchall()
+
+        # Get devices currently assigned to each station
+        for station in dest_stations:
+            cursor.execute("""
+                SELECT device_type FROM lab_station_devices
+                WHERE station_id = %s
+            """, (station['station_id'],))
+            station['current_devices'] = [r['device_type'] for r in cursor.fetchall()]
+
+        # Check capacity for each device type being transferred
+        type_counts_needed = {}
+        for dt in device_types:
+            type_counts_needed[dt] = type_counts_needed.get(dt, 0) + 1
+
+        capacity_result = {}
+        for dtype, count_needed in type_counts_needed.items():
+            # Find stations that allow this device type and don't already have one
+            free_slots = 0
+            for station in dest_stations:
+                allowed = station.get('allowed_device_types') or []
+                current = station.get('current_devices') or []
+                # Station accepts this type and doesn't already have one
+                if dtype in allowed and dtype not in current:
+                    free_slots += 1
+            capacity_result[dtype] = {
+                'needed': count_needed,
+                'available': free_slots,
+                'sufficient': free_slots >= count_needed
+            }
+
+        all_sufficient = all(v['sufficient'] for v in capacity_result.values())
+
+        cursor.close()
+        conn.close()
+
+        return jsonify({
+            'success': True,
+            'has_capacity': all_sufficient,
+            'details': capacity_result
+        })
+
+    except Exception as e:
+        print(f"Error checking destination capacity: {str(e)}")
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
 @app.route('/create_transfer_request', methods=['POST'])
 def create_transfer_request():
     """Create a new transfer request"""
@@ -3100,29 +3616,214 @@ def create_transfer_request():
         to_lab_id = data.get('to_lab_id')
         device_ids = data.get('device_ids', [])
         remark = data.get('remark', '')
+        transfer_type = data.get('transfer_type', 'individual')  # 'station' or 'individual'
+        station_ids = data.get('station_ids', [])  # source station_ids when transfer_type is 'station'
+        dest_cell_id = data.get('dest_cell_id')  # selected destination layout cell or station_id (legacy single-dest)
+        device_dest_map = data.get('device_dest_map') or {}  # { device_id: dest_cell_id }
         
         if not from_lab_id or not to_lab_id or not device_ids:
             return jsonify({'success': False, 'error': 'Missing required fields'}), 400
+        
+        if not isinstance(device_dest_map, dict):
+            return jsonify({'success': False, 'error': 'device_dest_map must be an object'}), 400
+
+        # Backward compatibility: if frontend still sends only one destination, map all devices to it.
+        if not device_dest_map and dest_cell_id:
+            device_dest_map = {str(did): int(dest_cell_id) for did in device_ids}
+
+        if not device_dest_map:
+            return jsonify({'success': False, 'error': 'Please assign destination station for all selected devices'}), 400
         
         if from_lab_id == to_lab_id:
             return jsonify({'success': False, 'error': 'Source and destination labs cannot be the same'}), 400
         
         # Get current user
         user_info = get_current_user()
-        user_email = user_info.get('email', 'Unknown') if user_info else 'Unknown'
+        user_email = user_info.email if user_info else 'Unknown'
         
         conn = db.get_connection()
         cursor = conn.cursor()
+
+        # Check for devices already in pending transfers
+        cursor.execute("""
+            SELECT device_ids FROM transfer_requests WHERE status = 'pending'
+        """)
+        pending_rows = cursor.fetchall()
+        for prow in pending_rows:
+            existing_ids = json.loads(prow['device_ids']) if isinstance(prow['device_ids'], str) else (prow['device_ids'] or [])
+            existing_set = set(int(x) for x in existing_ids)
+            incoming_set = set(int(x) for x in device_ids)
+            overlap = incoming_set & existing_set
+            if overlap:
+                cursor.close(); conn.close()
+                return jsonify({
+                    'success': False,
+                    'error': f'Some selected devices already have pending transfer requests. Please remove them and try again.'
+                }), 400
+
+        # Get device type names for the devices being transferred
+        cursor.execute("""
+            SELECT d.device_id, et.name AS device_type
+            FROM devices d
+            JOIN equipment_types et ON d.type_id = et.type_id
+            WHERE d.device_id = ANY(%s)
+        """, (device_ids,))
+        device_rows = cursor.fetchall()
+        if len(device_rows) != len(device_ids):
+            cursor.close(); conn.close()
+            return jsonify({'success': False, 'error': 'One or more selected devices are invalid'}), 400
+
+        device_type_by_id = {int(r['device_id']): (r['device_type'] or '') for r in device_rows}
+
+        # Normalize and validate destination map keys/values
+        normalized_map = {}
+        for did_raw, cell_raw in device_dest_map.items():
+            try:
+                did = int(did_raw)
+                dcid = int(cell_raw)
+            except Exception:
+                cursor.close(); conn.close()
+                return jsonify({'success': False, 'error': 'device_dest_map contains invalid ids'}), 400
+            normalized_map[did] = dcid
+
+        missing_dest = [did for did in device_ids if int(did) not in normalized_map]
+        if missing_dest:
+            cursor.close(); conn.close()
+            return jsonify({'success': False, 'error': 'Please assign destination station for all selected devices'}), 400
+
+        extra_dest = [did for did in normalized_map.keys() if did not in [int(x) for x in device_ids]]
+        if extra_dest:
+            cursor.close(); conn.close()
+            return jsonify({'success': False, 'error': 'device_dest_map contains devices not present in device_ids'}), 400
+
+        def infer_allowed_names(t):
+            tl = (t or '').lower()
+            if tl == 'pc': return ['PC']
+            if tl == 'laptop': return ['Laptop']
+            if 'teacher' in tl: return ['PC', 'Laptop']
+            if tl == 'ac': return ['AC']
+            if tl == 'projector': return ['Projector', 'Smart Board']
+            if tl == 'printer': return ['Printer']
+            if tl == 'scanner': return ['Scanner']
+            if tl == 'ups': return ['UPS']
+            if tl == 'server': return ['Server']
+            if 'router' in tl: return ['Router']
+            if 'switch' in tl: return ['Network Switch']
+            return [t] if t else []
+
+        # Group selected devices by destination cell and validate each target cell.
+        grouped_by_dest = {}
+        for did in device_ids:
+            grouped_by_dest.setdefault(normalized_map[int(did)], []).append(int(did))
+
+        validation_errors = []
+        for mapped_dest_cell_id, mapped_device_ids in grouped_by_dest.items():
+            cursor.execute("""
+                SELECT lc.cell_id, lc.row_number, lc.column_number,
+                       st.allowed_device_types, st.name AS station_type_name
+                FROM lab_layout_cells lc
+                JOIN station_types st ON lc.station_type_id = st.station_type_id
+                JOIN labs l ON lc.layout_id = l.layout_id
+                WHERE lc.cell_id = %s AND l.lab_id = %s
+            """, (mapped_dest_cell_id, to_lab_id))
+            dest_cell = cursor.fetchone()
+
+            allowed_names = []
+            current_device_types = []
+            station_name = 'station'
+
+            if dest_cell:
+                dest_row = dest_cell['row_number']
+                dest_col = dest_cell['column_number']
+                station_name = dest_cell['station_type_name'] or 'station'
+                allowed_names = dest_cell['allowed_device_types'] or []
+
+                cursor.execute("""
+                    SELECT lsd.device_type
+                    FROM lab_stations ls
+                    JOIN lab_grid_cells lgc ON ls.station_id = lgc.station_id
+                    JOIN lab_station_devices lsd ON ls.station_id = lsd.station_id
+                    WHERE ls.lab_id = %s AND lgc.row_number = %s AND lgc.column_number = %s
+                """, (to_lab_id, dest_row, dest_col))
+                current_device_types = [r['device_type'] for r in cursor.fetchall()]
+            else:
+                cursor.execute("""
+                    SELECT ls.station_id, lgc.equipment_type
+                    FROM lab_stations ls
+                    LEFT JOIN lab_grid_cells lgc ON ls.station_id = lgc.station_id
+                    WHERE ls.station_id = %s AND ls.lab_id = %s
+                """, (mapped_dest_cell_id, to_lab_id))
+                rt_station = cursor.fetchone()
+
+                if not rt_station:
+                    validation_errors.append(f"Destination station {mapped_dest_cell_id} is invalid")
+                    continue
+
+                eq_type = rt_station['equipment_type'] or ''
+                station_name = eq_type or 'station'
+                allowed_names = infer_allowed_names(eq_type)
+
+                cursor.execute("""
+                    SELECT lsd.device_type
+                    FROM lab_station_devices lsd
+                    WHERE lsd.station_id = %s
+                """, (mapped_dest_cell_id,))
+                current_device_types = [r['device_type'] for r in cursor.fetchall()]
+
+            # Prevent duplicate same-type placements into one station in a single request.
+            planned_types = set(current_device_types)
+            for did in mapped_device_ids:
+                dtype = device_type_by_id.get(int(did), '')
+                if dtype not in allowed_names:
+                    validation_errors.append(f"{dtype} is not allowed at {station_name} station")
+                    continue
+                if dtype in planned_types:
+                    validation_errors.append(f"{dtype} slot is already occupied at {station_name} station")
+                    continue
+                planned_types.add(dtype)
+
+        if validation_errors:
+            cursor.close(); conn.close()
+            return jsonify({'success': False, 'error': f"Cannot place devices: {', '.join(validation_errors)}"}), 400
         
         # Create transfer request
+        # Persist map when column exists; otherwise fall back to legacy insert.
         cursor.execute("""
-            INSERT INTO transfer_requests 
-            (from_lab_id, to_lab_id, device_ids, remark, status, requested_by, requested_at)
-            VALUES (%s, %s, %s, %s, 'pending', %s, NOW())
-            RETURNING transfer_id
-        """, (from_lab_id, to_lab_id, json.dumps(device_ids), remark, user_email))
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_name = 'transfer_requests' AND column_name = 'device_dest_map'
+        """)
+        has_device_dest_map = cursor.fetchone() is not None
+
+        if not has_device_dest_map and len(grouped_by_dest.keys()) > 1:
+            cursor.close(); conn.close()
+            return jsonify({
+                'success': False,
+                'error': 'Multiple destination cells selected, but the transfer_requests.device_dest_map column is missing. Run backend/migrations/transfer_dest_cell.sql and retry.'
+            }), 400
+
+        primary_dest_cell = int(dest_cell_id) if dest_cell_id else next(iter(grouped_by_dest.keys()))
+
+        if has_device_dest_map:
+            cursor.execute("""
+                INSERT INTO transfer_requests 
+                (from_lab_id, to_lab_id, device_ids, remark, status, requested_by, requested_at,
+                 transfer_type, station_ids, dest_cell_id, device_dest_map)
+                VALUES (%s, %s, %s, %s, 'pending', %s, NOW(), %s, %s, %s, %s)
+                RETURNING transfer_id
+            """, (from_lab_id, to_lab_id, json.dumps(device_ids), remark, user_email,
+                  transfer_type, json.dumps(station_ids), primary_dest_cell, json.dumps(normalized_map)))
+        else:
+            cursor.execute("""
+                INSERT INTO transfer_requests 
+                (from_lab_id, to_lab_id, device_ids, remark, status, requested_by, requested_at,
+                 transfer_type, station_ids, dest_cell_id)
+                VALUES (%s, %s, %s, %s, 'pending', %s, NOW(), %s, %s, %s)
+                RETURNING transfer_id
+            """, (from_lab_id, to_lab_id, json.dumps(device_ids), remark, user_email,
+                  transfer_type, json.dumps(station_ids), primary_dest_cell))
         
-        transfer_id = cursor.fetchone()[0]
+        transfer_id = cursor.fetchone()['transfer_id']
         conn.commit()
         cursor.close()
         conn.close()
@@ -3146,66 +3847,114 @@ def get_pending_transfers():
         cursor = conn.cursor()
         
         cursor.execute("""
-            SELECT 
-                tr.transfer_id,
-                tr.from_lab_id,
-                l1.lab_name as from_lab_name,
-                tr.to_lab_id,
-                l2.lab_name as to_lab_name,
-                tr.device_ids,
-                tr.remark,
-                tr.status,
-                tr.requested_by,
-                tr.requested_at
-            FROM transfer_requests tr
-            LEFT JOIN labs l1 ON tr.from_lab_id = l1.lab_id
-            LEFT JOIN labs l2 ON tr.to_lab_id = l2.lab_id
-            WHERE tr.status = 'pending'
-            ORDER BY tr.requested_at DESC
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_name = 'transfer_requests' AND column_name = 'device_dest_map'
         """)
+        has_device_dest_map = cursor.fetchone() is not None
+
+        if has_device_dest_map:
+            cursor.execute("""
+                SELECT 
+                    tr.transfer_id,
+                    tr.from_lab_id,
+                    l1.lab_name as from_lab_name,
+                    tr.to_lab_id,
+                    l2.lab_name as to_lab_name,
+                    tr.device_ids,
+                    tr.remark,
+                    tr.status,
+                    tr.requested_by,
+                    TRIM(CONCAT_WS(' ', u_req.first_name, u_req.last_name)) as requested_by_name,
+                    tr.requested_at,
+                    tr.transfer_type,
+                    tr.station_ids,
+                    tr.device_dest_map
+                FROM transfer_requests tr
+                LEFT JOIN labs l1 ON tr.from_lab_id = l1.lab_id
+                LEFT JOIN labs l2 ON tr.to_lab_id = l2.lab_id
+                LEFT JOIN users u_req ON tr.requested_by = u_req.email
+                WHERE tr.status = 'pending'
+                ORDER BY tr.requested_at DESC
+            """)
+        else:
+            cursor.execute("""
+                SELECT 
+                    tr.transfer_id,
+                    tr.from_lab_id,
+                    l1.lab_name as from_lab_name,
+                    tr.to_lab_id,
+                    l2.lab_name as to_lab_name,
+                    tr.device_ids,
+                    tr.remark,
+                    tr.status,
+                    tr.requested_by,
+                    TRIM(CONCAT_WS(' ', u_req.first_name, u_req.last_name)) as requested_by_name,
+                    tr.requested_at,
+                    tr.transfer_type,
+                    tr.station_ids
+                FROM transfer_requests tr
+                LEFT JOIN labs l1 ON tr.from_lab_id = l1.lab_id
+                LEFT JOIN labs l2 ON tr.to_lab_id = l2.lab_id
+                LEFT JOIN users u_req ON tr.requested_by = u_req.email
+                WHERE tr.status = 'pending'
+                ORDER BY tr.requested_at DESC
+            """)
         
         transfers = []
         for row in cursor.fetchall():
-            device_ids = json.loads(row[5])
+            device_ids = json.loads(row['device_ids']) if isinstance(row['device_ids'], str) else row['device_ids']
             
-            # Fetch device details
+            # Fetch device details with station info
             cursor.execute("""
                 SELECT 
                     d.device_id,
-                    dt.type_name,
+                    et.name as type_name,
                     d.brand,
                     d.model,
-                    d.asset_id,
-                    lsd.assigned_code
+                    d.asset_code as asset_id,
+                    d.assigned_code,
+                    ls.assigned_code as station_code
                 FROM devices d
-                LEFT JOIN device_types dt ON d.type_id = dt.type_id
+                LEFT JOIN equipment_types et ON d.type_id = et.type_id
                 LEFT JOIN lab_station_devices lsd ON d.device_id = lsd.device_id
+                LEFT JOIN lab_stations ls ON lsd.station_id = ls.station_id
                 WHERE d.device_id = ANY(%s)
             """, (device_ids,))
             
             devices = []
             for dev_row in cursor.fetchall():
                 devices.append({
-                    'device_id': dev_row[0],
-                    'type_name': dev_row[1],
-                    'brand': dev_row[2],
-                    'model': dev_row[3],
-                    'asset_id': dev_row[4],
-                    'assigned_code': dev_row[5]
+                    'device_id': dev_row['device_id'],
+                    'type_name': dev_row['type_name'],
+                    'brand': dev_row['brand'],
+                    'model': dev_row['model'],
+                    'asset_id': dev_row['asset_id'],
+                    'assigned_code': dev_row['assigned_code'],
+                    'station_code': dev_row['station_code']
                 })
             
+            station_ids_raw = row.get('station_ids')
+            station_ids = json.loads(station_ids_raw) if isinstance(station_ids_raw, str) and station_ids_raw else (station_ids_raw or [])
+            device_dest_map_raw = row.get('device_dest_map')
+            device_dest_map = json.loads(device_dest_map_raw) if isinstance(device_dest_map_raw, str) and device_dest_map_raw else (device_dest_map_raw or {})
+            
             transfers.append({
-                'transfer_id': row[0],
-                'from_lab_id': row[1],
-                'from_lab_name': row[2],
-                'to_lab_id': row[3],
-                'to_lab_name': row[4],
+                'transfer_id': row['transfer_id'],
+                'from_lab_id': row['from_lab_id'],
+                'from_lab_name': row['from_lab_name'],
+                'to_lab_id': row['to_lab_id'],
+                'to_lab_name': row['to_lab_name'],
                 'device_ids': device_ids,
                 'devices': devices,
-                'remark': row[6],
-                'status': row[7],
-                'requested_by': row[8],
-                'requested_at': row[9].isoformat() if row[9] else None
+                'remark': row['remark'],
+                'status': row['status'],
+                'requested_by': row['requested_by'],
+                'requested_by_name': row.get('requested_by_name'),
+                'requested_at': row['requested_at'].isoformat() if row['requested_at'] else None,
+                'transfer_type': row.get('transfer_type', 'individual'),
+                'station_ids': station_ids,
+                'device_dest_map': device_dest_map
             })
         
         cursor.close()
@@ -3221,38 +3970,676 @@ def get_pending_transfers():
         traceback.print_exc()
         return jsonify({'success': False, 'error': str(e)}), 500
 
+
+@app.route('/get_transfer_history', methods=['GET'])
+def get_transfer_history():
+    """Get transfer history (approved/rejected) with device details."""
+    try:
+        conn = db.get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_name = 'transfer_requests' AND column_name = 'device_dest_map'
+        """)
+        has_device_dest_map = cursor.fetchone() is not None
+
+        if has_device_dest_map:
+            cursor.execute("""
+                SELECT
+                    tr.transfer_id,
+                    tr.from_lab_id,
+                    l1.lab_name as from_lab_name,
+                    tr.to_lab_id,
+                    l2.lab_name as to_lab_name,
+                    tr.device_ids,
+                    tr.remark,
+                    tr.status,
+                    tr.requested_by,
+                    TRIM(CONCAT_WS(' ', u_req.first_name, u_req.last_name)) as requested_by_name,
+                    tr.requested_at,
+                    tr.approved_by,
+                    TRIM(CONCAT_WS(' ', u_app.first_name, u_app.last_name)) as approved_by_name,
+                    tr.approved_at,
+                    tr.transfer_type,
+                    tr.station_ids,
+                    tr.dest_cell_id,
+                    tr.device_dest_map
+                FROM transfer_requests tr
+                LEFT JOIN labs l1 ON tr.from_lab_id = l1.lab_id
+                LEFT JOIN labs l2 ON tr.to_lab_id = l2.lab_id
+                LEFT JOIN users u_req ON tr.requested_by = u_req.email
+                LEFT JOIN users u_app ON tr.approved_by = u_app.email
+                WHERE tr.status <> 'pending'
+                ORDER BY COALESCE(tr.approved_at, tr.requested_at) DESC
+            """)
+        else:
+            cursor.execute("""
+                SELECT
+                    tr.transfer_id,
+                    tr.from_lab_id,
+                    l1.lab_name as from_lab_name,
+                    tr.to_lab_id,
+                    l2.lab_name as to_lab_name,
+                    tr.device_ids,
+                    tr.remark,
+                    tr.status,
+                    tr.requested_by,
+                    TRIM(CONCAT_WS(' ', u_req.first_name, u_req.last_name)) as requested_by_name,
+                    tr.requested_at,
+                    tr.approved_by,
+                    TRIM(CONCAT_WS(' ', u_app.first_name, u_app.last_name)) as approved_by_name,
+                    tr.approved_at,
+                    tr.transfer_type,
+                    tr.station_ids,
+                    tr.dest_cell_id
+                FROM transfer_requests tr
+                LEFT JOIN labs l1 ON tr.from_lab_id = l1.lab_id
+                LEFT JOIN labs l2 ON tr.to_lab_id = l2.lab_id
+                LEFT JOIN users u_req ON tr.requested_by = u_req.email
+                LEFT JOIN users u_app ON tr.approved_by = u_app.email
+                WHERE tr.status <> 'pending'
+                ORDER BY COALESCE(tr.approved_at, tr.requested_at) DESC
+            """)
+
+        transfers = []
+        for row in cursor.fetchall():
+            device_ids = json.loads(row['device_ids']) if isinstance(row['device_ids'], str) else row['device_ids']
+
+            cursor.execute("""
+                SELECT
+                    d.device_id,
+                    et.name as type_name,
+                    d.brand,
+                    d.model,
+                    d.asset_code as asset_id,
+                    d.assigned_code,
+                    ls.assigned_code as station_code
+                FROM devices d
+                LEFT JOIN equipment_types et ON d.type_id = et.type_id
+                LEFT JOIN lab_station_devices lsd ON d.device_id = lsd.device_id
+                LEFT JOIN lab_stations ls ON lsd.station_id = ls.station_id
+                WHERE d.device_id = ANY(%s)
+            """, (device_ids,))
+
+            devices = []
+            for dev_row in cursor.fetchall():
+                devices.append({
+                    'device_id': dev_row['device_id'],
+                    'type_name': dev_row['type_name'],
+                    'brand': dev_row['brand'],
+                    'model': dev_row['model'],
+                    'asset_id': dev_row['asset_id'],
+                    'assigned_code': dev_row['assigned_code'],
+                    'station_code': dev_row['station_code']
+                })
+
+            station_ids_raw = row.get('station_ids')
+            station_ids = json.loads(station_ids_raw) if isinstance(station_ids_raw, str) and station_ids_raw else (station_ids_raw or [])
+            device_dest_map_raw = row.get('device_dest_map')
+            device_dest_map = json.loads(device_dest_map_raw) if isinstance(device_dest_map_raw, str) and device_dest_map_raw else (device_dest_map_raw or {})
+
+            if not device_dest_map and row.get('dest_cell_id'):
+                device_dest_map = {str(did): int(row['dest_cell_id']) for did in device_ids}
+
+            transfers.append({
+                'transfer_id': row['transfer_id'],
+                'from_lab_id': row['from_lab_id'],
+                'from_lab_name': row['from_lab_name'],
+                'to_lab_id': row['to_lab_id'],
+                'to_lab_name': row['to_lab_name'],
+                'device_ids': device_ids,
+                'devices': devices,
+                'remark': row['remark'],
+                'status': row['status'],
+                'requested_by': row['requested_by'],
+                'requested_by_name': row.get('requested_by_name'),
+                'requested_at': row['requested_at'].isoformat() if row['requested_at'] else None,
+                'approved_by': row['approved_by'],
+                'approved_by_name': row.get('approved_by_name'),
+                'approved_at': row['approved_at'].isoformat() if row['approved_at'] else None,
+                'transfer_type': row.get('transfer_type', 'individual'),
+                'station_ids': station_ids,
+                'device_dest_map': device_dest_map
+            })
+
+        cursor.close()
+        conn.close()
+
+        return jsonify({'success': True, 'transfers': transfers})
+
+    except Exception as e:
+        print(f"Error fetching transfer history: {str(e)}")
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+def resolve_transfer_dest_cell(cursor, lab_id, cell_id):
+    """Resolve destination cell to row/column and label."""
+    if not cell_id:
+        return None, None, None
+
+    cursor.execute("""
+        SELECT lc.row_number, lc.column_number,
+               COALESCE(lc.station_label, st.name, 'Station') AS label
+        FROM lab_layout_cells lc
+        JOIN station_types st ON lc.station_type_id = st.station_type_id
+        JOIN labs l ON lc.layout_id = l.layout_id
+        WHERE lc.cell_id = %s AND l.lab_id = %s
+    """, (cell_id, lab_id))
+    bp = cursor.fetchone()
+    if bp:
+        return bp['row_number'], bp['column_number'], bp['label']
+
+    cursor.execute("""
+        SELECT ls.row_number, ls.column_number,
+               COALESCE(lgc.equipment_type, 'Station') AS label
+        FROM lab_stations ls
+        LEFT JOIN lab_grid_cells lgc ON ls.station_id = lgc.station_id
+        WHERE ls.station_id = %s AND ls.lab_id = %s
+    """, (cell_id, lab_id))
+    rt = cursor.fetchone()
+    if rt:
+        return rt['row_number'], rt['column_number'], rt['label']
+
+    return None, None, None
+
+
+@app.route('/export_transfer_history_excel', methods=['GET'])
+def export_transfer_history_excel():
+    """Export transfer history to CSV (Excel compatible)."""
+    try:
+        conn = db.get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_name = 'transfer_requests' AND column_name = 'device_dest_map'
+        """)
+        has_device_dest_map = cursor.fetchone() is not None
+
+        if has_device_dest_map:
+            cursor.execute("""
+                SELECT
+                    tr.transfer_id,
+                    tr.from_lab_id,
+                    l1.lab_name as from_lab_name,
+                    tr.to_lab_id,
+                    l2.lab_name as to_lab_name,
+                    tr.device_ids,
+                    tr.remark,
+                    tr.status,
+                    tr.requested_by,
+                    tr.requested_at,
+                    tr.approved_by,
+                    tr.approved_at,
+                    tr.transfer_type,
+                    tr.station_ids,
+                    tr.dest_cell_id,
+                    tr.device_dest_map
+                FROM transfer_requests tr
+                LEFT JOIN labs l1 ON tr.from_lab_id = l1.lab_id
+                LEFT JOIN labs l2 ON tr.to_lab_id = l2.lab_id
+                WHERE tr.status <> 'pending'
+                ORDER BY COALESCE(tr.approved_at, tr.requested_at) DESC
+            """)
+        else:
+            cursor.execute("""
+                SELECT
+                    tr.transfer_id,
+                    tr.from_lab_id,
+                    l1.lab_name as from_lab_name,
+                    tr.to_lab_id,
+                    l2.lab_name as to_lab_name,
+                    tr.device_ids,
+                    tr.remark,
+                    tr.status,
+                    tr.requested_by,
+                    tr.requested_at,
+                    tr.approved_by,
+                    tr.approved_at,
+                    tr.transfer_type,
+                    tr.station_ids,
+                    tr.dest_cell_id
+                FROM transfer_requests tr
+                LEFT JOIN labs l1 ON tr.from_lab_id = l1.lab_id
+                LEFT JOIN labs l2 ON tr.to_lab_id = l2.lab_id
+                WHERE tr.status <> 'pending'
+                ORDER BY COALESCE(tr.approved_at, tr.requested_at) DESC
+            """)
+
+        rows = cursor.fetchall()
+        lines = []
+        header = [
+            "Transfer ID", "Status", "From Lab", "To Lab", "Requested By", "Requested At",
+            "Approved By", "Approved At", "Transfer Type", "Device Type", "Brand", "Model",
+            "Asset Code", "Assigned Code", "Station Code", "Dest Cell", "Dest Position", "Remark"
+        ]
+        lines.append(",".join(header))
+
+        for row in rows:
+            device_ids = json.loads(row['device_ids']) if isinstance(row['device_ids'], str) else row['device_ids']
+
+            cursor.execute("""
+                SELECT
+                    d.device_id,
+                    et.name as type_name,
+                    d.brand,
+                    d.model,
+                    d.asset_code as asset_id,
+                    d.assigned_code,
+                    ls.assigned_code as station_code
+                FROM devices d
+                LEFT JOIN equipment_types et ON d.type_id = et.type_id
+                LEFT JOIN lab_station_devices lsd ON d.device_id = lsd.device_id
+                LEFT JOIN lab_stations ls ON lsd.station_id = ls.station_id
+                WHERE d.device_id = ANY(%s)
+            """, (device_ids,))
+            devices = cursor.fetchall()
+
+            device_dest_map_raw = row.get('device_dest_map')
+            device_dest_map = json.loads(device_dest_map_raw) if isinstance(device_dest_map_raw, str) and device_dest_map_raw else (device_dest_map_raw or {})
+            if not device_dest_map and row.get('dest_cell_id'):
+                device_dest_map = {str(did): int(row['dest_cell_id']) for did in device_ids}
+
+            for dev in devices:
+                dest_cell_id = device_dest_map.get(str(dev['device_id']))
+                drow, dcol, dlabel = resolve_transfer_dest_cell(cursor, row['to_lab_id'], dest_cell_id) if dest_cell_id else (None, None, None)
+                pos = f"R{drow},C{dcol}" if drow is not None and dcol is not None else ""
+                dest_label = dlabel or ""
+
+                line = [
+                    str(row['transfer_id']),
+                    row['status'] or "",
+                    row['from_lab_name'] or row['from_lab_id'] or "",
+                    row['to_lab_name'] or row['to_lab_id'] or "",
+                    row['requested_by'] or "",
+                    row['requested_at'].isoformat() if row['requested_at'] else "",
+                    row['approved_by'] or "",
+                    row['approved_at'].isoformat() if row['approved_at'] else "",
+                    row.get('transfer_type', 'individual') or "",
+                    dev['type_name'] or "",
+                    dev['brand'] or "",
+                    dev['model'] or "",
+                    dev['asset_id'] or "",
+                    dev['assigned_code'] or "",
+                    dev['station_code'] or "",
+                    str(dest_cell_id) if dest_cell_id else "",
+                    pos or dest_label,
+                    (row['remark'] or "").replace("\n", " ").replace("\r", " ")
+                ]
+                safe_line = [str(v).replace('"', '""') for v in line]
+                lines.append(",".join([f'"{v}"' for v in safe_line]))
+
+        csv_data = "\n".join(lines)
+        output = BytesIO()
+        output.write(csv_data.encode('utf-8'))
+        output.seek(0)
+
+        cursor.close()
+        conn.close()
+
+        return send_file(
+            output,
+            mimetype='text/csv',
+            as_attachment=True,
+            download_name='transfer_history.csv'
+        )
+
+    except Exception as e:
+        print(f"Error exporting transfer history CSV: {str(e)}")
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/export_transfer_history_pdf', methods=['GET'])
+def export_transfer_history_pdf():
+    """Export transfer history to PDF."""
+    try:
+        conn = db.get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_name = 'transfer_requests' AND column_name = 'device_dest_map'
+        """)
+        has_device_dest_map = cursor.fetchone() is not None
+
+        if has_device_dest_map:
+            cursor.execute("""
+                SELECT
+                    tr.transfer_id,
+                    tr.from_lab_id,
+                    l1.lab_name as from_lab_name,
+                    tr.to_lab_id,
+                    l2.lab_name as to_lab_name,
+                    tr.device_ids,
+                    tr.remark,
+                    tr.status,
+                    tr.requested_by,
+                    tr.requested_at,
+                    tr.approved_by,
+                    tr.approved_at,
+                    tr.transfer_type,
+                    tr.station_ids,
+                    tr.dest_cell_id,
+                    tr.device_dest_map
+                FROM transfer_requests tr
+                LEFT JOIN labs l1 ON tr.from_lab_id = l1.lab_id
+                LEFT JOIN labs l2 ON tr.to_lab_id = l2.lab_id
+                WHERE tr.status <> 'pending'
+                ORDER BY COALESCE(tr.approved_at, tr.requested_at) DESC
+            """)
+        else:
+            cursor.execute("""
+                SELECT
+                    tr.transfer_id,
+                    tr.from_lab_id,
+                    l1.lab_name as from_lab_name,
+                    tr.to_lab_id,
+                    l2.lab_name as to_lab_name,
+                    tr.device_ids,
+                    tr.remark,
+                    tr.status,
+                    tr.requested_by,
+                    tr.requested_at,
+                    tr.approved_by,
+                    tr.approved_at,
+                    tr.transfer_type,
+                    tr.station_ids,
+                    tr.dest_cell_id
+                FROM transfer_requests tr
+                LEFT JOIN labs l1 ON tr.from_lab_id = l1.lab_id
+                LEFT JOIN labs l2 ON tr.to_lab_id = l2.lab_id
+                WHERE tr.status <> 'pending'
+                ORDER BY COALESCE(tr.approved_at, tr.requested_at) DESC
+            """)
+
+        rows = cursor.fetchall()
+
+        buffer = BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=A4)
+        styles = getSampleStyleSheet()
+        elems = []
+
+        elems.append(Paragraph("Transfer History", styles['Title']))
+        elems.append(Spacer(1, 0.2 * inch))
+
+        table_data = [[
+            "Transfer", "From", "To", "Status", "Requested", "Approved", "Device", "Destination"
+        ]]
+
+        for row in rows:
+            device_ids = json.loads(row['device_ids']) if isinstance(row['device_ids'], str) else row['device_ids']
+            cursor.execute("""
+                SELECT
+                    d.device_id,
+                    et.name as type_name,
+                    d.brand,
+                    d.model,
+                    d.assigned_code
+                FROM devices d
+                LEFT JOIN equipment_types et ON d.type_id = et.type_id
+                WHERE d.device_id = ANY(%s)
+            """, (device_ids,))
+            devices = cursor.fetchall()
+
+            device_dest_map_raw = row.get('device_dest_map')
+            device_dest_map = json.loads(device_dest_map_raw) if isinstance(device_dest_map_raw, str) and device_dest_map_raw else (device_dest_map_raw or {})
+            if not device_dest_map and row.get('dest_cell_id'):
+                device_dest_map = {str(did): int(row['dest_cell_id']) for did in device_ids}
+
+            for dev in devices:
+                dest_cell_id = device_dest_map.get(str(dev['device_id']))
+                drow, dcol, dlabel = resolve_transfer_dest_cell(cursor, row['to_lab_id'], dest_cell_id) if dest_cell_id else (None, None, None)
+                pos = f"R{drow},C{dcol}" if drow is not None and dcol is not None else ""
+                dest_text = f"{dlabel or 'Cell'} {pos}" if dest_cell_id else ""
+
+                device_text = f"{dev['type_name']} {dev['brand'] or ''} {dev['model'] or ''}"
+                table_data.append([
+                    f"#{row['transfer_id']}",
+                    row['from_lab_name'] or row['from_lab_id'],
+                    row['to_lab_name'] or row['to_lab_id'],
+                    row['status'],
+                    row['requested_at'].strftime('%Y-%m-%d') if row['requested_at'] else '',
+                    row['approved_at'].strftime('%Y-%m-%d') if row['approved_at'] else '',
+                    device_text.strip(),
+                    dest_text.strip()
+                ])
+
+        table = Table(table_data, repeatRows=1)
+        table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, 0), 9),
+            ('FONTSIZE', (0, 1), (-1, -1), 8),
+            ('GRID', (0, 0), (-1, -1), 0.25, colors.grey),
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ]))
+
+        elems.append(table)
+        doc.build(elems)
+
+        buffer.seek(0)
+        cursor.close()
+        conn.close()
+
+        return send_file(
+            buffer,
+            mimetype='application/pdf',
+            as_attachment=True,
+            download_name='transfer_history.pdf'
+        )
+
+    except Exception as e:
+        print(f"Error exporting transfer history PDF: {str(e)}")
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 @app.route('/approve_transfer/<int:transfer_id>', methods=['POST'])
 def approve_transfer(transfer_id):
-    """Approve transfer request and move devices"""
+    """Approve transfer request and move devices between labs"""
+    conn = None
     try:
         # Get current user (should be HOD)
         user_info = get_current_user()
-        user_email = user_info.get('email', 'Unknown') if user_info else 'Unknown'
+        user_email = user_info.email if user_info else 'Unknown'
         
         conn = db.get_connection()
         cursor = conn.cursor()
         
-        # Get transfer details
+        # Get transfer details (read device_dest_map if available)
         cursor.execute("""
-            SELECT from_lab_id, to_lab_id, device_ids
-            FROM transfer_requests
-            WHERE transfer_id = %s AND status = 'pending'
-        """, (transfer_id,))
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_name = 'transfer_requests' AND column_name = 'device_dest_map'
+        """)
+        has_device_dest_map = cursor.fetchone() is not None
+
+        if has_device_dest_map:
+            cursor.execute("""
+                SELECT from_lab_id, to_lab_id, device_ids, transfer_type, station_ids, dest_cell_id, device_dest_map
+                FROM transfer_requests
+                WHERE transfer_id = %s AND status = 'pending'
+            """, (transfer_id,))
+        else:
+            cursor.execute("""
+                SELECT from_lab_id, to_lab_id, device_ids, transfer_type, station_ids, dest_cell_id
+                FROM transfer_requests
+                WHERE transfer_id = %s AND status = 'pending'
+            """, (transfer_id,))
         
         result = cursor.fetchone()
         if not result:
             return jsonify({'success': False, 'error': 'Transfer request not found or already processed'}), 404
         
-        from_lab_id, to_lab_id, device_ids_json = result
-        device_ids = json.loads(device_ids_json)
+        from_lab_id = result['from_lab_id']
+        to_lab_id = result['to_lab_id']
+        device_ids_json = result['device_ids']
+        transfer_type = result.get('transfer_type', 'individual')
+        station_ids_json = result.get('station_ids')
+        dest_cell_id = result.get('dest_cell_id')
+        device_dest_map_json = result.get('device_dest_map') if has_device_dest_map else None
         
-        # Update devices lab assignment
-        for device_id in device_ids:
+        device_ids = json.loads(device_ids_json) if isinstance(device_ids_json, str) else device_ids_json
+        station_ids = json.loads(station_ids_json) if isinstance(station_ids_json, str) and station_ids_json else (station_ids_json or [])
+        device_dest_map = json.loads(device_dest_map_json) if isinstance(device_dest_map_json, str) and device_dest_map_json else (device_dest_map_json or {})
+
+        # Build per-device destination map; if absent, use legacy single destination for all devices.
+        if not device_dest_map and dest_cell_id:
+            device_dest_map = {str(did): int(dest_cell_id) for did in device_ids}
+
+        normalized_dest_by_device = {}
+        for did in device_ids:
+            key = str(did)
+            if key not in device_dest_map:
+                cursor.close(); conn.close()
+                return jsonify({'success': False, 'error': 'Transfer request has missing destination assignments'}), 400
+            normalized_dest_by_device[int(did)] = int(device_dest_map[key])
+
+        # Resolve every destination cell/station to a concrete destination station_id.
+        dest_station_id_cache = {}
+
+        def resolve_dest_to_position(cell_id):
             cursor.execute("""
-                UPDATE devices
-                SET lab_id = %s
-                WHERE device_id = %s
+                SELECT lc.cell_id, lc.row_number, lc.column_number,
+                       st.name AS station_type_name
+                FROM lab_layout_cells lc
+                JOIN station_types st ON lc.station_type_id = st.station_type_id
+                JOIN labs l ON lc.layout_id = l.layout_id
+                WHERE lc.cell_id = %s AND l.lab_id = %s
+            """, (cell_id, to_lab_id))
+            dest_cell_bp = cursor.fetchone()
+
+            if dest_cell_bp:
+                return dest_cell_bp['row_number'], dest_cell_bp['column_number'], (dest_cell_bp['station_type_name'] or 'Unknown')
+
+            cursor.execute("""
+                SELECT ls.station_id, ls.row_number, ls.column_number,
+                       COALESCE(lgc.equipment_type, 'Unknown') AS station_type_name
+                FROM lab_stations ls
+                LEFT JOIN lab_grid_cells lgc ON ls.station_id = lgc.station_id
+                WHERE ls.station_id = %s AND ls.lab_id = %s
+            """, (cell_id, to_lab_id))
+            rt_station = cursor.fetchone()
+            if not rt_station:
+                return None, None, None
+            return rt_station['row_number'], rt_station['column_number'], (rt_station['station_type_name'] or 'Unknown')
+
+        def get_or_create_dest_station(row_num, col_num, station_type_name):
+            cursor.execute("""
+                SELECT lgc.station_id
+                FROM lab_grid_cells lgc
+                WHERE lgc.lab_id = %s AND lgc.row_number = %s AND lgc.column_number = %s
+                  AND lgc.station_id IS NOT NULL
+            """, (to_lab_id, row_num, col_num))
+            existing_cell = cursor.fetchone()
+            if existing_cell:
+                return existing_cell['station_id']
+
+            station_code = f"{to_lab_id}/T-{row_num}-{col_num}"
+            cursor.execute("""
+                INSERT INTO lab_stations (lab_id, assigned_code, row_number, column_number)
+                VALUES (%s, %s, %s, %s) RETURNING station_id
+            """, (to_lab_id, station_code, row_num, col_num))
+            new_station_id = cursor.fetchone()['station_id']
+
+            cursor.execute("""
+                SELECT cell_id FROM lab_grid_cells
+                WHERE lab_id = %s AND row_number = %s AND column_number = %s
+            """, (to_lab_id, row_num, col_num))
+            existing_grid = cursor.fetchone()
+
+            if existing_grid:
+                cursor.execute("""
+                    UPDATE lab_grid_cells
+                    SET station_id = %s, is_empty = FALSE
+                    WHERE lab_id = %s AND row_number = %s AND column_number = %s
+                """, (new_station_id, to_lab_id, row_num, col_num))
+            else:
+                cursor.execute("""
+                    INSERT INTO lab_grid_cells
+                    (lab_id, row_number, column_number, assigned_code, equipment_type, is_empty, station_id)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """, (to_lab_id, row_num, col_num, station_code, station_type_name, False, new_station_id))
+
+            return new_station_id
+
+        for _, mapped_cell_id in normalized_dest_by_device.items():
+            if mapped_cell_id in dest_station_id_cache:
+                continue
+
+            dest_row, dest_col, dest_station_type_name = resolve_dest_to_position(mapped_cell_id)
+            if dest_row is None:
+                cursor.close(); conn.close()
+                return jsonify({'success': False, 'error': f'Destination station {mapped_cell_id} not found'}), 400
+
+            dest_station_id_cache[mapped_cell_id] = get_or_create_dest_station(dest_row, dest_col, dest_station_type_name)
+
+        # --- Execute the transfer ---
+        for device_id in device_ids:
+            mapped_cell_id = normalized_dest_by_device.get(int(device_id))
+            dest_station_id = dest_station_id_cache.get(mapped_cell_id)
+            if not dest_station_id:
+                cursor.close(); conn.close()
+                return jsonify({'success': False, 'error': f'Unable to resolve destination for device {device_id}'}), 400
+
+            # 1. Get the device's current station and details from source lab
+            cursor.execute("""
+                SELECT lsd.station_id, lsd.device_type, lsd.brand, lsd.model,
+                       lsd.specification, lsd.invoice_number, lsd.bill_id,
+                       lsd.is_linked, lsd.linked_group_id,
+                       d.assigned_code, d.asset_code
+                FROM lab_station_devices lsd
+                JOIN devices d ON lsd.device_id = d.device_id
+                WHERE lsd.device_id = %s
+            """, (device_id,))
+            src_record = cursor.fetchone()
+
+            if not src_record:
+                print(f"Warning: device {device_id} not found in lab_station_devices, skipping")
+                continue
+
+            # 2. Remove device from source lab station
+            cursor.execute("""
+                DELETE FROM lab_station_devices
+                WHERE device_id = %s AND station_id = %s
+            """, (device_id, src_record['station_id']))
+
+            # 3. Insert device into destination station
+            cursor.execute("""
+                INSERT INTO lab_station_devices
+                (station_id, device_id, device_type, brand, model, specification,
+                 invoice_number, bill_id, is_linked, linked_group_id)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (dest_station_id, device_id, src_record['device_type'],
+                  src_record['brand'], src_record['model'], src_record['specification'],
+                  src_record['invoice_number'], src_record['bill_id'],
+                  src_record['is_linked'], src_record['linked_group_id']))
+
+            # 4. Update devices table — keep assigned_code the same, update lab_id
+            cursor.execute("""
+                UPDATE devices SET lab_id = %s WHERE device_id = %s
             """, (to_lab_id, device_id))
+
+        # Check if entire source stations are now empty and clean up
+        if station_ids:
+            for sid in station_ids:
+                cursor.execute("""
+                    SELECT COUNT(*) as cnt FROM lab_station_devices WHERE station_id = %s
+                """, (sid,))
+                remaining = cursor.fetchone()['cnt']
+                if remaining == 0:
+                    cursor.execute("""
+                        UPDATE lab_grid_cells
+                        SET is_empty = TRUE, assigned_code = NULL
+                        WHERE station_id = %s
+                    """, (sid,))
         
         # Update transfer request status
         cursor.execute("""
@@ -3285,7 +4672,7 @@ def reject_transfer(transfer_id):
     try:
         # Get current user (should be HOD)
         user_info = get_current_user()
-        user_email = user_info.get('email', 'Unknown') if user_info else 'Unknown'
+        user_email = user_info.email if user_info else 'Unknown'
         
         conn = db.get_connection()
         cursor = conn.cursor()
@@ -3312,6 +4699,110 @@ def reject_transfer(transfer_id):
         
     except Exception as e:
         print(f"Error rejecting transfer: {str(e)}")
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/get_lab_pending_transfer_info/<lab_id>', methods=['GET'])
+def get_lab_pending_transfer_info(lab_id):
+    """Get pending transfer information for a specific lab.
+    Returns:
+      - outgoing_device_ids: list of device_ids in this lab that have pending outgoing transfers
+      - incoming_cells: dict of dest_cell_id -> list of { device_id, device_type, transfer_id } for pending incoming transfers
+    """
+    try:
+        conn = db.get_connection()
+        cursor = conn.cursor()
+
+        # Check if device_dest_map column exists
+        cursor.execute("""
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_name = 'transfer_requests' AND column_name = 'device_dest_map'
+        """)
+        has_device_dest_map = cursor.fetchone() is not None
+
+        # --- Outgoing: devices in this lab that are part of pending transfers ---
+        cursor.execute("""
+            SELECT transfer_id, device_ids, to_lab_id
+            FROM transfer_requests
+            WHERE from_lab_id = %s AND status = 'pending'
+        """, (lab_id,))
+        outgoing_device_ids = set()
+        outgoing_details = []  # [{transfer_id, to_lab_id, device_ids}]
+        for row in cursor.fetchall():
+            dids = json.loads(row['device_ids']) if isinstance(row['device_ids'], str) else (row['device_ids'] or [])
+            int_dids = [int(x) for x in dids]
+            outgoing_device_ids.update(int_dids)
+            outgoing_details.append({
+                'transfer_id': row['transfer_id'],
+                'to_lab_id': row['to_lab_id'],
+                'device_ids': int_dids
+            })
+
+        # --- Incoming: pending transfers TO this lab with dest cell mapping ---
+        if has_device_dest_map:
+            cursor.execute("""
+                SELECT transfer_id, device_ids, device_dest_map, from_lab_id
+                FROM transfer_requests
+                WHERE to_lab_id = %s AND status = 'pending'
+            """, (lab_id,))
+        else:
+            cursor.execute("""
+                SELECT transfer_id, device_ids, dest_cell_id, from_lab_id
+                FROM transfer_requests
+                WHERE to_lab_id = %s AND status = 'pending'
+            """, (lab_id,))
+
+        incoming_cells = {}  # cell_id -> [{ device_id, device_type, transfer_id }]
+        incoming_device_ids_all = []
+        for row in cursor.fetchall():
+            tid = row['transfer_id']
+            dids = json.loads(row['device_ids']) if isinstance(row['device_ids'], str) else (row['device_ids'] or [])
+            int_dids = [int(x) for x in dids]
+            incoming_device_ids_all.extend(int_dids)
+
+            dest_map = {}
+            if has_device_dest_map and row.get('device_dest_map'):
+                raw = row['device_dest_map']
+                dest_map = json.loads(raw) if isinstance(raw, str) else (raw or {})
+            elif row.get('dest_cell_id'):
+                dest_map = {str(did): int(row['dest_cell_id']) for did in int_dids}
+
+            for did_str, cell_id in dest_map.items():
+                cell_key = str(cell_id)
+                if cell_key not in incoming_cells:
+                    incoming_cells[cell_key] = []
+                incoming_cells[cell_key].append({
+                    'device_id': int(did_str),
+                    'transfer_id': tid,
+                    'from_lab_id': row['from_lab_id']
+                })
+
+        # Lookup device types for incoming devices
+        if incoming_device_ids_all:
+            cursor.execute("""
+                SELECT d.device_id, et.name AS device_type
+                FROM devices d
+                JOIN equipment_types et ON d.type_id = et.type_id
+                WHERE d.device_id = ANY(%s)
+            """, (incoming_device_ids_all,))
+            type_map = {r['device_id']: r['device_type'] for r in cursor.fetchall()}
+            for cell_key, entries in incoming_cells.items():
+                for entry in entries:
+                    entry['device_type'] = type_map.get(entry['device_id'], 'Unknown')
+
+        cursor.close()
+        conn.close()
+
+        return jsonify({
+            'success': True,
+            'outgoing_device_ids': list(outgoing_device_ids),
+            'outgoing_details': outgoing_details,
+            'incoming_cells': incoming_cells
+        })
+
+    except Exception as e:
+        print(f"Error fetching lab pending transfer info: {str(e)}")
         traceback.print_exc()
         return jsonify({'success': False, 'error': str(e)}), 500
 
@@ -3766,7 +5257,7 @@ def auto_assign_devices():
             if not layout_cells:
                 return jsonify({"error": "Layout has no cells. Design the layout first."}), 400
 
-            # ── Save existing device→code mapping before reset ───
+            # ── Save existing device→code mapping ────────────────
             cursor.execute(
                 """SELECT device_id, assigned_code FROM devices
                    WHERE lab_id = %s AND assigned_code IS NOT NULL
@@ -3776,22 +5267,56 @@ def auto_assign_devices():
             previous_codes = {r['device_id']: r['assigned_code']
                               for r in cursor.fetchall()}
 
-            # ── Reset existing assignments (keep lab_id so pool is preserved) ─
+            # ── Load current grid + station occupancy ─────────────
             cursor.execute(
-                """UPDATE devices
-                   SET assigned_code = NULL,
-                       qr_value = NULL, is_active = FALSE
+                """SELECT row_number, column_number, station_id, assigned_code,
+                          equipment_type, is_empty, os_windows, os_linux, os_other
+                   FROM lab_grid_cells
                    WHERE lab_id = %s""",
                 (lab_number,)
             )
-            cursor.execute("DELETE FROM lab_grid_cells WHERE lab_id = %s", (lab_number,))
+            grid_rows = cursor.fetchall()
+            grid_map = {(r['row_number'], r['column_number']): r for r in grid_rows}
+
             cursor.execute(
-                """DELETE FROM lab_station_devices
-                   WHERE station_id IN
-                         (SELECT station_id FROM lab_stations WHERE lab_id = %s)""",
+                """SELECT ls.station_id, ls.assigned_code, lsd.device_type
+                   FROM lab_stations ls
+                   LEFT JOIN lab_station_devices lsd ON lsd.station_id = ls.station_id
+                   WHERE ls.lab_id = %s""",
                 (lab_number,)
             )
-            cursor.execute("DELETE FROM lab_stations WHERE lab_id = %s", (lab_number,))
+            station_rows = cursor.fetchall()
+            station_device_types = {}
+            station_codes = {}
+            max_station_num = 0
+            for row in station_rows:
+                sid = row['station_id']
+                station_codes[sid] = row['assigned_code']
+                if sid not in station_device_types:
+                    station_device_types[sid] = set()
+                if row.get('device_type'):
+                    station_device_types[sid].add(row['device_type'])
+                code = row.get('assigned_code') or ''
+                if code.startswith(f"{lab_number}/ST-"):
+                    try:
+                        num = int(code.split("/ST-")[-1])
+                        if num > max_station_num:
+                            max_station_num = num
+                    except ValueError:
+                        pass
+
+            cursor.execute(
+                """SELECT lsd.station_id, d.assigned_code
+                   FROM lab_station_devices lsd
+                   JOIN devices d ON d.device_id = lsd.device_id
+                   JOIN lab_stations ls ON ls.station_id = lsd.station_id
+                   WHERE ls.lab_id = %s
+                     AND d.assigned_code IS NOT NULL AND d.assigned_code != ''""",
+                (lab_number,)
+            )
+            station_device_codes = {}
+            for row in cursor.fetchall():
+                station_device_codes.setdefault(row['station_id'], []).append(row['assigned_code'])
 
             # ── Build equipment list from pooled devices in DB ──────
             cursor.execute("""
@@ -3833,12 +5358,30 @@ def auto_assign_devices():
                 remaining[key] = remaining.get(key, 0) + eq.get('quantity', 0)
 
             used_device_ids = set()
-            station_counter = 0
+            station_counter = max_station_num
             devices_assigned = 0
-            station_device_codes = {}   # station_id → [device_code, ...]
 
-            # ── In-memory counter for device codes (does NOT touch device_code_counters table) ──
-            _type_counters = {}
+            # ── Device code counters (persisted per lab + device type) ──
+            cursor.execute(
+                "SELECT device_type, last_number FROM device_code_counters WHERE lab_id = %s",
+                (lab_number,)
+            )
+            _type_counters = {r['device_type']: r['last_number'] for r in cursor.fetchall()}
+
+            # Ensure counters are at least the max suffix seen in previous codes
+            for dtype, prefix in code_prefixes.items():
+                max_seen = _type_counters.get(dtype, 0)
+                if prefix:
+                    for code in previous_codes.values():
+                        if code and code.startswith(prefix + "/"):
+                            try:
+                                suffix = int(code[len(prefix) + 1:])
+                                if suffix > max_seen:
+                                    max_seen = suffix
+                            except ValueError:
+                                continue
+                _type_counters[dtype] = max_seen
+
             def get_next_number(device_type):
                 _type_counters[device_type] = _type_counters.get(device_type, 0) + 1
                 return _type_counters[device_type]
@@ -3876,6 +5419,14 @@ def auto_assign_devices():
                 # assigned in this lab — avoids bumping the counter
                 if did in previous_codes:
                     device_code = previous_codes[did]
+                    prefix = code_prefixes.get(dtype, '')
+                    if prefix and device_code.startswith(prefix + "/"):
+                        try:
+                            suffix = int(device_code[len(prefix) + 1:])
+                            if suffix > _type_counters.get(dtype, 0):
+                                _type_counters[dtype] = suffix
+                        except ValueError:
+                            pass
                 else:
                     next_num = get_next_number(dtype)
                     prefix = code_prefixes.get(dtype, '')
@@ -3936,19 +5487,20 @@ def auto_assign_devices():
                 is_empty = cell.get('is_empty', True)
                 station_name = cell.get('station_type_name') or ''
 
-                # Empty / passage → just record grid cell
+                # Empty / passage → ensure grid cell exists and skip
                 if is_empty or st_id is None or station_name in ('passage', 'empty'):
-                    cursor.execute(
-                        """INSERT INTO lab_grid_cells
-                           (lab_id, row_number, column_number,
-                            assigned_code, equipment_type,
-                            os_windows, os_linux, os_other,
-                            is_empty, station_id)
-                           VALUES (%s,%s,%s,NULL,%s,
-                                   FALSE,FALSE,FALSE,TRUE,NULL)""",
-                        (lab_number, row_idx, col_idx,
-                         station_name or 'Empty')
-                    )
+                    if (row_idx, col_idx) not in grid_map:
+                        cursor.execute(
+                            """INSERT INTO lab_grid_cells
+                               (lab_id, row_number, column_number,
+                                assigned_code, equipment_type,
+                                os_windows, os_linux, os_other,
+                                is_empty, station_id)
+                               VALUES (%s,%s,%s,NULL,%s,
+                                       FALSE,FALSE,FALSE,TRUE,NULL)""",
+                            (lab_number, row_idx, col_idx,
+                             station_name or 'Empty')
+                        )
                     continue
 
                 # Resolve allowed device-type names for this station
@@ -3956,26 +5508,61 @@ def auto_assign_devices():
                 # allowed_device_types is already TEXT[] of type names
                 allowed_names = [t for t in raw_allowed if t]
 
-                # Create station row
-                station_counter += 1
-                station_code = f"{lab_number}/ST-{station_counter}"
-                cursor.execute(
-                    """INSERT INTO lab_stations
-                       (lab_id, assigned_code, row_number, column_number)
-                       VALUES (%s,%s,%s,%s) RETURNING station_id""",
-                    (lab_number, station_code, row_idx, col_idx)
-                )
-                station_id = cursor.fetchone()['station_id']
+                # Get or create station row for this cell
+                station_id = None
+                station_code = None
+                grid_row = grid_map.get((row_idx, col_idx))
+                if grid_row and grid_row.get('station_id'):
+                    station_id = grid_row['station_id']
+                    station_code = grid_row.get('assigned_code')
+                else:
+                    station_counter += 1
+                    station_code = f"{lab_number}/ST-{station_counter}"
+                    cursor.execute(
+                        """INSERT INTO lab_stations
+                           (lab_id, assigned_code, row_number, column_number)
+                           VALUES (%s,%s,%s,%s) RETURNING station_id""",
+                        (lab_number, station_code, row_idx, col_idx)
+                    )
+                    station_id = cursor.fetchone()['station_id']
+                    if grid_row:
+                        cursor.execute(
+                            """UPDATE lab_grid_cells
+                               SET assigned_code = %s,
+                                   station_id = %s,
+                                   equipment_type = %s,
+                                   is_empty = FALSE
+                               WHERE lab_id = %s AND row_number = %s AND column_number = %s""",
+                            (station_code, station_id, station_name,
+                             lab_number, row_idx, col_idx)
+                        )
+                    else:
+                        cursor.execute(
+                            """INSERT INTO lab_grid_cells
+                               (lab_id, row_number, column_number,
+                                assigned_code, equipment_type,
+                                os_windows, os_linux, os_other,
+                                is_empty, station_id)
+                               VALUES (%s,%s,%s,%s,%s,
+                                       FALSE,FALSE,FALSE,TRUE,%s)""",
+                            (lab_number, row_idx, col_idx,
+                             station_code, station_name, station_id)
+                        )
 
-                # For each allowed device type → assign at most ONE
-                any_assigned = False
+                # For each allowed device type → assign if missing
+                existing_types = station_device_types.get(station_id, set())
                 for type_name in allowed_names:
+                    if type_name in existing_types:
+                        continue
                     if try_assign_type(type_name, station_id):
-                        any_assigned = True
+                        existing_types.add(type_name)
+                        station_device_types[station_id] = existing_types
                         print(f"  ✅ Assigned {type_name} to station {station_code}")
 
+                has_devices = len(existing_types) > 0
+
                 # Generate station-level QR value encoding all devices at this station
-                if any_assigned and station_id in station_device_codes:
+                if station_id in station_device_codes:
                     device_codes_str = ",".join(station_device_codes[station_id])
                     station_qr_val = f"STATION|{station_code}|{device_codes_str}"
                     try:
@@ -3989,7 +5576,7 @@ def auto_assign_devices():
                         # station_qr_value column may not exist yet
                         pass
 
-                # Record grid cell — resolve OS flags from osSelection for assigned types
+                # Update grid cell — resolve OS flags from osSelection for allowed types
                 primary_type = allowed_names[0] if allowed_names else station_name
                 os_win = False
                 os_lin = False
@@ -4003,17 +5590,30 @@ def auto_assign_devices():
                     if os_data.get('other'):
                         os_oth = True
                 cursor.execute(
-                    """INSERT INTO lab_grid_cells
-                       (lab_id, row_number, column_number,
-                        assigned_code, equipment_type,
-                        os_windows, os_linux, os_other,
-                        is_empty, station_id)
-                       VALUES (%s,%s,%s,%s,%s,
-                               %s,%s,%s,%s,%s)""",
-                    (lab_number, row_idx, col_idx,
-                     station_code, primary_type,
+                    """UPDATE lab_grid_cells
+                       SET assigned_code = %s,
+                           equipment_type = %s,
+                           os_windows = %s,
+                           os_linux = %s,
+                           os_other = %s,
+                           is_empty = %s,
+                           station_id = %s
+                       WHERE lab_id = %s AND row_number = %s AND column_number = %s""",
+                    (station_code, primary_type,
                      os_win, os_lin, os_oth,
-                     not any_assigned, station_id)
+                     not has_devices, station_id,
+                     lab_number, row_idx, col_idx)
+                )
+
+            # ── Persist code counters ───────────────────────────────
+            for dtype, last_num in _type_counters.items():
+                cursor.execute(
+                    """INSERT INTO device_code_counters (lab_id, device_type, last_number)
+                       VALUES (%s, %s, %s)
+                       ON CONFLICT (lab_id, device_type)
+                       DO UPDATE SET last_number = GREATEST(device_code_counters.last_number, EXCLUDED.last_number),
+                                     updated_at = now()""",
+                    (lab_number, dtype, last_num)
                 )
 
             # ── Update quantity_assigned in pool ────────────────────
@@ -4091,6 +5691,33 @@ def get_device_counters(lab_id):
 
 
 # -----------------------------
+# Reset Device Code Counters
+# -----------------------------
+@app.route("/reset_device_counters/<lab_id>", methods=["POST"])
+def reset_device_counters(lab_id):
+    """Reset device code counters for a lab."""
+    try:
+        conn = db.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                "DELETE FROM device_code_counters WHERE lab_id = %s",
+                (lab_id,)
+            )
+            conn.commit()
+            return jsonify({"success": True, "message": f"Device code counters reset for lab {lab_id}"})
+        except Exception as db_err:
+            conn.rollback()
+            raise db_err
+        finally:
+            cursor.close()
+            conn.close()
+    except Exception as e:
+        print(f"Error resetting device code counters: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+# -----------------------------
 # Reset Lab Assignments
 # -----------------------------
 @app.route("/reset_lab_assignments/<lab_id>", methods=["POST"])
@@ -4100,6 +5727,14 @@ def reset_lab_assignments(lab_id):
         conn = db.get_connection()
         cursor = conn.cursor()
         try:
+            # Remove open issues for devices currently assigned to this lab
+            cursor.execute(
+                """DELETE FROM device_issues
+                   WHERE device_id IN (
+                       SELECT device_id FROM devices WHERE lab_id = %s
+                   )""",
+                (lab_id,)
+            )
             cursor.execute(
                 """UPDATE devices
                    SET lab_id = NULL, assigned_code = NULL,
