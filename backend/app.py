@@ -15,6 +15,9 @@ import os
 import uuid
 import requests
 import time
+import threading
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
 from dotenv import load_dotenv
 from io import BytesIO
 from reportlab.lib import colors
@@ -2360,6 +2363,39 @@ def raise_issue():
         cursor.close()
         conn.close()
 
+        # ── Auto notification: fire in background, never blocks response ──
+        sev_color = {
+            "critical": "#ef4444", "high": "#f97316",
+            "medium": "#eab308", "low": "#22c55e"
+        }.get(severity, "#6b7280")
+        _issue_html = f"""
+        <html><body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f3f4f6;padding:20px;">
+          <div style="max-width:620px;margin:0 auto;background:white;border-radius:12px;overflow:hidden;box-shadow:0 4px 6px rgba(0,0,0,0.1);">
+            <div style="background:linear-gradient(135deg,#ef4444,#b91c1c);padding:20px 28px;">
+              <h1 style="color:white;margin:0;font-size:18px;">🚨 New Issue Raised</h1>
+              <p style="color:rgba(255,255,255,0.85);margin:4px 0 0;font-size:13px;">AssetIQ — Immediate Attention Required</p>
+            </div>
+            <div style="padding:20px 28px;">
+              <table style="width:100%;font-size:14px;border-collapse:collapse;">
+                <tr><td style="padding:8px 0;color:#6b7280;width:130px;">Issue Title</td><td style="padding:8px 0;font-weight:600;color:#111;">{title}</td></tr>
+                <tr><td style="padding:8px 0;color:#6b7280;">Device ID</td><td style="padding:8px 0;color:#374151;">#{device_id}</td></tr>
+                <tr><td style="padding:8px 0;color:#6b7280;">Severity</td>
+                    <td style="padding:8px 0;"><span style="background:{sev_color};color:white;padding:2px 10px;border-radius:8px;font-size:12px;font-weight:600;">{severity.upper()}</span></td></tr>
+                <tr><td style="padding:8px 0;color:#6b7280;">Reported By</td><td style="padding:8px 0;color:#374151;">{reported_by}</td></tr>
+                <tr><td style="padding:8px 0;color:#6b7280;">Description</td><td style="padding:8px 0;color:#374151;">{description or 'No description provided.'}</td></tr>
+              </table>
+            </div>
+            <div style="background:#f9fafb;padding:12px 28px;text-align:center;">
+              <p style="color:#9ca3af;font-size:11px;margin:0;">AssetIQ Automatic Issue Notifier • {datetime.now().strftime('%B %d, %Y at %I:%M %p')}</p>
+            </div>
+          </div>
+        </body></html>"""
+        send_notification_email(
+            subject=f"🚨 New Issue: {title} [Severity: {severity.upper()}]",
+            html_body=_issue_html,
+            role_filter=["Lab Assistant", "Lab Incharge"]
+        )
+
         return jsonify({
             "success": True,
             "issue": {
@@ -2405,18 +2441,25 @@ def update_issue_status():
         conn = db.get_connection()
         cursor = conn.cursor()
 
-        # Check if issue exists
-        cursor.execute(
-            "SELECT issue_id, status FROM device_issues WHERE issue_id = %s",
-            (issue_id,)
-        )
+        # Fetch issue + device details for notification
+        cursor.execute("""
+            SELECT di.issue_id, di.issue_title, di.severity, di.status, di.device_id,
+                   d.asset_code, d.assigned_code, d.brand, d.model,
+                   COALESCE(et.name, 'Unknown') AS type_name,
+                   COALESCE(l.lab_name, 'Unassigned') AS lab_name
+            FROM device_issues di
+            JOIN devices d ON di.device_id = d.device_id
+            LEFT JOIN equipment_types et ON d.type_id = et.type_id
+            LEFT JOIN labs l ON d.lab_id = l.lab_id
+            WHERE di.issue_id = %s
+        """, (issue_id,))
         issue_row = cursor.fetchone()
         if not issue_row:
             cursor.close()
             conn.close()
             return jsonify({"success": False, "error": "Issue not found"}), 404
 
-        old_status = issue_row['status']
+        old_status = issue_row.get('status', 'open')
 
         # Update status (+ resolved_at timestamp when resolving)
         if new_status == "resolved":
@@ -2441,6 +2484,55 @@ def update_issue_status():
         conn.commit()
         cursor.close()
         conn.close()
+
+        # ── Auto notification ──
+        issue_title_str = issue_row.get('issue_title', f'Issue #{issue_id}')
+        asset_label = issue_row.get('asset_code') or issue_row.get('assigned_code') or f"#{issue_row.get('device_id', '?')}"
+        device_label = f"{issue_row.get('type_name', '')} — {issue_row.get('brand', '')} {issue_row.get('model', '')}".strip(" —")
+        lab_label = issue_row.get('lab_name', 'Unknown')
+        sev_str = issue_row.get('severity', 'unknown')
+        sev_color = {"critical": "#ef4444", "high": "#f97316", "medium": "#eab308", "low": "#22c55e"}.get(sev_str, "#6b7280")
+
+        if new_status == "resolved":
+            _icon, _header_color, _subject_prefix = "✅", "linear-gradient(135deg,#22c55e,#15803d)", "✅ Issue Resolved"
+        elif new_status == "in-progress":
+            _icon, _header_color, _subject_prefix = "🔄", "linear-gradient(135deg,#f59e0b,#d97706)", "🔄 Issue In Progress"
+        else:
+            _icon, _header_color, _subject_prefix = "📋", "linear-gradient(135deg,#6366f1,#4338ca)", "📋 Issue Reopened"
+
+        _status_html = f"""
+        <html><body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f3f4f6;padding:20px;">
+          <div style="max-width:620px;margin:0 auto;background:white;border-radius:12px;overflow:hidden;box-shadow:0 4px 6px rgba(0,0,0,0.1);">
+            <div style="background:{_header_color};padding:20px 28px;">
+              <h1 style="color:white;margin:0;font-size:18px;">{_icon} Issue Status Updated</h1>
+              <p style="color:rgba(255,255,255,0.85);margin:4px 0 0;font-size:13px;">AssetIQ — {issue_title_str}</p>
+            </div>
+            <div style="padding:20px 28px;">
+              <table style="width:100%;font-size:14px;border-collapse:collapse;">
+                <tr><td style="padding:8px 0;color:#6b7280;width:130px;">Issue</td><td style="padding:8px 0;font-weight:600;color:#111;">{issue_title_str}</td></tr>
+                <tr><td style="padding:8px 0;color:#6b7280;">Asset</td><td style="padding:8px 0;color:#374151;">{asset_label} — {device_label}</td></tr>
+                <tr><td style="padding:8px 0;color:#6b7280;">Lab</td><td style="padding:8px 0;color:#374151;">{lab_label}</td></tr>
+                <tr><td style="padding:8px 0;color:#6b7280;">Severity</td>
+                    <td style="padding:8px 0;"><span style="background:{sev_color};color:white;padding:2px 10px;border-radius:8px;font-size:12px;font-weight:600;">{sev_str.upper()}</span></td></tr>
+                <tr><td style="padding:8px 0;color:#6b7280;">Status</td>
+                    <td style="padding:8px 0;color:#374151;">
+                      <span style="text-decoration:line-through;color:#9ca3af;">{old_status}</span>
+                      &nbsp;→&nbsp;
+                      <strong>{new_status}</strong>
+                    </td></tr>
+                <tr><td style="padding:8px 0;color:#6b7280;">Changed By</td><td style="padding:8px 0;color:#374151;">{changed_by or 'System'}</td></tr>
+              </table>
+            </div>
+            <div style="background:#f9fafb;padding:12px 28px;text-align:center;">
+              <p style="color:#9ca3af;font-size:11px;margin:0;">AssetIQ Automatic Issue Notifier • {datetime.now().strftime('%B %d, %Y at %I:%M %p')}</p>
+            </div>
+          </div>
+        </body></html>"""
+        send_notification_email(
+            subject=f"{_subject_prefix}: {issue_title_str} [{asset_label}]",
+            html_body=_status_html,
+            role_filter=["Lab Assistant", "Lab Incharge"]
+        )
 
         return jsonify({
             "success": True,
@@ -6067,6 +6159,764 @@ Be concise and specific. Use device IDs and invoice numbers when referencing ite
         print(f"Error getting AI insights: {str(e)}")
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
+
+
+# =============================================
+# PROACTIVE MAINTENANCE ENDPOINTS
+# =============================================
+
+@app.route("/get_proactive_maintenance", methods=["GET"])
+def get_proactive_maintenance():
+    """
+    Comprehensive proactive maintenance analytics.
+    Returns: health scores, warranty alerts, risk heatmap,
+    maintenance timeline, at-risk assets, and summary stats.
+    """
+    try:
+        conn = db.get_connection()
+        if not conn:
+            return jsonify({"error": "Database connection failed"}), 500
+
+        cursor = conn.cursor()
+
+        # 1. Asset health scores — compute for every active device
+        cursor.execute("""
+            SELECT d.device_id, d.asset_code, d.brand, d.model,
+                   d.assigned_code, d.is_active,
+                   COALESCE(et.name, 'Unknown') AS type_name,
+                   COALESCE(l.lab_name, 'Unassigned') AS lab_name,
+                   b.bill_date, b.vendor_name, b.invoice_number,
+                   CASE WHEN d.purchase_date IS NOT NULL AND d.warranty_years IS NOT NULL AND d.warranty_years > 0
+                        THEN d.purchase_date + (d.warranty_years * INTERVAL '1 year')
+                        ELSE NULL END AS warranty_expiry_date,
+                   COUNT(di.issue_id) AS issue_count,
+                   SUM(CASE WHEN LOWER(di.status) = 'open' THEN 1 ELSE 0 END) AS open_issues,
+                   SUM(CASE WHEN LOWER(di.severity) IN ('critical','high') THEN 1 ELSE 0 END) AS severe_issues,
+                   MAX(di.reported_at) AS last_issue_date,
+                   MIN(di.reported_at) AS first_issue_date
+            FROM devices d
+            LEFT JOIN equipment_types et ON d.type_id = et.type_id
+            LEFT JOIN labs l ON d.lab_id = l.lab_id
+            LEFT JOIN bills b ON d.bill_id = b.bill_id
+            LEFT JOIN device_issues di ON d.device_id = di.device_id
+            WHERE d.is_active = TRUE
+            GROUP BY d.device_id, d.asset_code, d.brand, d.model,
+                     d.assigned_code, d.is_active, et.name, l.lab_name,
+                     b.bill_date, b.vendor_name, b.invoice_number,
+                     d.purchase_date, d.warranty_years
+            ORDER BY issue_count DESC
+        """)
+        raw_devices = cursor.fetchall()
+
+        # Compute health scores
+        asset_health = []
+        high_risk_assets = []
+        for dev in raw_devices:
+            score = 100
+            issue_count = dev.get('issue_count', 0) or 0
+            open_issues = dev.get('open_issues', 0) or 0
+            severe_issues = dev.get('severe_issues', 0) or 0
+
+            # Deduct for issues — balanced so 2-3 issues surfaces the device, but 1 minor issue doesn't
+            score -= min(issue_count * 6, 30)    # max -30: 5+ issues fully penalised
+            score -= min(open_issues * 8, 20)    # max -20: 2-3 open issues is enough to flag
+            score -= min(severe_issues * 10, 25) # max -25: 2-3 severe issues is critical
+
+            # Deduct for recency of issues
+            last_issue = dev.get('last_issue_date')
+            if last_issue:
+                if hasattr(last_issue, 'timestamp'):
+                    days_since = (datetime.now() - last_issue).days
+                else:
+                    days_since = (datetime.now() - datetime.fromisoformat(str(last_issue))).days
+                if days_since < 7:
+                    score -= 10
+                elif days_since < 30:
+                    score -= 5
+                elif days_since < 90:
+                    score -= 2
+
+            # Deduct for warranty status
+            warranty_expiry = dev.get('warranty_expiry_date')
+            warranty_status = 'unknown'
+            days_until_expiry = None
+            if warranty_expiry:
+                if hasattr(warranty_expiry, 'date'):
+                    exp_date = warranty_expiry.date()
+                else:
+                    exp_date = datetime.fromisoformat(str(warranty_expiry)).date()
+                days_until_expiry = (exp_date - datetime.now().date()).days
+                if days_until_expiry < 0:
+                    warranty_status = 'expired'
+                    score -= 10
+                elif days_until_expiry <= 30:
+                    warranty_status = 'expiring_soon'
+                    score -= 5
+                elif days_until_expiry <= 90:
+                    warranty_status = 'expiring'
+                else:
+                    warranty_status = 'active'
+
+            score = max(score, 0)
+
+            risk_level = 'critical' if score <= 25 else ('high' if score <= 50 else ('medium' if score <= 75 else 'healthy'))
+
+            entry = {
+                'device_id': dev['device_id'],
+                'asset_code': dev.get('asset_code', ''),
+                'brand': dev.get('brand', ''),
+                'model': dev.get('model', ''),
+                'assigned_code': dev.get('assigned_code', ''),
+                'type_name': dev.get('type_name', 'Unknown'),
+                'lab_name': dev.get('lab_name', 'Unassigned'),
+                'vendor_name': dev.get('vendor_name', ''),
+                'invoice_number': dev.get('invoice_number', ''),
+                'issue_count': issue_count,
+                'open_issues': open_issues,
+                'severe_issues': severe_issues,
+                'health_score': score,
+                'risk_level': risk_level,
+                'warranty_status': warranty_status,
+                'days_until_expiry': days_until_expiry,
+                'last_issue_date': dev['last_issue_date'].isoformat() if dev.get('last_issue_date') and hasattr(dev['last_issue_date'], 'isoformat') else str(dev.get('last_issue_date', '')),
+                'first_issue_date': dev['first_issue_date'].isoformat() if dev.get('first_issue_date') and hasattr(dev['first_issue_date'], 'isoformat') else str(dev.get('first_issue_date', '')),
+            }
+            asset_health.append(entry)
+            if score <= 75:
+                high_risk_assets.append(entry)
+
+        # 2. Health distribution
+        health_distribution = [
+            {'range': 'Critical (0-25)', 'count': sum(1 for a in asset_health if a['health_score'] <= 25), 'color': '#ef4444'},
+            {'range': 'High Risk (26-50)', 'count': sum(1 for a in asset_health if 26 <= a['health_score'] <= 50), 'color': '#f97316'},
+            {'range': 'Medium (51-75)', 'count': sum(1 for a in asset_health if 51 <= a['health_score'] <= 75), 'color': '#eab308'},
+            {'range': 'Healthy (76-100)', 'count': sum(1 for a in asset_health if a['health_score'] >= 76), 'color': '#22c55e'},
+        ]
+
+        # 3. Warranty expiry alerts
+        warranty_alerts = {'expired': [], 'within_30': [], 'within_60': [], 'within_90': []}
+        for a in asset_health:
+            d = a.get('days_until_expiry')
+            if d is None:
+                continue
+            if d < 0:
+                warranty_alerts['expired'].append(a)
+            elif d <= 30:
+                warranty_alerts['within_30'].append(a)
+            elif d <= 60:
+                warranty_alerts['within_60'].append(a)
+            elif d <= 90:
+                warranty_alerts['within_90'].append(a)
+
+        # 4. Maintenance timeline (issues per month, last 12 months)
+        cursor.execute("""
+            SELECT TO_CHAR(reported_at, 'YYYY-MM') AS month,
+                   COUNT(*) AS total,
+                   SUM(CASE WHEN LOWER(severity) = 'critical' THEN 1 ELSE 0 END) AS critical,
+                   SUM(CASE WHEN LOWER(severity) = 'high' THEN 1 ELSE 0 END) AS high,
+                   SUM(CASE WHEN LOWER(severity) = 'medium' THEN 1 ELSE 0 END) AS medium,
+                   SUM(CASE WHEN LOWER(severity) = 'low' THEN 1 ELSE 0 END) AS low
+            FROM device_issues
+            WHERE reported_at >= NOW() - INTERVAL '12 months'
+            GROUP BY TO_CHAR(reported_at, 'YYYY-MM')
+            ORDER BY month
+        """)
+        maintenance_timeline = cursor.fetchall()
+
+        # 5. Open issues by age
+        cursor.execute("""
+            SELECT
+                SUM(CASE WHEN EXTRACT(DAY FROM NOW() - reported_at) <= 7 THEN 1 ELSE 0 END) AS week,
+                SUM(CASE WHEN EXTRACT(DAY FROM NOW() - reported_at) > 7 AND EXTRACT(DAY FROM NOW() - reported_at) <= 30 THEN 1 ELSE 0 END) AS month,
+                SUM(CASE WHEN EXTRACT(DAY FROM NOW() - reported_at) > 30 AND EXTRACT(DAY FROM NOW() - reported_at) <= 90 THEN 1 ELSE 0 END) AS quarter,
+                SUM(CASE WHEN EXTRACT(DAY FROM NOW() - reported_at) > 90 THEN 1 ELSE 0 END) AS older
+            FROM device_issues
+            WHERE LOWER(status) IN ('open', 'in-progress')
+        """)
+        issues_by_age_raw = cursor.fetchone()
+        issues_by_age = [
+            {'age': '0-7 days', 'count': issues_by_age_raw.get('week', 0) or 0},
+            {'age': '8-30 days', 'count': issues_by_age_raw.get('month', 0) or 0},
+            {'age': '31-90 days', 'count': issues_by_age_raw.get('quarter', 0) or 0},
+            {'age': '90+ days', 'count': issues_by_age_raw.get('older', 0) or 0},
+        ]
+
+        # 6. Lab risk heatmap
+        cursor.execute("""
+            SELECT COALESCE(l.lab_name, 'Unassigned') AS lab_name,
+                   COUNT(DISTINCT d.device_id) AS total_devices,
+                   COUNT(di.issue_id) AS total_issues,
+                   SUM(CASE WHEN LOWER(di.status) = 'open' THEN 1 ELSE 0 END) AS open_issues,
+                   SUM(CASE WHEN LOWER(di.severity) IN ('critical','high') THEN 1 ELSE 0 END) AS severe_issues
+            FROM devices d
+            LEFT JOIN labs l ON d.lab_id = l.lab_id
+            LEFT JOIN device_issues di ON d.device_id = di.device_id
+            WHERE d.is_active = TRUE
+            GROUP BY COALESCE(l.lab_name, 'Unassigned')
+            ORDER BY total_issues DESC
+        """)
+        lab_risk = cursor.fetchall()
+
+        # 7. Summary stats
+        total_devices = len(asset_health)
+        needs_attention = len(high_risk_assets)
+        upcoming_warranty = len(warranty_alerts['within_30']) + len(warranty_alerts['within_60']) + len(warranty_alerts['within_90'])
+        expired_warranty = len(warranty_alerts['expired'])
+
+        cursor.execute("""
+            SELECT COUNT(*) AS critical_open
+            FROM device_issues
+            WHERE LOWER(status) = 'open' AND LOWER(severity) = 'critical'
+        """)
+        critical_open = cursor.fetchone().get('critical_open', 0) or 0
+
+        cursor.close()
+        conn.close()
+
+        summary = {
+            'total_devices': total_devices,
+            'needs_attention': needs_attention,
+            'upcoming_warranty': upcoming_warranty,
+            'expired_warranty': expired_warranty,
+            'critical_open': critical_open,
+        }
+
+        return jsonify({
+            "success": True,
+            "asset_health": asset_health,
+            "high_risk_assets": high_risk_assets,
+            "health_distribution": health_distribution,
+            "warranty_alerts": warranty_alerts,
+            "maintenance_timeline": maintenance_timeline,
+            "issues_by_age": issues_by_age,
+            "lab_risk": lab_risk,
+            "summary": summary,
+        })
+
+    except Exception as e:
+        print(f"Error fetching proactive maintenance data: {str(e)}")
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/get_maintenance_insights", methods=["POST"])
+def get_maintenance_insights():
+    """
+    Send maintenance analytics to local LLM for AI-powered proactive insights.
+    """
+    try:
+        data = request.get_json(force=True)
+        analytics = data.get("analytics", {})
+
+        prompt = f"""You are an IT asset management analyst specializing in proactive maintenance. Analyze the following data and provide a preventive maintenance strategy.
+
+ASSET HEALTH SUMMARY:
+- Total devices: {analytics.get('total_devices', 0)}
+- Devices needing attention (health score ≤ 50): {analytics.get('needs_attention', 0)}
+- Upcoming warranty expirations: {analytics.get('upcoming_warranty', 0)}
+- Expired warranties: {analytics.get('expired_warranty', 0)}
+- Open critical issues: {analytics.get('critical_open', 0)}
+
+HIGH-RISK ASSETS (health score ≤ 50):
+{json.dumps(analytics.get('high_risk_assets', [])[:8], indent=2, default=str)}
+
+WARRANTY ALERTS:
+- Expired: {len(analytics.get('warranty_expired', []))} devices
+- Expiring within 30 days: {len(analytics.get('warranty_30', []))} devices
+- Expiring within 60 days: {len(analytics.get('warranty_60', []))} devices
+
+LAB RISK DATA:
+{json.dumps(analytics.get('lab_risk', [])[:6], indent=2, default=str)}
+
+OPEN ISSUES BY AGE:
+{json.dumps(analytics.get('issues_by_age', []), indent=2, default=str)}
+
+Based on this data, provide:
+### CRITICAL ALERTS
+2-3 most urgent issues that need immediate attention.
+### MAINTENANCE SCHEDULE
+Suggest a prioritized maintenance schedule for the next 30 days.
+### RISK ASSESSMENT
+Identify which labs and device types are at highest risk.
+### COST SAVINGS
+Estimate potential savings from proactive vs reactive maintenance.
+### ACTION ITEMS
+5 specific actionable steps to improve asset health.
+
+Be concise. Use device codes and lab names when referencing items."""
+
+        try:
+            resp = requests.post(
+                "http://localhost:8080/v1/chat/completions",
+                json={
+                    "model": "local-model",
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0.3
+                },
+                timeout=120
+            )
+            if resp.status_code == 200:
+                result = resp.json()
+                insight_text = result.get("choices", [{}])[0].get("message", {}).get("content", "")
+                return jsonify({"success": True, "insights": insight_text})
+            else:
+                return jsonify({"success": False, "error": f"LLM returned status {resp.status_code}"}), 502
+        except requests.exceptions.ConnectionError:
+            return jsonify({"success": False, "error": "Local AI model not available at port 8080"}), 503
+        except requests.exceptions.Timeout:
+            return jsonify({"success": False, "error": "AI model request timed out"}), 504
+
+    except Exception as e:
+        print(f"Error getting maintenance insights: {str(e)}")
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/get_alert_recipients", methods=["GET"])
+def get_alert_recipients():
+    """
+    Return all users with role HOD or Lab Incharge (name + email)
+    so the frontend can display who will receive maintenance alerts.
+    """
+    try:
+        conn = db.get_connection()
+        if not conn:
+            return jsonify({"error": "Database connection failed"}), 500
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, first_name, last_name, email, role, assigned_lab
+            FROM users
+            WHERE role IN ('HOD', 'Lab Incharge')
+            ORDER BY role, first_name
+        """)
+        recipients = cursor.fetchall()
+        cursor.close()
+        conn.close()
+
+        return jsonify({
+            "success": True,
+            "recipients": [
+                {
+                    "id": r["id"],
+                    "name": f"{r['first_name']} {r['last_name']}",
+                    "email": r["email"],
+                    "role": r["role"],
+                    "assigned_lab": r.get("assigned_lab", None),
+                }
+                for r in recipients
+            ],
+        })
+    except Exception as e:
+        print(f"Error fetching alert recipients: {str(e)}")
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/send_maintenance_alerts", methods=["POST"])
+def send_maintenance_alerts():
+    """
+    Automatically send proactive maintenance alert emails to all HOD and Lab Incharge users.
+    Expects: { alerts: [{asset_code, type_name, lab_name, risk_level, health_score, issue_summary}] }
+    """
+    try:
+        import smtplib
+        from email.mime.text import MIMEText
+        from email.mime.multipart import MIMEMultipart
+
+        data = request.get_json(force=True)
+        alerts = data.get("alerts", [])
+
+        if not alerts:
+            return jsonify({"error": "No alerts to send"}), 400
+
+        # Auto-fetch recipients: all HOD and Lab Incharge users
+        conn = db.get_connection()
+        if not conn:
+            return jsonify({"error": "Database connection failed"}), 500
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT email, first_name, last_name, role
+            FROM users
+            WHERE role IN ('HOD', 'Lab Incharge')
+        """)
+        recipients = cursor.fetchall()
+        cursor.close()
+        conn.close()
+
+        if not recipients:
+            return jsonify({"success": False, "error": "No HOD or Lab Incharge users found in the system"}), 404
+
+        recipient_emails = [r["email"] for r in recipients]
+
+        # Build HTML email
+        risk_colors = {
+            'critical': '#ef4444',
+            'high': '#f97316',
+            'medium': '#eab308',
+            'healthy': '#22c55e',
+        }
+
+        rows_html = ""
+        for a in alerts:
+            color = risk_colors.get(a.get('risk_level', 'medium'), '#6b7280')
+            rows_html += f"""
+            <tr style="border-bottom: 1px solid #e5e7eb;">
+                <td style="padding: 12px; font-weight: 600;">{a.get('asset_code', 'N/A')}</td>
+                <td style="padding: 12px;">{a.get('type_name', '')}</td>
+                <td style="padding: 12px;">{a.get('lab_name', '')}</td>
+                <td style="padding: 12px; text-align: center;">
+                    <span style="background: {color}; color: white; padding: 4px 12px; border-radius: 12px; font-size: 12px; font-weight: 600;">
+                        {a.get('risk_level', 'unknown').upper()}
+                    </span>
+                </td>
+                <td style="padding: 12px; text-align: center; font-weight: 700;">{a.get('health_score', 'N/A')}</td>
+                <td style="padding: 12px; font-size: 13px; color: #6b7280;">{a.get('issue_summary', '')}</td>
+            </tr>"""
+
+        recipient_names = ", ".join([f"{r['first_name']} {r['last_name']}" for r in recipients])
+
+        html_body = f"""
+        <html>
+        <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f3f4f6; padding: 20px;">
+            <div style="max-width: 800px; margin: 0 auto; background: white; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+                <div style="background: linear-gradient(135deg, #f59e0b, #d97706); padding: 24px 32px;">
+                    <h1 style="color: white; margin: 0; font-size: 22px;">⚠️ AssetIQ — Proactive Maintenance Alert</h1>
+                    <p style="color: rgba(255,255,255,0.85); margin: 8px 0 0 0; font-size: 14px;">
+                        {len(alerts)} asset(s) require your attention
+                    </p>
+                </div>
+                <div style="padding: 24px 32px;">
+                    <p style="color: #374151; font-size: 14px; line-height: 1.6;">
+                        The following assets have been flagged for proactive maintenance based on their health scores,
+                        issue history, and warranty status. Please review and schedule maintenance as appropriate.
+                    </p>
+                    <table style="width: 100%; border-collapse: collapse; margin-top: 16px; font-size: 14px;">
+                        <thead>
+                            <tr style="background: #f9fafb; border-bottom: 2px solid #e5e7eb;">
+                                <th style="padding: 12px; text-align: left; color: #6b7280; font-size: 12px; text-transform: uppercase;">Asset</th>
+                                <th style="padding: 12px; text-align: left; color: #6b7280; font-size: 12px; text-transform: uppercase;">Type</th>
+                                <th style="padding: 12px; text-align: left; color: #6b7280; font-size: 12px; text-transform: uppercase;">Lab</th>
+                                <th style="padding: 12px; text-align: center; color: #6b7280; font-size: 12px; text-transform: uppercase;">Risk</th>
+                                <th style="padding: 12px; text-align: center; color: #6b7280; font-size: 12px; text-transform: uppercase;">Health</th>
+                                <th style="padding: 12px; text-align: left; color: #6b7280; font-size: 12px; text-transform: uppercase;">Details</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {rows_html}
+                        </tbody>
+                    </table>
+                    <div style="margin-top: 24px; padding: 16px; background: #fffbeb; border: 1px solid #fde68a; border-radius: 8px;">
+                        <p style="color: #92400e; font-size: 13px; margin: 0;">
+                            <strong>💡 Recommendation:</strong> Prioritize assets with Critical and High risk levels first.
+                            Schedule preventive maintenance to avoid unexpected downtime.
+                        </p>
+                    </div>
+                </div>
+                <div style="background: #f9fafb; padding: 16px 32px; text-align: center;">
+                    <p style="color: #9ca3af; font-size: 12px; margin: 0;">
+                        Generated by AssetIQ Proactive Maintenance System • {datetime.now().strftime('%B %d, %Y at %I:%M %p')}
+                    </p>
+                </div>
+            </div>
+        </body>
+        </html>
+        """
+
+        # Send via SMTP to all recipients
+        mail_server = os.getenv("MAIL_SERVER", "smtp.gmail.com")
+        mail_port = int(os.getenv("MAIL_PORT", 587))
+        mail_username = os.getenv("MAIL_USERNAME", "")
+        mail_password = os.getenv("MAIL_PASSWORD", "")
+
+        if not mail_username or mail_username == "your_email@gmail.com":
+            return jsonify({
+                "success": False,
+                "error": "Email not configured. Please update MAIL_USERNAME and MAIL_PASSWORD in your .env file with real Gmail App Password credentials."
+            }), 400
+
+        server = smtplib.SMTP(mail_server, mail_port)
+        server.starttls()
+        server.login(mail_username, mail_password)
+
+        sent_to = []
+        failed = []
+        for recipient_email in recipient_emails:
+            try:
+                msg = MIMEMultipart("alternative")
+                msg["Subject"] = f"⚠️ Proactive Maintenance Alert — {len(alerts)} Asset(s) Need Attention"
+                msg["From"] = mail_username
+                msg["To"] = recipient_email
+                msg.attach(MIMEText(html_body, "html"))
+                server.sendmail(mail_username, recipient_email, msg.as_string())
+                sent_to.append(recipient_email)
+            except Exception as send_err:
+                failed.append({"email": recipient_email, "error": str(send_err)})
+
+        server.quit()
+
+        return jsonify({
+            "success": True,
+            "message": f"Alerts sent to {len(sent_to)} recipient(s) with {len(alerts)} asset alerts",
+            "sent_to": sent_to,
+            "failed": failed,
+        })
+
+    except smtplib.SMTPAuthenticationError:
+        return jsonify({"success": False, "error": "SMTP authentication failed. Check your email credentials in .env"}), 401
+    except smtplib.SMTPException as smtp_err:
+        return jsonify({"success": False, "error": f"SMTP error: {str(smtp_err)}"}), 500
+    except Exception as e:
+        print(f"Error sending maintenance alerts: {str(e)}")
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+# =============================================
+# AUTOMATIC NOTIFICATION SYSTEM
+# =============================================
+
+def _build_smtp_connection():
+    """Open and return an authenticated SMTP connection, or None if not configured."""
+    import smtplib
+    mail_server = os.getenv("MAIL_SERVER", "smtp.gmail.com")
+    mail_port = int(os.getenv("MAIL_PORT", 587))
+    mail_username = os.getenv("MAIL_USERNAME", "")
+    mail_password = os.getenv("MAIL_PASSWORD", "")
+    if not mail_username or mail_username == "your_email@gmail.com" or not mail_password:
+        return None, mail_username
+    server = smtplib.SMTP(mail_server, mail_port)
+    server.starttls()
+    server.login(mail_username, mail_password)
+    return server, mail_username
+
+
+def send_notification_email(subject: str, html_body: str, role_filter: list):
+    """
+    Background helper — queries users by role and sends HTML email to all of them.
+    Runs in a daemon thread so it never blocks the HTTP response.
+    """
+    import smtplib
+    from email.mime.text import MIMEText
+    from email.mime.multipart import MIMEMultipart
+
+    def _send():
+        try:
+            conn = db.get_connection()
+            if not conn:
+                print("[Notifier] DB connection failed — skipping email")
+                return
+            cursor = conn.cursor()
+            placeholders = ",".join(["%s"] * len(role_filter))
+            cursor.execute(
+                f"SELECT email, first_name, last_name, role FROM users WHERE role IN ({placeholders})",
+                role_filter
+            )
+            recipients = cursor.fetchall()
+            cursor.close()
+            conn.close()
+
+            if not recipients:
+                print(f"[Notifier] No users found for roles {role_filter}")
+                return
+
+            server, mail_username = _build_smtp_connection()
+            if not server:
+                print("[Notifier] SMTP not configured — skipping email")
+                return
+
+            sent = 0
+            for r in recipients:
+                try:
+                    msg = MIMEMultipart("alternative")
+                    msg["Subject"] = subject
+                    msg["From"] = mail_username
+                    msg["To"] = r["email"]
+                    msg.attach(MIMEText(html_body, "html"))
+                    server.sendmail(mail_username, r["email"], msg.as_string())
+                    sent += 1
+                except Exception as exc:
+                    print(f"[Notifier] Failed to send to {r['email']}: {exc}")
+
+            server.quit()
+            print(f"[Notifier] Sent '{subject}' to {sent}/{len(recipients)} recipients")
+
+        except Exception as e:
+            print(f"[Notifier] Unexpected error: {e}")
+            traceback.print_exc()
+
+    t = threading.Thread(target=_send, daemon=True)
+    t.start()
+
+
+_WARRANTY_NOTIFIED_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "warranty_notified_ids.json")
+
+
+def _load_notified_ids() -> dict:
+    """Load {device_id: notified_date_str} tracking dict from disk."""
+    try:
+        if os.path.exists(_WARRANTY_NOTIFIED_FILE):
+            with open(_WARRANTY_NOTIFIED_FILE, "r") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return {}
+
+
+def _save_notified_ids(data: dict):
+    try:
+        with open(_WARRANTY_NOTIFIED_FILE, "w") as f:
+            json.dump(data, f)
+    except Exception as e:
+        print(f"[Scheduler] Could not save notified IDs: {e}")
+
+
+def _warranty_expiry_job():
+    """
+    Scheduled daily job — only notify about devices newly entering the 90-day expiry window.
+    Devices already notified are skipped to avoid repeated emails.
+    When a device's warranty actually expires it is removed from tracking so a final
+    'expired' alert can be sent if it ever re-enters the window (edge case).
+    """
+    print(f"[Scheduler] Running daily warranty expiry check at {datetime.now()}")
+    try:
+        conn = db.get_connection()
+        if not conn:
+            print("[Scheduler] DB connection failed")
+            return
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT d.device_id, d.asset_code, d.assigned_code, d.brand, d.model,
+                   COALESCE(et.name, 'Unknown') AS type_name,
+                   COALESCE(l.lab_name, 'Unassigned') AS lab_name,
+                   b.vendor_name, b.invoice_number,
+                   (d.purchase_date + (d.warranty_years * INTERVAL '1 year'))::date AS warranty_expiry,
+                   ((d.purchase_date + (d.warranty_years * INTERVAL '1 year'))::date - CURRENT_DATE) AS days_left
+            FROM devices d
+            LEFT JOIN equipment_types et ON d.type_id = et.type_id
+            LEFT JOIN labs l ON d.lab_id = l.lab_id
+            LEFT JOIN bills b ON d.bill_id = b.bill_id
+            WHERE d.is_active = TRUE
+              AND d.purchase_date IS NOT NULL
+              AND d.warranty_years IS NOT NULL
+              AND d.warranty_years > 0
+              AND (d.purchase_date + (d.warranty_years * INTERVAL '1 year'))::date
+                  BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '90 days'
+            ORDER BY days_left ASC
+        """)
+        devices = cursor.fetchall()
+        cursor.close()
+        conn.close()
+
+        # Load which devices were already notified
+        notified = _load_notified_ids()
+        today_str = datetime.now().strftime("%Y-%m-%d")
+
+        # Remove devices whose warranty has now expired from the tracking set
+        # (so they are eligible for an 'expired' alert in future if logic expands)
+        expired_device_ids = [
+            str(d["device_id"]) for d in devices
+            if int(d["days_left"]) <= 0
+        ]
+        for dev_id in expired_device_ids:
+            notified.pop(dev_id, None)
+
+        # Find devices NOT yet notified
+        new_devices = [
+            d for d in devices
+            if str(d["device_id"]) not in notified
+        ]
+
+        if not new_devices:
+            print(f"[Scheduler] All {len(devices)} expiring device(s) already notified — skipping email")
+            return
+
+        print(f"[Scheduler] {len(new_devices)} new device(s) entering expiry window — sending alert")
+
+        def urgency(days):
+            if days <= 30:
+                return "#ef4444", "Critical"
+            if days <= 60:
+                return "#f97316", "Warning"
+            return "#eab308", "Notice"
+
+        rows_html = ""
+        for d in new_devices:
+            days_left = int(d["days_left"])
+            color, label = urgency(days_left)
+            rows_html += f"""
+            <tr style="border-bottom:1px solid #e5e7eb;">
+                <td style="padding:10px 12px;font-weight:600;">{d.get('asset_code') or d.get('assigned_code') or f"#{d['device_id']}"}</td>
+                <td style="padding:10px 12px;">{d['type_name']} — {d['brand']} {d['model']}</td>
+                <td style="padding:10px 12px;">{d['lab_name']}</td>
+                <td style="padding:10px 12px;">{d.get('vendor_name') or '—'}</td>
+                <td style="padding:10px 12px;text-align:center;">{d['warranty_expiry']}</td>
+                <td style="padding:10px 12px;text-align:center;font-weight:700;color:{color};">{days_left}d</td>
+                <td style="padding:10px 12px;text-align:center;">
+                    <span style="background:{color};color:white;padding:3px 10px;border-radius:10px;font-size:12px;font-weight:600;">{label}</span>
+                </td>
+            </tr>"""
+
+        html_body = f"""
+        <html>
+        <body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f3f4f6;padding:20px;">
+          <div style="max-width:860px;margin:0 auto;background:white;border-radius:12px;overflow:hidden;box-shadow:0 4px 6px rgba(0,0,0,0.1);">
+            <div style="background:linear-gradient(135deg,#f59e0b,#d97706);padding:22px 32px;">
+              <h1 style="color:white;margin:0;font-size:20px;">📅 AssetIQ — Warranty Expiry Alert</h1>
+              <p style="color:rgba(255,255,255,0.85);margin:6px 0 0;font-size:13px;">
+                {len(new_devices)} new device(s) entering the 90-day warranty expiry window &nbsp;•&nbsp; {datetime.now().strftime('%B %d, %Y')}
+              </p>
+            </div>
+            <div style="padding:24px 32px;">
+              <p style="color:#374151;font-size:13px;margin:0 0 16px;">
+                You will only receive this alert once per device. You will not be notified again unless a new device enters the expiry window.
+              </p>
+              <table style="width:100%;border-collapse:collapse;font-size:13px;">
+                <thead>
+                  <tr style="background:#f9fafb;border-bottom:2px solid #e5e7eb;">
+                    <th style="padding:10px 12px;text-align:left;color:#6b7280;font-size:11px;text-transform:uppercase;">Asset</th>
+                    <th style="padding:10px 12px;text-align:left;color:#6b7280;font-size:11px;text-transform:uppercase;">Device</th>
+                    <th style="padding:10px 12px;text-align:left;color:#6b7280;font-size:11px;text-transform:uppercase;">Lab</th>
+                    <th style="padding:10px 12px;text-align:left;color:#6b7280;font-size:11px;text-transform:uppercase;">Vendor</th>
+                    <th style="padding:10px 12px;text-align:center;color:#6b7280;font-size:11px;text-transform:uppercase;">Expiry</th>
+                    <th style="padding:10px 12px;text-align:center;color:#6b7280;font-size:11px;text-transform:uppercase;">Days Left</th>
+                    <th style="padding:10px 12px;text-align:center;color:#6b7280;font-size:11px;text-transform:uppercase;">Status</th>
+                  </tr>
+                </thead>
+                <tbody>{rows_html}</tbody>
+              </table>
+            </div>
+            <div style="background:#f9fafb;padding:14px 32px;text-align:center;">
+              <p style="color:#9ca3af;font-size:11px;margin:0;">
+                AssetIQ Automatic Warranty Monitor • One-time alert per device
+              </p>
+            </div>
+          </div>
+        </body></html>"""
+
+        subject = f"📅 Warranty Expiry Alert — {len(new_devices)} new device(s) expiring within 90 days"
+        send_notification_email(subject, html_body, ["HOD", "Lab Incharge"])
+
+        # Mark these devices as notified
+        for d in new_devices:
+            notified[str(d["device_id"])] = today_str
+        _save_notified_ids(notified)
+        print(f"[Scheduler] Warranty email dispatched for {len(new_devices)} new devices")
+
+    except Exception as e:
+        print(f"[Scheduler] Error in warranty job: {e}")
+        traceback.print_exc()
+
+
+# Start APScheduler — daily warranty check at 08:00
+_scheduler = BackgroundScheduler(timezone="Asia/Kolkata")
+_scheduler.add_job(
+    _warranty_expiry_job,
+    trigger=CronTrigger(hour=8, minute=0),
+    id="daily_warranty_check",
+    replace_existing=True,
+)
+_scheduler.start()
+print("[Scheduler] APScheduler started — daily warranty check at 08:00 IST")
 
 
 # -----------------------------
