@@ -118,7 +118,10 @@ const Reports: React.FC = () => {
             <p className="text-gray-300 text-sm mb-4">
               Identify assets that require preventive maintenance.
             </p>
-            <button className="px-4 py-2 bg-yellow-600 rounded-lg text-white font-semibold hover:bg-yellow-700 transition-colors">
+            <button
+              onClick={() => (window.location.href = "/reports/proactive-maintenance")}
+              className="px-4 py-2 bg-yellow-600 rounded-lg text-white font-semibold hover:bg-yellow-700 transition-colors"
+            >
               View Report
             </button>
           </div>

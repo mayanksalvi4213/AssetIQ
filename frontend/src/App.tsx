@@ -22,6 +22,8 @@ import LabLayout from "./pages/LabLayout.tsx";
 import IssueTrends from "./pages/IssueTrends.tsx";
 import Scrap from "./pages/Scrap.tsx";
 import { ScrapHoverButton } from "./components/ui/ScrapHoverButton.tsx";
+import ProactiveMaintenance from "./pages/ProactiveMaintenance.tsx";
+
 
 const App: React.FC = () => {
   return (
@@ -71,6 +73,7 @@ const App: React.FC = () => {
           <Route path="/warranty-expiry" element={<ProtectedRoute><WarrantyExpiry /></ProtectedRoute>} />
           <Route path="/reports/warranty" element={<ProtectedRoute><WarrantyExpiry /></ProtectedRoute>} />
           <Route path="/reports/issue-trends" element={<ProtectedRoute><IssueTrends /></ProtectedRoute>} />
+          <Route path="/reports/proactive-maintenance" element={<ProtectedRoute><ProactiveMaintenance /></ProtectedRoute>} />
         </Routes>
         <ScrapHoverButton />
       </AuthProvider>
