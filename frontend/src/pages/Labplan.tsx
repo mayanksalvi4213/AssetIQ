@@ -3,8 +3,7 @@ import React, { useState, useEffect, useMemo } from "react";
 import { motion } from "motion/react";
 import { Menu, MenuItem, HoveredLink } from "@/components/ui/navbar-menu";
 import { PlaceholdersAndVanishInput } from "@/components/ui/placeholders-and-vanish-input";
-import { WobbleCard } from "@/components/ui/wobble-card";
-import { BackgroundGradient } from "@/components/ui/background-gradient";
+import { CometCard } from "@/components/ui/comet-card";
 import { LogoButton } from "@/components/ui/logo-button";
 import { useAuth } from "@/contexts/AuthContext";
 import { QRCodeSVG } from "qrcode.react";
@@ -361,7 +360,18 @@ export default function Labplan() {
 
       {/* ✅ Page Content */}
       <div className="pt-32 px-6 max-w-7xl mx-auto">
-        <h1 className="text-3xl font-bold mb-8">Lab Floor Plans</h1>
+        <div className="inline-block">
+          <h1 
+            className="text-3xl font-bold px-5 py-2 rounded-xl "
+            style={{
+              background: "linear-gradient(135deg, rgba(10, 14, 25, 0.75) 0%,rgba(15, 23, 42, 0.80) 25%,rgba(8, 10, 15, 0.88) 50%,rgba(15, 23, 42, 0.80) 75%, rgba(20, 18, 16, 0.75) 100%",
+              color: "white",
+              boxShadow: "0 4px 15px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.1)"
+            }}
+          >
+            Lab Floor Plans
+          </h1>
+        </div>
 
         {loading && (
           <div className="text-center py-12">
@@ -375,16 +385,24 @@ export default function Labplan() {
           </div>
         )}
 
-        {/* ✅ Wobble Cards List */}
+        {/* ✅ Comet Cards List */}
         {!loading && !error && (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 mt-8 gap-6">
             {labs.map((lab) => (
               <div key={lab.lab_id} onClick={() => handleLabClick(lab)} className="cursor-pointer">
-                <WobbleCard containerClassName="bg-neutral-800 p-6 rounded-xl h-40">
-                  <h2 className="text-2xl font-semibold">{lab.lab_name}</h2>
-                  <p className="text-gray-400">Lab ID: {lab.lab_id}</p>
-                  <p className="text-gray-400">{lab.rows} × {lab.columns} grid</p>
-                </WobbleCard>
+                <CometCard>
+                  <div className="p-6 text-white bg-neutral-800/95 rounded-2xl backdrop-blur-sm h-full flex flex-col justify-between">
+                    <div>
+                      <h2 className="text-2xl font-semibold mb-2">{lab.lab_name}</h2>
+                      <p className="text-gray-300 text-sm">
+                        Lab ID: {lab.lab_id}
+                      </p>
+                    </div>
+                    <button className="mt-4 px-4 py-2 bg-blue-600 rounded-lg text-white font-semibold hover:bg-blue-700 transition-colors">
+                      View Floor Plan
+                    </button>
+                  </div>
+                </CometCard>
               </div>
             ))}
           </div>
@@ -404,7 +422,15 @@ export default function Labplan() {
             transition={{ duration: 0.4 }}
             className="mt-12"
           >
-            <BackgroundGradient className="p-8 rounded-xl shadow-xl">
+            <div 
+              className="p-8 rounded-xl shadow-xl"
+              style={{
+                backgroundColor: "rgba(0, 0, 0, 0.5)",
+                backdropFilter: "blur(10px)",
+                border: "1px solid rgba(255, 255, 255, 0.2)",
+                boxShadow: "0 8px 32px 0 rgba(0, 0, 0, 0.3), inset 0 1px 1px rgba(255, 255, 255, 0.1), 0 8px 32px rgba(0, 0, 0, 0.2)"
+              }}
+            >
               <div className="flex items-center justify-between mb-6">
                 <div>
                   <h2 className="text-2xl font-bold">{selectedLab.labName} - Floor Plan</h2>
@@ -425,25 +451,25 @@ export default function Labplan() {
               {/* Lab Stats Summary */}
               {labStats && (
                 <div className="mb-6 grid grid-cols-2 md:grid-cols-5 gap-3">
-                  <div className="bg-green-900/40 border border-green-700 rounded-lg p-3 text-center">
-                    <p className="text-2xl font-bold text-green-400">{labStats.activeStations}</p>
-                    <p className="text-xs text-gray-300">Active Stations</p>
+                  <div className="bg-green-600 rounded-lg p-3 text-center">
+                    <p className="text-2xl font-bold text-white">{labStats.activeStations}</p>
+                    <p className="text-xs text-white">Active Stations</p>
                   </div>
-                  <div className="bg-neutral-800 border border-neutral-600 rounded-lg p-3 text-center">
-                    <p className="text-2xl font-bold text-gray-400">{labStats.emptyStations}</p>
-                    <p className="text-xs text-gray-300">Empty Stations</p>
+                  <div className="bg-gray-700 rounded-lg p-3 text-center">
+                    <p className="text-2xl font-bold text-white">{labStats.emptyStations}</p>
+                    <p className="text-xs text-white">Empty Stations</p>
                   </div>
-                  <div className="bg-blue-900/40 border border-blue-700 rounded-lg p-3 text-center">
-                    <p className="text-2xl font-bold text-blue-400">{labStats.totalDevices}</p>
-                    <p className="text-xs text-gray-300">Total Devices</p>
+                  <div className="bg-blue-600 rounded-lg p-3 text-center">
+                    <p className="text-2xl font-bold text-white">{labStats.totalDevices}</p>
+                    <p className="text-xs text-white">Total Devices</p>
                   </div>
-                  <div className="bg-cyan-900/40 border border-cyan-700 rounded-lg p-3 text-center">
-                    <p className="text-2xl font-bold text-cyan-400">{labStats.activeDevices}</p>
-                    <p className="text-xs text-gray-300">Active Devices</p>
+                  <div className="bg-cyan-600 rounded-lg p-3 text-center">
+                    <p className="text-2xl font-bold text-white">{labStats.activeDevices}</p>
+                    <p className="text-xs text-white">Active Devices</p>
                   </div>
-                  <div className={`border rounded-lg p-3 text-center ${labStats.issueDevices > 0 ? 'bg-red-900/40 border-red-700' : 'bg-neutral-800 border-neutral-600'}`}>
-                    <p className={`text-2xl font-bold ${labStats.issueDevices > 0 ? 'text-red-400' : 'text-gray-400'}`}>{labStats.issueDevices}</p>
-                    <p className="text-xs text-gray-300">With Issues</p>
+                  <div className={`rounded-lg p-3 text-center ${labStats.issueDevices > 0 ? 'bg-red-600' : 'bg-gray-700'}`}>
+                    <p className="text-2xl font-bold text-white">{labStats.issueDevices}</p>
+                    <p className="text-xs text-white">With Issues</p>
                   </div>
                 </div>
               )}
@@ -901,7 +927,7 @@ export default function Labplan() {
                   )}
                 </div>
               )}
-            </BackgroundGradient>
+            </div>
           </motion.div>
         )}
 

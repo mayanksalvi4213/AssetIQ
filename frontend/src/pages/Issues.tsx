@@ -3,7 +3,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { motion } from "motion/react";
 import { Menu, MenuItem, HoveredLink } from "@/components/ui/navbar-menu";
 import { PlaceholdersAndVanishInput } from "@/components/ui/placeholders-and-vanish-input";
-import { WobbleCard } from "@/components/ui/wobble-card";
+import { CometCard } from "@/components/ui/comet-card";
 import { BackgroundGradient } from "@/components/ui/background-gradient";
 import { LogoButton } from "@/components/ui/logo-button";
 import { HoverBorderGradient } from "@/components/ui/hover-border-gradient";
@@ -528,7 +528,16 @@ export default function Issues() {
 
       {/* Page Content */}
       <div className="pt-32 px-6 max-w-7xl mx-auto">
-        <h1 className="text-3xl font-bold mb-8">Lab Issues & Support Tickets</h1>
+        <h1 
+          className="text-3xl font-bold mb-8 px-5 py-2 rounded-xl inline-block"
+          style={{
+            background: "linear-gradient(135deg, rgba(10, 14, 25, 0.75) 0%,rgba(15, 23, 42, 0.80) 25%,rgba(8, 10, 15, 0.88) 50%,rgba(15, 23, 42, 0.80) 75%, rgba(20, 18, 16, 0.75) 100%)",
+            color: "white",
+            boxShadow: "0 4px 15px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.1)"
+          }}
+        >
+          Lab Issues & Support Tickets
+        </h1>
 
         {loadingLabs && (
           <div className="text-center py-12">
@@ -551,14 +560,17 @@ export default function Issues() {
               onClick={() => fetchLabDetails(lab.lab_id)}
               className="cursor-pointer"
             >
-              <WobbleCard containerClassName="bg-neutral-800 p-6 rounded-xl h-40">
-                <h2 className="text-2xl font-semibold mb-2">{lab.lab_name}</h2>
-                <p className="text-gray-400 mb-1">Lab ID: {lab.lab_id}</p>
-                <p className="text-gray-400">Grid: {lab.rows} × {lab.columns}</p>
-                <p className="text-xs text-blue-400 mt-2">
-                  {loadingLabDetail ? "Loading..." : "Click to view devices and raise tickets"}
-                </p>
-              </WobbleCard>
+              <CometCard>
+                <div className="p-6 text-white bg-neutral-800/95 rounded-2xl backdrop-blur-sm h-full flex flex-col justify-between">
+                  <div>
+                    <h2 className="text-2xl font-semibold mb-2">{lab.lab_name}</h2>
+                    <p className="text-gray-400 text-sm">Lab ID: {lab.lab_id}</p>
+                  </div>
+                  <button className="mt-4 px-4 py-2 bg-blue-600 rounded-lg text-white font-semibold hover:bg-blue-700 transition-colors">
+                    View Issues
+                  </button>
+                </div>
+              </CometCard>
             </div>
             ))}
           </div>
@@ -578,7 +590,15 @@ export default function Issues() {
             transition={{ duration: 0.4 }}
             className="mt-12"
           >
-            <BackgroundGradient className="p-8 rounded-xl shadow-xl">
+            <div 
+              className="p-8 rounded-xl shadow-xl"
+              style={{
+                backgroundColor: "rgba(0, 0, 0, 0.5)",
+                backdropFilter: "blur(10px)",
+                border: "1px solid rgba(255, 255, 255, 0.2)",
+                boxShadow: "0 8px 32px 0 rgba(0, 0, 0, 0.3), inset 0 1px 1px rgba(255, 255, 255, 0.1), 0 8px 32px rgba(0, 0, 0, 0.2)"
+              }}
+            >
               <div className="flex items-center justify-between mb-6">
                 <div>
                   <h2 className="text-2xl font-bold">
@@ -746,7 +766,7 @@ export default function Issues() {
                     })}
                 </div>
               )}
-            </BackgroundGradient>
+            </div>
           </motion.div>
         )}
 
