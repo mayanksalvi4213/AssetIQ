@@ -851,8 +851,12 @@ const OcrPage: React.FC = () => {
       </div>
 
       <h1
-        className="text-3xl font-bold mb-8 relative z-20 mt-16"
-        style={{ color: "#f3f4f6" }}
+        className="text-3xl font-bold mb-8 relative z-20 mt-16 px-5 py-2 rounded-xl inline-block"
+        style={{
+          background: "linear-gradient(135deg, rgba(10, 14, 25, 0.75) 0%,rgba(15, 23, 42, 0.80) 25%,rgba(8, 10, 15, 0.88) 50%,rgba(15, 23, 42, 0.80) 75%, rgba(20, 18, 16, 0.75) 100%)",
+          color: "white",
+          boxShadow: "0 4px 15px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.1)"
+        }}
       >
         Asset Registry Scanner 
       </h1>
@@ -889,7 +893,7 @@ const OcrPage: React.FC = () => {
       {/* Manual Entry Section */}
       {showManualEntry && (
         <div className="w-full max-w-6xl mb-6 relative z-20">
-          <BackgroundGradient className="rounded-[22px] p-8 bg-gray-750">
+          <div className="bg-black/40 backdrop-blur-md rounded-xl shadow-lg p-8">
             <h2 className="text-2xl font-bold text-gray-100 mb-6 flex items-center gap-2">
               ✍️ Manual Device Entry
             </h2>
@@ -936,10 +940,15 @@ const OcrPage: React.FC = () => {
               {manualDevices.map((device, index) => (
                 <div
                   key={device.id}
-                  className="bg-gray-50 rounded-lg p-6 border-2 border-gray-300 relative shadow-sm"
+                  className="rounded-lg p-6 border border-white/30 relative shadow-lg backdrop-blur-xl"
+                  style={{
+                    backgroundColor: "rgba(255, 255, 255, 0.1)",
+                    boxShadow: "0 8px 32px 0 rgba(255, 255, 255, 0.1), inset 0 1px 1px rgba(255, 255, 255, 0.2), 0 8px 32px rgba(0, 0, 0, 0.1)"
+                  }}
                 >
                   {/* Remove Button */}
                   {manualDevices.length > 1 && (
+                    
                     <button
                       onClick={() => removeManualDevice(device.id)}
                       className="absolute top-4 right-4 text-red-600 hover:text-red-700 transition bg-red-50 p-2 rounded-lg"
@@ -948,14 +957,14 @@ const OcrPage: React.FC = () => {
                     </button>
                   )}
 
-                  <h3 className="text-lg font-semibold text-gray-900 mb-4">
+                  <h3 className="text-lg font-semibold text-white mb-4">
                     Device #{index + 1}
                   </h3>
 
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                     {/* Device Type Dropdown */}
                     <div>
-                      <Label htmlFor={`deviceType-${device.id}`} className="text-gray-900 font-semibold">
+                      <Label htmlFor={`deviceType-${device.id}`} className="text-white font-semibold">
                         Device Type <span className="text-red-600">*</span>
                       </Label>
                       <select
@@ -964,7 +973,7 @@ const OcrPage: React.FC = () => {
                         onChange={(e) =>
                           updateManualDevice(device.id, "deviceType", e.target.value)
                         }
-                        className="w-full px-4 py-2 rounded-lg border-2 border-gray-300 bg-white text-gray-900 focus:border-blue-500 focus:outline-none mt-1 font-medium"
+                        className="w-full px-4 py-2 rounded-lg border border-neutral-600 bg-neutral-700 text-white focus:border-blue-500 focus:outline-none mt-1 font-medium"
                       >
                         <option value="">Select Device Type</option>
                         {deviceTypes.map((type) => (
@@ -978,7 +987,7 @@ const OcrPage: React.FC = () => {
                     {/* Custom Device Type - Only show when "Other" is selected */}
                     {device.deviceType === "Other" && (
                       <div>
-                        <Label htmlFor={`customDeviceType-${device.id}`} className="text-gray-900 font-semibold">
+                        <Label htmlFor={`customDeviceType-${device.id}`} className="text-white font-semibold">
                           Specify Device Type <span className="text-red-600">*</span>
                         </Label>
                         <Input
@@ -989,14 +998,14 @@ const OcrPage: React.FC = () => {
                           onChange={(e) =>
                             updateManualDevice(device.id, "customDeviceType", e.target.value)
                           }
-                          className="mt-1 bg-white border-2 border-gray-300 text-gray-900 placeholder-gray-500 font-medium"
+                          className="mt-1 bg-neutral-700 border border-neutral-600 text-white placeholder-gray-400 font-medium"
                         />
                       </div>
                     )}
 
                     {/* Department */}
                     <div>
-                      <Label htmlFor={`dept-${device.id}`} className="text-gray-900 font-semibold">
+                      <Label htmlFor={`dept-${device.id}`} className="text-white font-semibold">
                         Department <span className="text-red-600">*</span>
                       </Label>
                       <select
@@ -1005,7 +1014,7 @@ const OcrPage: React.FC = () => {
                         onChange={(e) =>
                           updateManualDevice(device.id, "dept", e.target.value)
                         }
-                        className="w-full px-4 py-2 rounded-lg border-2 border-gray-300 bg-white text-gray-900 focus:border-blue-500 focus:outline-none mt-1 font-medium"
+                        className="w-full px-4 py-2 rounded-lg border border-neutral-600 bg-neutral-700 text-white focus:border-blue-500 focus:outline-none mt-1 font-medium"
                       >
                         <option value="">Select Department</option>
                         <option value="CS">CS</option>
@@ -1019,7 +1028,7 @@ const OcrPage: React.FC = () => {
 
                     {/* Material Description */}
                     <div>
-                      <Label htmlFor={`materialDescription-${device.id}`} className="text-gray-900 font-semibold">
+                      <Label htmlFor={`materialDescription-${device.id}`} className="text-white font-semibold">
                         Material Description <span className="text-red-600">*</span>
                       </Label>
                       <Input
@@ -1030,13 +1039,13 @@ const OcrPage: React.FC = () => {
                         onChange={(e) =>
                           updateManualDevice(device.id, "materialDescription", e.target.value)
                         }
-                        className="mt-1 bg-white border-2 border-gray-300 text-gray-900 placeholder-gray-500 font-medium"
+                        className="mt-1 bg-neutral-700 border border-neutral-600 text-white placeholder-gray-400 font-medium"
                       />
                     </div>
 
                     {/* Model No */}
                     <div>
-                      <Label htmlFor={`modelNo-${device.id}`} className="text-gray-900 font-semibold">Model No.</Label>
+                      <Label htmlFor={`modelNo-${device.id}`} className="text-white font-semibold">Model No.</Label>
                       <Input
                         id={`modelNo-${device.id}`}
                         type="text"
@@ -1045,13 +1054,13 @@ const OcrPage: React.FC = () => {
                         onChange={(e) =>
                           updateManualDevice(device.id, "modelNo", e.target.value)
                         }
-                        className="mt-1 bg-white border-2 border-gray-300 text-gray-900 placeholder-gray-500 font-medium"
+                        className="mt-1 bg-neutral-700 border border-neutral-600 text-white placeholder-gray-400 font-medium"
                       />
                     </div>
 
                     {/* Brand */}
                     <div>
-                      <Label htmlFor={`brand-${device.id}`} className="text-gray-900 font-semibold">Brand</Label>
+                      <Label htmlFor={`brand-${device.id}`} className="text-white font-semibold">Brand</Label>
                       <Input
                         id={`brand-${device.id}`}
                         type="text"
@@ -1060,13 +1069,13 @@ const OcrPage: React.FC = () => {
                         onChange={(e) =>
                           updateManualDevice(device.id, "brand", e.target.value)
                         }
-                        className="mt-1 bg-white border-2 border-gray-300 text-gray-900 placeholder-gray-500 font-medium"
+                        className="mt-1 bg-neutral-700 border border-neutral-600 text-white placeholder-gray-400 font-medium"
                       />
                     </div>
 
                     {/* Warranty */}
                     <div>
-                      <Label htmlFor={`warranty-${device.id}`} className="text-gray-900 font-semibold">Warranty</Label>
+                      <Label htmlFor={`warranty-${device.id}`} className="text-white font-semibold">Warranty</Label>
                       <Input
                         id={`warranty-${device.id}`}
                         type="text"
@@ -1075,13 +1084,13 @@ const OcrPage: React.FC = () => {
                         onChange={(e) =>
                           updateManualDevice(device.id, "warranty", e.target.value)
                         }
-                        className="mt-1 bg-white border-2 border-gray-300 text-gray-900 placeholder-gray-500 font-medium"
+                        className="mt-1 bg-neutral-700 border border-neutral-600 text-white placeholder-gray-400 font-medium"
                       />
                     </div>
 
                     {/* Quantity */}
                     <div>
-                      <Label htmlFor={`quantity-${device.id}`} className="text-gray-900 font-semibold">Quantity</Label>
+                      <Label htmlFor={`quantity-${device.id}`} className="text-white font-semibold">Quantity</Label>
                       <Input
                         id={`quantity-${device.id}`}
                         type="number"
@@ -1092,13 +1101,13 @@ const OcrPage: React.FC = () => {
                           const val = e.target.value === '' ? 0 : parseInt(e.target.value) || 0;
                           updateManualDevice(device.id, "quantity", val);
                         }}
-                        className="mt-1 bg-white border-2 border-gray-300 text-gray-900 placeholder-gray-500 font-medium"
+                        className="mt-1 bg-neutral-700 border border-neutral-600 text-white placeholder-gray-400 font-medium"
                       />
                     </div>
 
                     {/* Amount Per Pcs */}
                     <div>
-                      <Label htmlFor={`amountPerPcs-${device.id}`} className="text-gray-900 font-semibold">Amount Per Pcs (₹)</Label>
+                      <Label htmlFor={`amountPerPcs-${device.id}`} className="text-white font-semibold">Amount Per Pcs (₹)</Label>
                       <Input
                         id={`amountPerPcs-${device.id}`}
                         type="number"
@@ -1109,25 +1118,25 @@ const OcrPage: React.FC = () => {
                         onChange={(e) =>
                           updateManualDevice(device.id, "amountPerPcs", parseFloat(e.target.value) || 0)
                         }
-                        className="mt-1 bg-white border-2 border-gray-300 text-gray-900 placeholder-gray-500 font-medium"
+                        className="mt-1 bg-neutral-700 border border-neutral-600 text-white placeholder-gray-400 font-medium"
                       />
                     </div>
 
                     {/* Total Amount (Auto-calculated) */}
                     <div>
-                      <Label htmlFor={`totalAmount-${device.id}`} className="text-gray-900 font-semibold">Total Amount (₹)</Label>
+                      <Label htmlFor={`totalAmount-${device.id}`} className="text-white font-semibold">Total Amount (₹)</Label>
                       <Input
                         id={`totalAmount-${device.id}`}
                         type="number"
                         value={device.totalAmount}
                         readOnly
-                        className="mt-1 bg-gray-200 border-2 border-gray-300 cursor-not-allowed text-gray-900 font-bold"
+                        className="mt-1 bg-neutral-600 border border-neutral-600 cursor-not-allowed text-white font-bold"
                       />
                     </div>
 
                     {/* Prefix Code (Identity Number) */}
                     <div>
-                      <Label htmlFor={`identityNumber-${device.id}`} className="text-gray-900 font-semibold">
+                      <Label htmlFor={`identityNumber-${device.id}`} className="text-white font-semibold">
                         Prefix Code <span className="text-red-600">*</span>
                       </Label>
                       <Input
@@ -1138,9 +1147,9 @@ const OcrPage: React.FC = () => {
                         onChange={(e) =>
                           updateManualDevice(device.id, "identityNumber", e.target.value)
                         }
-                        className="mt-1 bg-white border-2 border-gray-300 text-gray-900 placeholder-gray-500 font-medium"
+                        className="mt-1 bg-neutral-700 border border-neutral-600 text-white placeholder-gray-400 font-medium"
                       />
-                      <p className="text-xs text-gray-500 mt-1">Devices will be: {device.identityNumber || 'PREFIX'}/1, {device.identityNumber || 'PREFIX'}/2, ...</p>
+                      <p className="text-xs text-gray-400 mt-1">Devices will be: {device.identityNumber || 'PREFIX'}/1, {device.identityNumber || 'PREFIX'}/2, ...</p>
                     </div>
                   </div>
                 </div>
@@ -1159,14 +1168,19 @@ const OcrPage: React.FC = () => {
             </div>
 
             {/* Common Invoice Fields */}
-            <div className="mt-8 p-6 bg-blue-50 rounded-lg border-2 border-blue-300 shadow-sm">
-              <h3 className="text-lg font-semibold text-gray-900 mb-4">
+            <div className="mt-8 p-6 rounded-lg border border-white/30 backdrop-blur-xl"
+              style={{
+                backgroundColor: "rgba(255, 255, 255, 0.1)",
+                boxShadow: "0 8px 32px 0 rgba(255, 255, 255, 0.1), inset 0 1px 1px rgba(255, 255, 255, 0.2), 0 8px 32px rgba(0, 0, 0, 0.1)"
+              }}
+            >
+              <h3 className="text-lg font-semibold text-white mb-4">
                 📋 Invoice Summary
               </h3>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 {/* Invoice Number */}
                 <div>
-                  <Label htmlFor="invoiceNo" className="text-gray-900 font-semibold">
+                  <Label htmlFor="invoiceNo" className="text-white font-semibold">
                     Invoice No. <span className="text-red-600">*</span>
                   </Label>
                   <Input
@@ -1178,13 +1192,13 @@ const OcrPage: React.FC = () => {
                       const value = e.target.value;
                       setManualDevices(manualDevices.map(device => ({ ...device, invoiceNo: value })));
                     }}
-                    className="mt-1 bg-white border-2 border-gray-300 text-gray-900 placeholder-gray-500 font-medium"
+                    className="mt-1 bg-neutral-700 border border-neutral-600 text-white placeholder-gray-400 font-medium"
                   />
                 </div>
 
                 {/* Vendor Name */}
                 <div>
-                  <Label htmlFor="vendorName" className="text-gray-900 font-semibold">
+                  <Label htmlFor="vendorName" className="text-white font-semibold">
                     Vendor Name <span className="text-red-600">*</span>
                   </Label>
                   <Input
@@ -1196,13 +1210,13 @@ const OcrPage: React.FC = () => {
                       const value = e.target.value;
                       setManualDevices(manualDevices.map(device => ({ ...device, vendorName: value })));
                     }}
-                    className="mt-1 bg-white border-2 border-gray-300 text-gray-900 placeholder-gray-500 font-medium"
+                    className="mt-1 bg-neutral-700 border border-neutral-600 text-white placeholder-gray-400 font-medium"
                   />
                 </div>
 
                 {/* Bill Date */}
                 <div>
-                  <Label htmlFor="billDate" className="text-gray-900 font-semibold">
+                  <Label htmlFor="billDate" className="text-white font-semibold">
                     Bill Date <span className="text-red-600">*</span>
                   </Label>
                   <Input
@@ -1221,26 +1235,26 @@ const OcrPage: React.FC = () => {
                       setManualBillDate(value);
                     }}
                     maxLength={10}
-                    className="mt-1 bg-white border-2 border-gray-300 text-gray-900 placeholder-gray-500 font-medium"
+                    className="mt-1 bg-neutral-700 border border-neutral-600 text-white placeholder-gray-400 font-medium"
                   />
                 </div>
 
                 {/* Stock Entry */}
                 <div>
-                  <Label htmlFor="stockEntry" className="text-gray-900 font-semibold">Stock Entry</Label>
+                  <Label htmlFor="stockEntry" className="text-white font-semibold">Stock Entry</Label>
                   <Input
                     id="stockEntry"
                     type="text"
                     placeholder="e.g., SE-2024-001"
                     value={manualStockEntry}
                     onChange={(e) => setManualStockEntry(e.target.value)}
-                    className="mt-1 bg-white border-2 border-gray-300 text-gray-900 placeholder-gray-500 font-medium"
+                    className="mt-1 bg-neutral-700 border border-neutral-600 text-white placeholder-gray-400 font-medium"
                   />
                 </div>
 
                 {/* Tax Amount */}
                 <div>
-                  <Label htmlFor="taxAmount" className="text-gray-900 font-semibold">Tax Amount (₹)</Label>
+                  <Label htmlFor="taxAmount" className="text-white font-semibold">Tax Amount (₹)</Label>
                   <Input
                     id="taxAmount"
                     type="number"
@@ -1248,14 +1262,14 @@ const OcrPage: React.FC = () => {
                     step="0.01"
                     value={manualTaxAmount || ''}
                     onChange={(e) => setManualTaxAmount(e.target.value === '' ? 0 : parseFloat(e.target.value))}
-                    className="mt-1 bg-white border-2 border-gray-300 text-gray-900 font-medium"
+                    className="mt-1 bg-neutral-700 border border-neutral-600 text-white placeholder-gray-400 font-medium"
                     placeholder="0.00"
                   />
                 </div>
 
                 {/* GSTIN */}
                 <div>
-                  <Label htmlFor="gstin" className="text-gray-900 font-semibold">GSTIN</Label>
+                  <Label htmlFor="gstin" className="text-white font-semibold">GSTIN</Label>
                   <Input
                     id="gstin"
                     type="text"
@@ -1263,25 +1277,25 @@ const OcrPage: React.FC = () => {
                     maxLength={15}
                     value={manualGstin}
                     onChange={(e) => setManualGstin(e.target.value.toUpperCase())}
-                    className="mt-1 bg-white border-2 border-gray-300 text-gray-900 placeholder-gray-500 font-medium"
+                    className="mt-1 bg-neutral-700 border border-neutral-600 text-white placeholder-gray-400 font-medium"
                   />
                 </div>
 
                 {/* Grand Total */}
                 <div>
-                  <Label htmlFor="grandTotal" className="text-gray-900 font-semibold">Grand Total (₹)</Label>
+                  <Label htmlFor="grandTotal" className="text-white font-semibold">Grand Total (₹)</Label>
                   <Input
                     id="grandTotal"
                     type="number"
                     value={manualGrandTotal.toFixed(2)}
                     readOnly
-                    className="mt-1 bg-gray-200 border-2 border-gray-300 cursor-not-allowed text-gray-900 font-bold"
+                    className="mt-1 bg-neutral-600 border border-neutral-600 cursor-not-allowed text-white font-bold"
                   />
                 </div>
 
                 {/* Order No. */}
                 <div>
-                  <Label htmlFor="orderNo" className="text-gray-900 font-semibold">
+                  <Label htmlFor="orderNo" className="text-white font-semibold">
                     Order No. <span className="text-red-600">*</span>
                   </Label>
                   <Input
@@ -1290,13 +1304,13 @@ const OcrPage: React.FC = () => {
                     placeholder="e.g., ORD-2024-001"
                     value={manualOrderNo}
                     onChange={(e) => setManualOrderNo(e.target.value)}
-                    className="mt-1 bg-white border-2 border-gray-300 text-gray-900 placeholder-gray-500 font-medium"
+                    className="mt-1 bg-neutral-700 border border-neutral-600 text-white placeholder-gray-400 font-medium"
                   />
                 </div>
 
                 {/* Order Date */}
                 <div>
-                  <Label htmlFor="orderDate" className="text-gray-900 font-semibold">
+                  <Label htmlFor="orderDate" className="text-white font-semibold">
                     Order Date <span className="text-red-600">*</span>
                   </Label>
                   <Input
@@ -1311,13 +1325,13 @@ const OcrPage: React.FC = () => {
                       setManualOrderDate(value);
                     }}
                     maxLength={10}
-                    className="mt-1 bg-white border-2 border-gray-300 text-gray-900 placeholder-gray-500 font-medium"
+                    className="mt-1 bg-neutral-700 border border-neutral-600 text-white placeholder-gray-400 font-medium"
                   />
                 </div>
 
                 {/* Central Store Inward No. */}
                 <div>
-                  <Label htmlFor="centralStoreNo" className="text-gray-900 font-semibold">
+                  <Label htmlFor="centralStoreNo" className="text-white font-semibold">
                     Central Store Inward No. <span className="text-red-600">*</span>
                   </Label>
                   <Input
@@ -1326,13 +1340,13 @@ const OcrPage: React.FC = () => {
                     placeholder="e.g., CSI-2024-001"
                     value={manualCentralStoreNo}
                     onChange={(e) => setManualCentralStoreNo(e.target.value)}
-                    className="mt-1 bg-white border-2 border-gray-300 text-gray-900 placeholder-gray-500 font-medium"
+                    className="mt-1 bg-neutral-700 border border-neutral-600 text-white placeholder-gray-400 font-medium"
                   />
                 </div>
 
                 {/* Central Store Inward Date */}
                 <div>
-                  <Label htmlFor="centralStoreDate" className="text-gray-900 font-semibold">
+                  <Label htmlFor="centralStoreDate" className="text-white font-semibold">
                     Central Store Inward Date <span className="text-red-600">*</span>
                   </Label>
                   <Input
@@ -1347,20 +1361,20 @@ const OcrPage: React.FC = () => {
                       setManualCentralStoreDate(value);
                     }}
                     maxLength={10}
-                    className="mt-1 bg-white border-2 border-gray-300 text-gray-900 placeholder-gray-500 font-medium"
+                    className="mt-1 bg-neutral-700 border border-neutral-600 text-white placeholder-gray-400 font-medium"
                   />
                 </div>
 
                 {/* Remarks */}
                 <div className="md:col-span-2">
-                  <Label htmlFor="remarks" className="text-gray-900 font-semibold">Remarks</Label>
+                  <Label htmlFor="remarks" className="text-white font-semibold">Remarks</Label>
                   <Input
                     id="remarks"
                     type="text"
                     placeholder="Any additional notes or remarks"
                     value={manualRemarks}
                     onChange={(e) => setManualRemarks(e.target.value)}
-                    className="mt-1 bg-white border-2 border-gray-300 text-gray-900 placeholder-gray-500 font-medium"
+                    className="mt-1 bg-neutral-700 border border-neutral-600 text-white placeholder-gray-400 font-medium"
                   />
                 </div>
               </div>
@@ -1377,7 +1391,7 @@ const OcrPage: React.FC = () => {
                 🚀 Generate Assets
               </HoverBorderGradient>
             </div>
-          </BackgroundGradient>
+          </div>
 
           {/* Manual Entry Results - Display assets like OCR scan */}
           {manualScanResult && (

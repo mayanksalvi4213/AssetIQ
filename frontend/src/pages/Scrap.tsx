@@ -5,7 +5,7 @@ import { Menu, MenuItem, HoveredLink } from "@/components/ui/navbar-menu";
 import { LogoButton } from "@/components/ui/logo-button";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
-import { WobbleCard } from "@/components/ui/wobble-card";
+import { CometCard } from "@/components/ui/comet-card";
 import { useAuth } from "@/contexts/AuthContext";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -491,7 +491,14 @@ const Scrap: React.FC = () => {
         ══════════════════════════════════════════════════════════ */}
         {!selectedLab ? (
           <>
-            <h1 className="text-4xl font-bold mb-3 text-gray-200 text-center mt-16">
+            <h1 
+              className="text-4xl font-bold mb-3 text-gray-200 text-center mt-16 px-5 py-2 rounded-xl inline-block"
+              style={{
+                background: "linear-gradient(135deg, rgba(10, 14, 25, 0.75) 0%,rgba(15, 23, 42, 0.80) 25%,rgba(8, 10, 15, 0.88) 50%,rgba(15, 23, 42, 0.80) 75%, rgba(20, 18, 16, 0.75) 100%)",
+                color: "white",
+                boxShadow: "0 4px 15px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.1)"
+              }}
+            >
               Scrap Management
             </h1>
             <p className="text-gray-400 text-center mb-8">
@@ -524,23 +531,17 @@ const Scrap: React.FC = () => {
                     onClick={() => handleLabClick(lab)}
                     className="cursor-pointer transform transition hover:scale-105"
                   >
-                    <WobbleCard containerClassName="bg-gradient-to-br from-neutral-800 to-neutral-900 p-6 rounded-xl h-48 border border-neutral-700">
-                      <div className="h-full flex flex-col justify-between">
+                    <CometCard>
+                      <div className="p-6 text-white bg-neutral-800/95 rounded-2xl backdrop-blur-sm h-full flex flex-col justify-between">
                         <div>
                           <h2 className="text-2xl font-bold text-white">{lab.lab_name}</h2>
                           <p className="text-sm text-gray-400 mt-2">Lab ID: {lab.lab_id}</p>
                         </div>
-                        <div className="flex items-end justify-between">
-                          <div className="text-gray-300">
-                            <p className="text-sm">Grid Size</p>
-                            <p className="text-lg font-semibold">
-                              {lab.rows} × {lab.columns}
-                            </p>
-                          </div>
-                          <div className="text-2xl">📋</div>
-                        </div>
+                        <button className="mt-4 px-4 py-2 bg-blue-600 rounded-lg text-white font-semibold hover:bg-blue-700 transition-colors">
+                          View Lab
+                        </button>
                       </div>
-                    </WobbleCard>
+                    </CometCard>
                   </div>
                 ))}
               </div>
@@ -1045,7 +1046,7 @@ const Scrap: React.FC = () => {
                   className="px-3 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors disabled:bg-gray-600 disabled:cursor-not-allowed flex items-center gap-2 text-sm"
                 >
                   <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 01.293.707V19a2 2 0 01-2 2z" />
                   </svg>
                   Export as PDF
                 </button>

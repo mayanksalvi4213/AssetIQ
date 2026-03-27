@@ -876,9 +876,18 @@ const Transfers: React.FC = () => {
         animate={{ opacity: 1, y: 0 }}
         className="w-full max-w-7xl relative z-20 mt-16"
       >
-        <h1 className="text-4xl font-bold mb-6 text-center text-gray-200">
-          Lab Transfer Management
-        </h1>
+        <div className="inline-block mb-6">
+          <h1 
+            className="text-3xl font-bold px-5 py-2 rounded-xl"
+            style={{
+              background: "linear-gradient(135deg, rgba(10, 14, 25, 0.75) 0%,rgba(15, 23, 42, 0.80) 25%,rgba(8, 10, 15, 0.88) 50%,rgba(15, 23, 42, 0.80) 75%, rgba(20, 18, 16, 0.75) 100%)",
+              color: "white",
+              boxShadow: "0 4px 15px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.1)"
+            }}
+          >
+            Lab Transfer Management
+          </h1>
+        </div>
 
         {/* View Toggle for HOD / Lab Incharge / Lab Assistant */}
         {(user?.role === 'HOD' || user?.role === 'Lab Incharge' || user?.role === 'Lab Assistant') && (

@@ -2,7 +2,6 @@
 import { useState, useEffect, useMemo } from "react";
 import { motion } from "motion/react";
 import { QRCodeSVG } from "qrcode.react";
-import { BackgroundGradient } from "@/components/ui/background-gradient";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { HoverBorderGradient } from "@/components/ui/hover-border-gradient";
@@ -625,10 +624,22 @@ export default function LabConfiguration() {
         </Menu>
       </div>
 
+      {/* Logo Button */}
+      <div className="fixed top-4 left-4 z-50">
+        <LogoButton />
+      </div>
+
       {/* Page Content */}
       <div className="flex items-start justify-center pt-24 px-4 pb-12">
-        <BackgroundGradient className="w-full max-w-7xl p-8 rounded-xl shadow-xl">
-          <LogoButton />
+        <div 
+          className="w-full max-w-5xl p-8 rounded-xl shadow-xl"
+          style={{
+            backgroundColor: "rgba(0, 0, 0, 0.5)",
+            backdropFilter: "blur(10px)",
+            border: "1px solid rgba(255, 255, 255, 0.2)",
+            boxShadow: "0 8px 32px 0 rgba(0, 0, 0, 0.3), inset 0 1px 1px rgba(255, 255, 255, 0.1), 0 8px 32px rgba(0, 0, 0, 0.2)"
+          }}
+        >
           <motion.div
             initial={{ opacity: 0, y: 30 }}
             animate={{ opacity: 1, y: 0 }}
@@ -1172,7 +1183,7 @@ export default function LabConfiguration() {
               </>
             )}
           </motion.div>
-        </BackgroundGradient>
+        </div>
       </div>
 
       {/* ── Device Linking Modal ──────────────────────────────────── */}

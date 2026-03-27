@@ -70,7 +70,14 @@ const Reports: React.FC = () => {
       </div>
 
       {/* Heading */}
-      <h1 className="text-3xl font-bold mb-12 relative z-20 mt-16 text-gray-200">
+      <h1 
+        className="text-3xl font-bold mb-12 relative z-20 mt-16 px-5 py-2 rounded-xl inline-block"
+        style={{
+          background: "linear-gradient(135deg, rgba(10, 14, 25, 0.75) 0%,rgba(15, 23, 42, 0.80) 25%,rgba(8, 10, 15, 0.88) 50%,rgba(15, 23, 42, 0.80) 75%, rgba(20, 18, 16, 0.75) 100%)",
+          color: "white",
+          boxShadow: "0 4px 15px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.1)"
+        }}
+      >
         Asset Reports
       </h1>
 
