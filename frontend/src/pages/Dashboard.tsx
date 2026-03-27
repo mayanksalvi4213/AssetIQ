@@ -202,6 +202,9 @@ export default function Dashboard() {
               <HoveredLink href="/lab-configuration">
                 Lab Configuration
               </HoveredLink>{" "}
+              {user?.role === "HOD" && (
+                <HoveredLink href="/assign-lab-incharge">Assign Lab Incharge</HoveredLink>
+              )}
             </div>{" "}
           </MenuItem>{" "}
           <MenuItem setActive={setActive} active={active} item="Operations">
@@ -257,6 +260,24 @@ export default function Dashboard() {
           </h2>
           <p className="text-gray-400 text-sm">Role: {user?.role}</p>
         </div>
+        {user?.role === "Lab Incharge" && (
+          <div className="mb-8 rounded-2xl border border-cyan-500/50 bg-cyan-900/30 p-5 shadow-lg">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-cyan-300 text-sm font-semibold">Assigned Lab</p>
+                <p className="text-white text-xl font-bold">
+                  {user?.assignedLab || "Not assigned yet"}
+                </p>
+              </div>
+              <div className="rounded-full bg-cyan-500/20 px-3 py-1 text-cyan-200 text-xs font-semibold">
+                Lab Incharge
+              </div>
+            </div>
+            <p className="text-cyan-100/70 text-xs mt-2">
+              Your assigned lab appears here for quick reference.
+            </p>
+          </div>
+        )}
 
         <h3 className="text-xl font-semibold mb-6 text-white">Asset Overview</h3>
         {loading ? (

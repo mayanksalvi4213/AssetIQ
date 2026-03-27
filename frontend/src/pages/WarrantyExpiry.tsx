@@ -28,7 +28,7 @@ interface Device {
 
 export default function WarrantyExpiry() {
   const [active, setActive] = useState<string | null>(null);
-  const { logout } = useAuth();
+  const { logout, user } = useAuth();
   const [devices, setDevices] = useState<Device[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -155,6 +155,9 @@ export default function WarrantyExpiry() {
               <HoveredLink href="/lab-plan">Lab Floor Plans</HoveredLink>
               <HoveredLink href="/lab-layout">Lab Layout Designer</HoveredLink>
               <HoveredLink href="/lab-configuration">Lab Configuration</HoveredLink>
+              {user?.role === "HOD" && (
+                <HoveredLink href="/assign-lab-incharge">Assign Lab Incharge</HoveredLink>
+              )}
             </div>
           </MenuItem>
 

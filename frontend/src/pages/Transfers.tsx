@@ -836,6 +836,9 @@ const Transfers: React.FC = () => {
               <HoveredLink href="/lab-plan">Lab Floor Plans</HoveredLink>
               <HoveredLink href="/lab-layout">Lab Layout Designer</HoveredLink>
               <HoveredLink href="/lab-configuration">Lab Configuration</HoveredLink>
+              {user?.role === "HOD" && (
+                <HoveredLink href="/assign-lab-incharge">Assign Lab Incharge</HoveredLink>
+              )}
             </div>
           </MenuItem>
 

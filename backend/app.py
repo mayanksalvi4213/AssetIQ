@@ -741,6 +741,96 @@ def verify_token():
         }
     })
 
+
+# -----------------------------
+# HOD: Assign Lab Incharge
+# -----------------------------
+@app.route("/get_lab_incharges", methods=["GET"])
+def get_lab_incharges():
+    """Return all users with role Lab Incharge (HOD only)."""
+    current_user = get_current_user()
+    if not current_user or current_user.role != "HOD":
+        return jsonify({"error": "Unauthorized"}), 403
+
+    conn = db.get_connection()
+    if not conn:
+        return jsonify({"error": "Database connection failed"}), 500
+
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT id, first_name, last_name, email, role, assigned_lab
+            FROM users
+            WHERE role = %s
+            ORDER BY first_name, last_name
+            """,
+            ("Lab Incharge",)
+        )
+        users = cursor.fetchall()
+        return jsonify({"success": True, "users": users})
+    except Exception as e:
+        print(f"Error fetching lab incharges: {e}")
+        return jsonify({"error": "Failed to fetch lab incharges"}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.route("/assign_lab_incharge", methods=["POST"])
+def assign_lab_incharge():
+    """Assign a lab to a Lab Incharge user (HOD only)."""
+    current_user = get_current_user()
+    if not current_user or current_user.role != "HOD":
+        return jsonify({"error": "Unauthorized"}), 403
+
+    data = request.get_json() or {}
+    user_id = data.get("userId")
+    lab_id = data.get("labId")
+
+    if not user_id or not lab_id:
+        return jsonify({"error": "userId and labId are required"}), 400
+
+    conn = db.get_connection()
+    if not conn:
+        return jsonify({"error": "Database connection failed"}), 500
+
+    try:
+        cursor = conn.cursor()
+
+        cursor.execute("SELECT lab_id FROM labs WHERE lab_id = %s", (lab_id,))
+        if not cursor.fetchone():
+            return jsonify({"error": "Lab not found"}), 404
+
+        cursor.execute("SELECT id, role FROM users WHERE id = %s", (user_id,))
+        user_row = cursor.fetchone()
+        if not user_row:
+            return jsonify({"error": "User not found"}), 404
+        if user_row.get("role") != "Lab Incharge":
+            return jsonify({"error": "User is not a Lab Incharge"}), 400
+
+        access_scope = {"type": "single", "lab": lab_id}
+        cursor.execute(
+            """
+            UPDATE users
+            SET assigned_lab = %s, access_scope = %s
+            WHERE id = %s
+            RETURNING id, first_name, last_name, email, role, assigned_lab
+            """,
+            (lab_id, json.dumps(access_scope), user_id)
+        )
+        updated_user = cursor.fetchone()
+        conn.commit()
+
+        return jsonify({"success": True, "user": updated_user})
+    except Exception as e:
+        conn.rollback()
+        print(f"Error assigning lab incharge: {e}")
+        return jsonify({"error": "Failed to assign lab"}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
 # -----------------------------
 # Generate QR Codes Endpoint
 # -----------------------------
@@ -7002,6 +7092,128 @@ def _ensure_scrapped_devices_table(cursor):
     )
 
 
+def _ensure_scrap_requests_table(cursor):
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS scrap_requests (
+            scrap_request_id SERIAL PRIMARY KEY,
+            device_ids JSONB NOT NULL,
+            lab_id TEXT,
+            status TEXT DEFAULT 'pending',
+            remark TEXT,
+            requested_by TEXT,
+            requested_by_user_id INTEGER,
+            requested_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+            approved_by TEXT,
+            approved_at TIMESTAMPTZ
+        )
+        """
+    )
+    cursor.execute("ALTER TABLE scrap_requests ADD COLUMN IF NOT EXISTS device_ids JSONB")
+    cursor.execute("ALTER TABLE scrap_requests ADD COLUMN IF NOT EXISTS lab_id TEXT")
+    cursor.execute("ALTER TABLE scrap_requests ADD COLUMN IF NOT EXISTS status TEXT")
+    cursor.execute("ALTER TABLE scrap_requests ADD COLUMN IF NOT EXISTS remark TEXT")
+    cursor.execute("ALTER TABLE scrap_requests ADD COLUMN IF NOT EXISTS requested_by TEXT")
+    cursor.execute("ALTER TABLE scrap_requests ADD COLUMN IF NOT EXISTS requested_by_user_id INTEGER")
+    cursor.execute("ALTER TABLE scrap_requests ADD COLUMN IF NOT EXISTS requested_at TIMESTAMPTZ")
+    cursor.execute("ALTER TABLE scrap_requests ADD COLUMN IF NOT EXISTS approved_by TEXT")
+    cursor.execute("ALTER TABLE scrap_requests ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ")
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_scrap_requests_status ON scrap_requests(status)"
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_scrap_requests_requested_at ON scrap_requests(requested_at DESC)"
+    )
+
+
+def _scrap_devices_by_ids(cursor, conn, device_ids, user, justification=None):
+    # Ensure schema exists and COMMIT DDL before DML.
+    _ensure_scrapped_devices_table(cursor)
+    conn.commit()
+
+    cursor.execute(
+        """
+        SELECT
+            d.device_id,
+            d.asset_code,
+            d.assigned_code AS device_assigned_code,
+            d.lab_id AS device_lab_id,
+            l.lab_name,
+            lsd.device_type,
+            lsd.brand,
+            lsd.model,
+            lsd.specification,
+            ls.lab_id AS station_lab_id,
+            ls.assigned_code AS station_code,
+            d.unit_price
+        FROM devices d
+        LEFT JOIN lab_station_devices lsd ON d.device_id = lsd.device_id
+        LEFT JOIN lab_stations ls ON lsd.station_id = ls.station_id
+        LEFT JOIN labs l ON d.lab_id = l.lab_id
+        WHERE d.device_id = ANY(%s)
+        """,
+        (device_ids,),
+    )
+    rows = cursor.fetchall() or []
+    by_id = {r["device_id"]: r for r in rows}
+
+    scrapped_by_text = (getattr(user, "email", None) or f"user:{getattr(user, 'id', None)}")
+    scrapped_by_user_id = None
+    try:
+        raw_uid = getattr(user, "id", None)
+        if raw_uid is not None and str(raw_uid).strip() != "":
+            scrapped_by_user_id = int(raw_uid)
+    except Exception:
+        scrapped_by_user_id = None
+
+    inserted = 0
+    for did in device_ids:
+        info = by_id.get(did, {})
+        cursor.execute(
+            """
+            INSERT INTO scrapped_devices
+              (scrap_id, device_id, asset_code, device_type, brand, model, specification,
+               lab_id, lab_name, station_code, scrapped_by_text, scrapped_by_user_id,
+               dead_stock_number, cost, justification_for_scrapping, approval_of_hod)
+            VALUES
+              (%s, %s, %s, %s, %s, %s, %s,
+               %s, %s, %s, %s, %s,
+               %s, %s, %s, %s)
+            """,
+            (
+                str(uuid.uuid4()),
+                did,
+                info.get("asset_code"),
+                info.get("device_type"),
+                info.get("brand"),
+                info.get("model"),
+                info.get("specification"),
+                info.get("station_lab_id") or info.get("device_lab_id"),
+                info.get("lab_name"),
+                info.get("station_code"),
+                scrapped_by_text,
+                scrapped_by_user_id,
+                info.get("asset_code"),
+                info.get("unit_price"),
+                justification,
+                None,
+            ),
+        )
+        inserted += 1
+
+    cursor.execute(
+        "DELETE FROM lab_station_devices WHERE device_id = ANY(%s)",
+        (device_ids,),
+    )
+
+    cursor.execute(
+        "UPDATE devices SET is_active = FALSE, lab_id = NULL WHERE device_id = ANY(%s)",
+        (device_ids,),
+    )
+
+    return inserted
+
+
 @app.route("/scrap_devices", methods=["POST"])
 def scrap_devices():
     """
@@ -7013,11 +7225,12 @@ def scrap_devices():
     """
     try:
         user = get_current_user()
-        if not user:
-            return jsonify({"success": False, "error": "Unauthorized"}), 401
+        if not user or getattr(user, "role", None) != "HOD":
+            return jsonify({"success": False, "error": "Unauthorized"}), 403
 
         data = request.get_json(force=True) or {}
         device_ids = data.get("deviceIds") or []
+        remark = (data.get("remark") or "").strip()
         if not isinstance(device_ids, list) or not device_ids:
             return jsonify({"success": False, "error": "deviceIds must be a non-empty array"}), 400
 
@@ -7040,99 +7253,7 @@ def scrap_devices():
         cursor = conn.cursor()
 
         try:
-            # Ensure schema exists and COMMIT DDL before DML.
-            # If we do DDL+insert in one transaction and the insert fails,
-            # Postgres rolls back the DDL, causing repeat failures.
-            _ensure_scrapped_devices_table(cursor)
-            conn.commit()
-
-            # Fetch details for all devices (best-effort; some joins may be null)
-            cursor.execute(
-                """
-                SELECT
-                    d.device_id,
-                    d.asset_code,
-                    d.assigned_code AS device_assigned_code,
-                    d.lab_id AS device_lab_id,
-                    l.lab_name,
-                    lsd.device_type,
-                    lsd.brand,
-                    lsd.model,
-                    lsd.specification,
-                    ls.lab_id AS station_lab_id,
-                    ls.assigned_code AS station_code,
-                    d.unit_price
-                FROM devices d
-                LEFT JOIN lab_station_devices lsd ON d.device_id = lsd.device_id
-                LEFT JOIN lab_stations ls ON lsd.station_id = ls.station_id
-                LEFT JOIN labs l ON d.lab_id = l.lab_id
-                WHERE d.device_id = ANY(%s)
-                """,
-                (normalized_ids,),
-            )
-            rows = cursor.fetchall() or []
-            by_id = {}
-            for r in rows:
-                by_id[r["device_id"]] = r
-
-            scrapped_by_text = (getattr(user, "email", None) or f"user:{getattr(user, 'id', None)}")
-            # Some deployments encode email into JWT user_id; keep numeric-only column best-effort.
-            scrapped_by_user_id = None
-            try:
-                raw_uid = getattr(user, "id", None)
-                if raw_uid is not None and str(raw_uid).strip() != "":
-                    scrapped_by_user_id = int(raw_uid)
-            except Exception:
-                scrapped_by_user_id = None
-
-            # Insert scrapped records
-            inserted = 0
-            for did in normalized_ids:
-                info = by_id.get(did, {})
-                cursor.execute(
-                    """
-                    INSERT INTO scrapped_devices
-                      (scrap_id, device_id, asset_code, device_type, brand, model, specification,
-                       lab_id, lab_name, station_code, scrapped_by_text, scrapped_by_user_id,
-                       dead_stock_number, cost, justification_for_scrapping, approval_of_hod)
-                    VALUES
-                      (%s, %s, %s, %s, %s, %s, %s,
-                       %s, %s, %s, %s, %s,
-                       %s, %s, %s, %s)
-                    """,
-                    (
-                        str(uuid.uuid4()),
-                        did,
-                        info.get("asset_code"),
-                        info.get("device_type"),
-                        info.get("brand"),
-                        info.get("model"),
-                        info.get("specification"),
-                        info.get("station_lab_id") or info.get("device_lab_id"),
-                        info.get("lab_name"),
-                        info.get("station_code"),
-                        scrapped_by_text,
-                        scrapped_by_user_id,
-                        info.get("asset_code"),  # existing dead stock number
-                        info.get("unit_price"),
-                        None,
-                        None,
-                    ),
-                )
-                inserted += 1
-
-            # Remove from lab mapping so they no longer appear in station lists
-            cursor.execute(
-                "DELETE FROM lab_station_devices WHERE device_id = ANY(%s)",
-                (normalized_ids,),
-            )
-
-            # Mark devices inactive and clear lab assignment
-            cursor.execute(
-                "UPDATE devices SET is_active = FALSE, lab_id = NULL WHERE device_id = ANY(%s)",
-                (normalized_ids,),
-            )
-
+            inserted = _scrap_devices_by_ids(cursor, conn, normalized_ids, user, remark or None)
             conn.commit()
             return jsonify(
                 {
@@ -7155,6 +7276,408 @@ def scrap_devices():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+@app.route("/create_scrap_request", methods=["POST"])
+def create_scrap_request():
+    """Create a scrap request (Lab Incharge/Lab Assistant)."""
+    try:
+        user = get_current_user()
+        if not user:
+            return jsonify({"success": False, "error": "Unauthorized"}), 401
+        if getattr(user, "role", None) not in ("Lab Incharge", "Lab Assistant", "HOD"):
+            return jsonify({"success": False, "error": "Forbidden"}), 403
+
+        data = request.get_json(force=True) or {}
+        device_ids = data.get("deviceIds") or []
+        remark = (data.get("remark") or "").strip()
+
+        if not isinstance(device_ids, list) or not device_ids:
+            return jsonify({"success": False, "error": "deviceIds must be a non-empty array"}), 400
+
+        normalized_ids = []
+        for x in device_ids:
+            try:
+                xi = int(x)
+                if xi > 0:
+                    normalized_ids.append(xi)
+            except Exception:
+                continue
+
+        if not normalized_ids:
+            return jsonify({"success": False, "error": "No valid device IDs provided"}), 400
+
+        conn = db.get_connection()
+        if not conn:
+            return jsonify({"success": False, "error": "Database connection failed"}), 500
+        cursor = conn.cursor()
+
+        try:
+            _ensure_scrap_requests_table(cursor)
+            conn.commit()
+
+            cursor.execute(
+                """
+                SELECT device_id, lab_id, is_active
+                FROM devices
+                WHERE device_id = ANY(%s)
+                """,
+                (normalized_ids,),
+            )
+            rows = cursor.fetchall() or []
+            if len(rows) != len(set(normalized_ids)):
+                return jsonify({"success": False, "error": "One or more devices are invalid"}), 400
+
+            if getattr(user, "role", None) == "Lab Incharge" and getattr(user, "assigned_lab", None):
+                allowed_lab = user.assigned_lab
+                for r in rows:
+                    if r.get("lab_id") != allowed_lab:
+                        return jsonify({"success": False, "error": "Devices must belong to your assigned lab"}), 403
+
+            inactive = [r.get("device_id") for r in rows if r.get("is_active") is False]
+            if inactive:
+                return jsonify({"success": False, "error": "One or more devices are already inactive"}), 400
+
+            cursor.execute(
+                """
+                SELECT device_ids
+                FROM scrap_requests
+                WHERE status = 'pending'
+                """
+            )
+            pending_rows = cursor.fetchall() or []
+            pending_set = set()
+            for prow in pending_rows:
+                existing_ids = json.loads(prow["device_ids"]) if isinstance(prow["device_ids"], str) else (prow["device_ids"] or [])
+                pending_set.update(int(x) for x in existing_ids)
+            overlap = pending_set & set(normalized_ids)
+            if overlap:
+                return jsonify({"success": False, "error": "Some selected devices already have pending scrap requests"}), 400
+
+            lab_ids = list({r.get("lab_id") for r in rows})
+            lab_id = lab_ids[0] if len(lab_ids) == 1 else None
+
+            requested_by_text = (getattr(user, "email", None) or f"user:{getattr(user, 'id', None)}")
+            requested_by_user_id = None
+            try:
+                raw_uid = getattr(user, "id", None)
+                if raw_uid is not None and str(raw_uid).strip() != "":
+                    requested_by_user_id = int(raw_uid)
+            except Exception:
+                requested_by_user_id = None
+
+            cursor.execute(
+                """
+                INSERT INTO scrap_requests
+                (device_ids, lab_id, status, remark, requested_by, requested_by_user_id, requested_at)
+                VALUES (%s, %s, 'pending', %s, %s, %s, NOW())
+                RETURNING scrap_request_id
+                """,
+                (json.dumps(normalized_ids), lab_id, remark, requested_by_text, requested_by_user_id),
+            )
+            req_id = cursor.fetchone()["scrap_request_id"]
+            conn.commit()
+            return jsonify({"success": True, "request_id": req_id, "message": "Scrap request submitted"})
+
+        except Exception as e:
+            conn.rollback()
+            raise e
+        finally:
+            cursor.close()
+            conn.close()
+
+    except Exception as e:
+        print(f"Error creating scrap request: {str(e)}")
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/get_pending_scrap_requests", methods=["GET"])
+def get_pending_scrap_requests():
+    """Return pending scrap requests (HOD only)."""
+    try:
+        user = get_current_user()
+        if not user or getattr(user, "role", None) != "HOD":
+            return jsonify({"success": False, "error": "Unauthorized"}), 403
+
+        conn = db.get_connection()
+        if not conn:
+            return jsonify({"success": False, "error": "Database connection failed"}), 500
+        cursor = conn.cursor()
+
+        try:
+            _ensure_scrap_requests_table(cursor)
+            conn.commit()
+
+            cursor.execute(
+                """
+                SELECT
+                    sr.scrap_request_id,
+                    sr.device_ids,
+                    sr.lab_id,
+                    l.lab_name,
+                    sr.status,
+                    sr.remark,
+                    sr.requested_by,
+                    TRIM(CONCAT_WS(' ', u_req.first_name, u_req.last_name)) AS requested_by_name,
+                    sr.requested_at
+                FROM scrap_requests sr
+                LEFT JOIN labs l ON sr.lab_id = l.lab_id
+                LEFT JOIN users u_req ON sr.requested_by = u_req.email
+                WHERE sr.status = 'pending'
+                ORDER BY sr.requested_at DESC
+                """
+            )
+            requests = []
+            for row in cursor.fetchall():
+                device_ids = json.loads(row["device_ids"]) if isinstance(row["device_ids"], str) else row["device_ids"]
+                cursor.execute(
+                    """
+                    SELECT d.device_id, et.name AS type_name, d.brand, d.model,
+                           d.asset_code AS asset_id, d.assigned_code
+                    FROM devices d
+                    LEFT JOIN equipment_types et ON d.type_id = et.type_id
+                    WHERE d.device_id = ANY(%s)
+                    """,
+                    (device_ids,),
+                )
+                devices = cursor.fetchall()
+                requests.append(
+                    {
+                        "scrap_request_id": row["scrap_request_id"],
+                        "device_ids": device_ids,
+                        "devices": devices,
+                        "lab_id": row["lab_id"],
+                        "lab_name": row.get("lab_name"),
+                        "status": row["status"],
+                        "remark": row.get("remark"),
+                        "requested_by": row.get("requested_by"),
+                        "requested_by_name": row.get("requested_by_name"),
+                        "requested_at": row["requested_at"].isoformat() if row["requested_at"] else None,
+                    }
+                )
+
+            return jsonify({"success": True, "requests": requests})
+        finally:
+            cursor.close()
+            conn.close()
+
+    except Exception as e:
+        print(f"Error fetching pending scrap requests: {str(e)}")
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/approve_scrap_request/<int:req_id>", methods=["POST"])
+def approve_scrap_request(req_id):
+    """Approve scrap request and scrap devices (HOD only)."""
+    conn = None
+    try:
+        user = get_current_user()
+        if not user or getattr(user, "role", None) != "HOD":
+            return jsonify({"success": False, "error": "Unauthorized"}), 403
+
+        conn = db.get_connection()
+        if not conn:
+            return jsonify({"success": False, "error": "Database connection failed"}), 500
+        cursor = conn.cursor()
+
+        _ensure_scrap_requests_table(cursor)
+        conn.commit()
+
+        cursor.execute(
+            """
+            SELECT device_ids, remark
+            FROM scrap_requests
+            WHERE scrap_request_id = %s AND status = 'pending'
+            """,
+            (req_id,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return jsonify({"success": False, "error": "Scrap request not found or already processed"}), 404
+
+        device_ids = json.loads(row["device_ids"]) if isinstance(row["device_ids"], str) else row["device_ids"]
+        remark = (row.get("remark") or "").strip()
+
+        inserted = _scrap_devices_by_ids(cursor, conn, device_ids, user, remark or None)
+
+        approver = (getattr(user, "email", None) or f"user:{getattr(user, 'id', None)}")
+        cursor.execute(
+            """
+            UPDATE scrap_requests
+            SET status = 'approved', approved_by = %s, approved_at = NOW()
+            WHERE scrap_request_id = %s
+            """,
+            (approver, req_id),
+        )
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return jsonify({"success": True, "message": f"Scrap request approved ({inserted} device(s) scrapped)"})
+
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        print(f"Error approving scrap request: {str(e)}")
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/reject_scrap_request/<int:req_id>", methods=["POST"])
+def reject_scrap_request(req_id):
+    """Reject scrap request (HOD only)."""
+    try:
+        user = get_current_user()
+        if not user or getattr(user, "role", None) != "HOD":
+            return jsonify({"success": False, "error": "Unauthorized"}), 403
+
+        conn = db.get_connection()
+        if not conn:
+            return jsonify({"success": False, "error": "Database connection failed"}), 500
+        cursor = conn.cursor()
+
+        _ensure_scrap_requests_table(cursor)
+        conn.commit()
+
+        approver = (getattr(user, "email", None) or f"user:{getattr(user, 'id', None)}")
+        cursor.execute(
+            """
+            UPDATE scrap_requests
+            SET status = 'rejected', approved_by = %s, approved_at = NOW()
+            WHERE scrap_request_id = %s AND status = 'pending'
+            """,
+            (approver, req_id),
+        )
+
+        if cursor.rowcount == 0:
+            return jsonify({"success": False, "error": "Scrap request not found or already processed"}), 404
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return jsonify({"success": True, "message": "Scrap request rejected"})
+
+    except Exception as e:
+        print(f"Error rejecting scrap request: {str(e)}")
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/get_scrap_request_history", methods=["GET"])
+def get_scrap_request_history():
+    """Return scrap request history."""
+    conn = None
+    cursor = None
+    try:
+        user = get_current_user()
+        if not user:
+            return jsonify({"success": False, "error": "Unauthorized"}), 401
+
+        conn = db.get_connection()
+        if not conn:
+            return jsonify({"success": False, "error": "Database connection failed"}), 500
+        cursor = conn.cursor()
+
+        _ensure_scrap_requests_table(cursor)
+        conn.commit()
+
+        if getattr(user, "role", None) == "HOD":
+            cursor.execute(
+                """
+                SELECT
+                    sr.scrap_request_id,
+                    sr.device_ids,
+                    sr.lab_id,
+                    l.lab_name,
+                    sr.status,
+                    sr.remark,
+                    sr.requested_by,
+                    TRIM(CONCAT_WS(' ', u_req.first_name, u_req.last_name)) AS requested_by_name,
+                    sr.requested_at,
+                    sr.approved_by,
+                    TRIM(CONCAT_WS(' ', u_app.first_name, u_app.last_name)) AS approved_by_name,
+                    sr.approved_at
+                FROM scrap_requests sr
+                LEFT JOIN labs l ON sr.lab_id = l.lab_id
+                LEFT JOIN users u_req ON sr.requested_by = u_req.email
+                LEFT JOIN users u_app ON sr.approved_by = u_app.email
+                WHERE sr.status <> 'pending'
+                ORDER BY COALESCE(sr.approved_at, sr.requested_at) DESC
+                """
+            )
+        else:
+            requester = (getattr(user, "email", None) or f"user:{getattr(user, 'id', None)}")
+            cursor.execute(
+                """
+                SELECT
+                    sr.scrap_request_id,
+                    sr.device_ids,
+                    sr.lab_id,
+                    l.lab_name,
+                    sr.status,
+                    sr.remark,
+                    sr.requested_by,
+                    TRIM(CONCAT_WS(' ', u_req.first_name, u_req.last_name)) AS requested_by_name,
+                    sr.requested_at,
+                    sr.approved_by,
+                    TRIM(CONCAT_WS(' ', u_app.first_name, u_app.last_name)) AS approved_by_name,
+                    sr.approved_at
+                FROM scrap_requests sr
+                LEFT JOIN labs l ON sr.lab_id = l.lab_id
+                LEFT JOIN users u_req ON sr.requested_by = u_req.email
+                LEFT JOIN users u_app ON sr.approved_by = u_app.email
+                WHERE sr.requested_by = %s
+                ORDER BY COALESCE(sr.approved_at, sr.requested_at) DESC
+                """,
+                (requester,),
+            )
+
+        history = []
+        for row in cursor.fetchall():
+            device_ids = json.loads(row["device_ids"]) if isinstance(row["device_ids"], str) else row["device_ids"]
+            cursor.execute(
+                """
+                SELECT d.device_id, et.name AS type_name, d.brand, d.model,
+                       d.asset_code AS asset_id, d.assigned_code
+                FROM devices d
+                LEFT JOIN equipment_types et ON d.type_id = et.type_id
+                WHERE d.device_id = ANY(%s)
+                """,
+                (device_ids,),
+            )
+            devices = cursor.fetchall()
+            history.append(
+                {
+                    "scrap_request_id": row["scrap_request_id"],
+                    "device_ids": device_ids,
+                    "devices": devices,
+                    "lab_id": row["lab_id"],
+                    "lab_name": row.get("lab_name"),
+                    "status": row["status"],
+                    "remark": row.get("remark"),
+                    "requested_by": row.get("requested_by"),
+                    "requested_by_name": row.get("requested_by_name"),
+                    "requested_at": row["requested_at"].isoformat() if row["requested_at"] else None,
+                    "approved_by": row.get("approved_by"),
+                    "approved_by_name": row.get("approved_by_name"),
+                    "approved_at": row["approved_at"].isoformat() if row["approved_at"] else None,
+                }
+            )
+
+        return jsonify({"success": True, "requests": history})
+    except Exception as e:
+        print(f"Error fetching scrap request history: {str(e)}")
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+
 @app.route("/get_scrapped_devices", methods=["GET"])
 def get_scrapped_devices():
     """
@@ -7174,17 +7697,43 @@ def get_scrapped_devices():
         try:
             _ensure_scrapped_devices_table(cursor)
             conn.commit()
+            lab_id = request.args.get("lab_id")
+            year = request.args.get("year")
+            device_type = request.args.get("device_type")
+            limit = request.args.get("limit", "500")
+
+            where = []
+            params = []
+            if lab_id:
+                where.append("lab_id = %s")
+                params.append(lab_id)
+            if year and str(year).isdigit():
+                where.append("EXTRACT(YEAR FROM scrapped_at) = %s")
+                params.append(int(year))
+            if device_type:
+                where.append("device_type = %s")
+                params.append(device_type)
+
+            limit_val = 500
+            try:
+                limit_val = max(1, min(2000, int(limit)))
+            except Exception:
+                limit_val = 500
+
+            where_sql = f"WHERE {' AND '.join(where)}" if where else ""
             cursor.execute(
-                """
+                f"""
                 SELECT scrap_id, device_id, asset_code, device_type, brand, model, specification,
                        lab_id, lab_name, station_code,
                        dead_stock_number, cost, justification_for_scrapping, approval_of_hod,
                        COALESCE(scrapped_by_text, scrapped_by::text) AS scrapped_by,
                        scrapped_at
                 FROM scrapped_devices
+                {where_sql}
                 ORDER BY scrapped_at DESC
-                LIMIT 500
-                """
+                LIMIT {limit_val}
+                """,
+                tuple(params),
             )
             rows = cursor.fetchall() or []
             items = []

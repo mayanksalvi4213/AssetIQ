@@ -58,7 +58,7 @@ const buildEmptyGrid = (rows: number, cols: number): LayoutCell[][] =>
 
 // ── Component ────────────────────────────────────────────────────────
 export default function LabLayout() {
-  const { logout } = useAuth();
+  const { logout, user } = useAuth();
   const [active, setActive] = useState<string | null>(null);
 
   // Saved labs
@@ -347,6 +347,9 @@ export default function LabLayout() {
               <HoveredLink href="/lab-plan">Lab Floor Plans</HoveredLink>
               <HoveredLink href="/lab-layout">Lab Layout Designer</HoveredLink>
               <HoveredLink href="/lab-configuration">Lab Configuration</HoveredLink>
+              {user?.role === "HOD" && (
+                <HoveredLink href="/assign-lab-incharge">Assign Lab Incharge</HoveredLink>
+              )}
             </div>
           </MenuItem>
           <MenuItem setActive={setActive} active={active} item="Operations">

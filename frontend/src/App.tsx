@@ -23,6 +23,7 @@ import IssueTrends from "./pages/IssueTrends.tsx";
 import Scrap from "./pages/Scrap.tsx";
 import { ScrapHoverButton } from "./components/ui/ScrapHoverButton.tsx";
 import ProactiveMaintenance from "./pages/ProactiveMaintenance.tsx";
+import AssignLabIncharge from "./pages/AssignLabIncharge.tsx";
 
 
 const App: React.FC = () => {
@@ -58,6 +59,11 @@ const App: React.FC = () => {
           <Route path="/lab-layout" element={
             <ProtectedRoute allowedRoles={['HOD', 'Lab Incharge']}>
               <LabLayout />
+            </ProtectedRoute>
+          } />
+          <Route path="/assign-lab-incharge" element={
+            <ProtectedRoute allowedRoles={['HOD']}>
+              <AssignLabIncharge />
             </ProtectedRoute>
           } />
           

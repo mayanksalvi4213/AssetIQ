@@ -53,7 +53,7 @@ interface LabListItem {
 
 export default function Labplan() {
   const [active, setActive] = useState<string | null>(null);
-  const { logout } = useAuth();
+  const { logout, user } = useAuth();
   const [labs, setLabs] = useState<LabListItem[]>([]);
   const [selectedLab, setSelectedLab] = useState<Lab | null>(null);
   const [selectedDevice, setSelectedDevice] = useState<any>(null);
@@ -318,6 +318,9 @@ export default function Labplan() {
               <HoveredLink href="/lab-plan">Lab Floor Plans</HoveredLink>
               <HoveredLink href="/lab-layout">Lab Layout Designer</HoveredLink>
               <HoveredLink href="/lab-configuration">Lab Configuration</HoveredLink>
+              {user?.role === "HOD" && (
+                <HoveredLink href="/assign-lab-incharge">Assign Lab Incharge</HoveredLink>
+              )}
             </div>
           </MenuItem>
 

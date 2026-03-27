@@ -50,7 +50,7 @@ interface DeadStockEntry {
 
 const Documents: React.FC = () => {
   const [active, setActive] = useState<string | null>(null);
-  const { logout } = useAuth();
+  const { logout, user } = useAuth();
   const [activeTab, setActiveTab] = useState<"bills" | "deadstock">("bills");
   const [bills, setBills] = useState<Bill[]>([]);
   const [deadStockData, setDeadStockData] = useState<DeadStockEntry[]>([]);
@@ -400,6 +400,9 @@ const Documents: React.FC = () => {
               <HoveredLink href="/lab-plan">Lab Floor Plans</HoveredLink>
               <HoveredLink href="/lab-layout">Lab Layout Designer</HoveredLink>
               <HoveredLink href="/lab-configuration">Lab Configuration</HoveredLink>
+              {user?.role === "HOD" && (
+                <HoveredLink href="/assign-lab-incharge">Assign Lab Incharge</HoveredLink>
+              )}
             </div>
           </MenuItem>
 

@@ -40,7 +40,7 @@ interface DeviceGroup {
 }
 
 export default function AllAssets() {
-  const { logout } = useAuth();
+  const { logout, user } = useAuth();
   const [devices, setDevices] = useState<Device[]>([]);
   const [groupedAssets, setGroupedAssets] = useState<DeviceGroup[]>([]);
   const [filteredAssets, setFilteredAssets] = useState<DeviceGroup[]>([]);
@@ -288,6 +288,9 @@ export default function AllAssets() {
               <HoveredLink href="/lab-plan">Lab Floor Plans</HoveredLink>
               <HoveredLink href="/lab-layout">Lab Layout Designer</HoveredLink>
               <HoveredLink href="/lab-configuration">Lab Configuration</HoveredLink>
+              {user?.role === "HOD" && (
+                <HoveredLink href="/assign-lab-incharge">Assign Lab Incharge</HoveredLink>
+              )}
             </div>
           </MenuItem>
 

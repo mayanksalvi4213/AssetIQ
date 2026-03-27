@@ -227,7 +227,7 @@ const Section: React.FC<{ title: string; children: React.ReactNode; className?: 
 // ─── Main component ──────────────────────────────────────────
 export default function IssueTrends() {
   const [active, setActive] = useState<string | null>(null);
-  const { logout } = useAuth();
+  const { logout, user } = useAuth();
 
   const [data, setData] = useState<TrendsData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -315,6 +315,9 @@ export default function IssueTrends() {
               <HoveredLink href="/lab-plan">Lab Floor Plans</HoveredLink>
               <HoveredLink href="/lab-layout">Lab Layout Designer</HoveredLink>
               <HoveredLink href="/lab-configuration">Lab Configuration</HoveredLink>
+              {user?.role === "HOD" && (
+                <HoveredLink href="/assign-lab-incharge">Assign Lab Incharge</HoveredLink>
+              )}
             </div>
           </MenuItem>
           <MenuItem setActive={setActive} active={active} item="Operations">

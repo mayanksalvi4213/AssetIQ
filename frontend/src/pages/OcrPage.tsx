@@ -92,7 +92,7 @@ interface ManualDevice {
 }
 
 const OcrPage: React.FC = () => {
-  const { logout } = useAuth();
+  const { logout, user } = useAuth();
   const [file, setFile] = useState<File | null>(null);
   const [manualBillFile, setManualBillFile] = useState<File | null>(null);
   const [scanResult, setScanResult] = useState<ScanResult | null>(null);
@@ -818,6 +818,9 @@ const OcrPage: React.FC = () => {
               <HoveredLink href="/lab-plan">Lab Floor Plans</HoveredLink>
               <HoveredLink href="/lab-layout">Lab Layout Designer</HoveredLink>
               <HoveredLink href="/lab-configuration">Lab Configuration</HoveredLink>
+              {user?.role === "HOD" && (
+                <HoveredLink href="/assign-lab-incharge">Assign Lab Incharge</HoveredLink>
+              )}
             </div>
           </MenuItem>
 

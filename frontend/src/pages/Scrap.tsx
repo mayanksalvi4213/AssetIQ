@@ -32,6 +32,8 @@ interface LayoutCell {
 interface Station {
   station_id: number;
   assigned_code: string;
+  row?: number;
+  column?: number;
   station_type_name: string;
   os: string;
   devices: Device[];
@@ -44,6 +46,7 @@ interface Device {
   model: string;
   specification: string;
   asset_id: string;
+  assigned_code?: string;
 }
 
 interface DeviceType {
@@ -52,10 +55,33 @@ interface DeviceType {
   count: number;
 }
 
+interface ScrapRequest {
+  scrap_request_id: number;
+  device_ids: number[];
+  devices: Array<{
+    device_id: number;
+    type_name: string;
+    brand: string;
+    model: string;
+    asset_id: string;
+    assigned_code?: string;
+  }>;
+  lab_id?: string | null;
+  lab_name?: string | null;
+  status: "pending" | "approved" | "rejected";
+  remark?: string | null;
+  requested_by?: string | null;
+  requested_by_name?: string | null;
+  requested_at?: string | null;
+  approved_by?: string | null;
+  approved_by_name?: string | null;
+  approved_at?: string | null;
+}
+
 // ── Component ─────────────────────────────────────────────────────────────────
 
 const Scrap: React.FC = () => {
-  useAuth();
+  const { user } = useAuth();
   const [active, setActive] = useState<string | null>(null);
 
   // Labs list
@@ -88,6 +114,15 @@ const Scrap: React.FC = () => {
   const [scrapRegisterLoading, setScrapRegisterLoading] = useState(false);
   const [scrapRegisterError, setScrapRegisterError] = useState<string | null>(null);
   const [scrapRegisterItems, setScrapRegisterItems] = useState<any[]>([]);
+  const [scrapRegisterScope, setScrapRegisterScope] = useState<"lab" | "all">("lab");
+  const [scrapRegisterYear, setScrapRegisterYear] = useState<string>("");
+  const [scrapRegisterType, setScrapRegisterType] = useState<string>("");
+
+  // Scrap requests
+  const [pendingScrapRequests, setPendingScrapRequests] = useState<ScrapRequest[]>([]);
+  const [scrapRequestHistory, setScrapRequestHistory] = useState<ScrapRequest[]>([]);
+  const [loadingScrapRequests, setLoadingScrapRequests] = useState(false);
+  const [scrapRemark, setScrapRemark] = useState("");
 
   // Grid click device modal (station-level quick scrap)
   const [showGridDevices, setShowGridDevices] = useState(false);
@@ -119,6 +154,14 @@ const Scrap: React.FC = () => {
     };
     fetchLabs();
   }, []);
+
+  useEffect(() => {
+    if (!user) return;
+    fetchScrapRequestHistory();
+    if (user.role === "HOD") {
+      fetchPendingScrapRequests();
+    }
+  }, [user]);
 
   // ── Handle lab click — load layout grid + seating + station list ────────────
   const handleLabClick = async (lab: LabListItem) => {
@@ -167,11 +210,19 @@ const Scrap: React.FC = () => {
             model: String(d.model ?? ""),
             specification: String(d.specification ?? ""),
             asset_id: String(d.assetCode ?? d.asset_code ?? d.prefixCode ?? d.asset_id ?? d.deviceId ?? ""),
+            assigned_code: String(d.assignedCode ?? d.assigned_code ?? d.prefixCode ?? ""),
           }));
+
+          const rawRow = s.row ?? s.row_number ?? s.rowNumber;
+          const rawColumn = s.column ?? s.column_number ?? s.columnNumber;
+          const row = rawRow === null || rawRow === undefined ? undefined : Number(rawRow);
+          const column = rawColumn === null || rawColumn === undefined ? undefined : Number(rawColumn);
 
           return {
             station_id: Number(s.stationId ?? s.station_id ?? 0),
             assigned_code: String(s.assignedCode ?? s.assigned_code ?? ""),
+            row,
+            column,
             station_type_name: String(s.stationTypeName ?? s.station_type_name ?? ""),
             os: String(s.os ?? ""),
             devices,
@@ -196,43 +247,7 @@ const Scrap: React.FC = () => {
 
   // ── Handle Scrap ──────────────────────────────────────────────────────────
   const handleScrapDevices = async () => {
-    if (selectedDeviceIds.length === 0) return;
-
-    const deviceIds = selectedDeviceIds.filter((id) => typeof id === "number" && id > 0);
-    if (deviceIds.length === 0) {
-      alert("Selected items don't have valid device IDs to scrap.");
-      return;
-    }
-    
-    if (!window.confirm(`Are you sure you want to scrap ${deviceIds.length} device(s)? This action cannot be undone.`)) {
-      return;
-    }
-
-    try {
-      setScrapping(true);
-      const res = await fetch("http://localhost:5000/scrap_devices", {
-        method: "POST",
-        headers: authHeaders(),
-        body: JSON.stringify({ deviceIds }),
-      });
-      const data = await res.json();
-      
-      if (data.success) {
-        alert(data.message || "Devices scrapped successfully");
-        setSelectedDeviceIds([]);
-        // Refresh lab data
-        if (selectedLab) {
-          handleLabClick(selectedLab);
-        }
-      } else {
-        alert(data.error || "Failed to scrap devices");
-      }
-    } catch (err) {
-      console.error("Error scrapping devices:", err);
-      alert("Error connecting to server");
-    } finally {
-      setScrapping(false);
-    }
+    await handleCreateScrapRequest();
   };
 
   const toggleDeviceSelection = (deviceId: number) => {
@@ -244,13 +259,24 @@ const Scrap: React.FC = () => {
     );
   };
 
-  const fetchScrapRegister = async () => {
+  const fetchScrapRegister = async (opts?: { scope?: "lab" | "all"; year?: string; type?: string }) => {
     try {
       setScrapRegisterLoading(true);
       setScrapRegisterError(null);
-      const res = await fetch("http://localhost:5000/get_scrapped_devices", {
-        headers: authHeaders(),
-      });
+
+      const scope = opts?.scope ?? scrapRegisterScope;
+      const year = opts?.year ?? scrapRegisterYear;
+      const type = opts?.type ?? scrapRegisterType;
+
+      const params = new URLSearchParams();
+      if (scope === "lab" && selectedLab?.lab_id) {
+        params.set("lab_id", selectedLab.lab_id);
+      }
+      if (year) params.set("year", year);
+      if (type) params.set("device_type", type);
+
+      const url = `http://localhost:5000/get_scrapped_devices${params.toString() ? `?${params.toString()}` : ""}`;
+      const res = await fetch(url, { headers: authHeaders() });
       const data = await res.json();
       if (data.success) {
         setScrapRegisterItems(data.items || []);
@@ -262,6 +288,162 @@ const Scrap: React.FC = () => {
       setScrapRegisterError("Error connecting to server");
     } finally {
       setScrapRegisterLoading(false);
+    }
+  };
+
+  const fetchPendingScrapRequests = async () => {
+    try {
+      setLoadingScrapRequests(true);
+      const res = await fetch("http://localhost:5000/get_pending_scrap_requests", {
+        headers: authHeaders(),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setPendingScrapRequests(data.requests || []);
+      }
+    } catch (e) {
+      console.error("Error fetching pending scrap requests:", e);
+    } finally {
+      setLoadingScrapRequests(false);
+    }
+  };
+
+  const fetchScrapRequestHistory = async () => {
+    try {
+      const res = await fetch("http://localhost:5000/get_scrap_request_history", {
+        headers: authHeaders(),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setScrapRequestHistory(data.requests || []);
+      }
+    } catch (e) {
+      console.error("Error fetching scrap request history:", e);
+    }
+  };
+
+  const handleCreateScrapRequest = async () => {
+    if (selectedDeviceIds.length === 0) return;
+
+    const deviceIds = selectedDeviceIds.filter((id) => typeof id === "number" && id > 0);
+    if (deviceIds.length === 0) {
+      alert("Selected items don't have valid device IDs to request scrapping.");
+      return;
+    }
+
+    if (!window.confirm(`Submit scrap request for ${deviceIds.length} device(s)?`)) {
+      return;
+    }
+
+    try {
+      setScrapping(true);
+      const res = await fetch("http://localhost:5000/create_scrap_request", {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify({ deviceIds, remark: scrapRemark }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        alert(data.message || "Scrap request submitted");
+        setSelectedDeviceIds([]);
+        setScrapRemark("");
+        if (user?.role === "HOD") {
+          fetchPendingScrapRequests();
+        }
+        fetchScrapRequestHistory();
+      } else {
+        alert(data.error || "Failed to submit scrap request");
+      }
+    } catch (err) {
+      console.error("Error submitting scrap request:", err);
+      alert("Error connecting to server");
+    } finally {
+      setScrapping(false);
+    }
+  };
+
+  const sortDevicesByAssignedCode = (devices: Device[]) => {
+    return [...devices].sort((a, b) => {
+      const aKey = (a.assigned_code || a.asset_id || "").toString();
+      const bKey = (b.assigned_code || b.asset_id || "").toString();
+      return aKey.localeCompare(bKey, undefined, { numeric: true, sensitivity: "base" });
+    });
+  };
+
+  const getSelectableDeviceIds = (devices: Device[]) =>
+    devices.map((d) => d.device_id).filter((id) => typeof id === "number" && id > 0);
+
+  const toggleSelectAll = (devices: Device[]) => {
+    const ids = getSelectableDeviceIds(devices);
+    if (ids.length === 0) return;
+    const allSelected = ids.every((id) => selectedDeviceIds.includes(id));
+    setSelectedDeviceIds((prev) => {
+      if (allSelected) {
+        return prev.filter((id) => !ids.includes(id));
+      }
+      const next = new Set(prev);
+      ids.forEach((id) => next.add(id));
+      return Array.from(next);
+    });
+  };
+
+  const findStationForCell = (rowIndex: number, colIndex: number, assignedCodes: string[]) => {
+    const row = rowIndex;
+    const col = colIndex;
+    const byPos = stationList.find((s) => s.row === row && s.column === col);
+    if (byPos) return byPos;
+
+    if (assignedCodes.length > 0) {
+      const wanted = assignedCodes.map((c) => String(c).trim().toLowerCase()).filter(Boolean);
+      const byCode = stationList.find((s) => wanted.includes(String(s.assigned_code).trim().toLowerCase()));
+      if (byCode) return byCode;
+    }
+
+    return undefined;
+  };
+
+  const handleApproveScrapRequest = async (requestId: number) => {
+    if (!window.confirm("Approve and scrap all devices in this request?")) return;
+    try {
+      const res = await fetch(`http://localhost:5000/approve_scrap_request/${requestId}`, {
+        method: "POST",
+        headers: authHeaders(),
+      });
+      const data = await res.json();
+      if (data.success) {
+        alert(data.message || "Scrap request approved");
+        fetchPendingScrapRequests();
+        fetchScrapRequestHistory();
+        if (selectedLab) {
+          handleLabClick(selectedLab);
+        }
+      } else {
+        alert(data.error || "Failed to approve scrap request");
+      }
+    } catch (err) {
+      console.error("Error approving scrap request:", err);
+      alert("Error connecting to server");
+    }
+  };
+
+  const handleRejectScrapRequest = async (requestId: number) => {
+    if (!window.confirm("Reject this scrap request?")) return;
+    try {
+      const res = await fetch(`http://localhost:5000/reject_scrap_request/${requestId}`, {
+        method: "POST",
+        headers: authHeaders(),
+      });
+      const data = await res.json();
+      if (data.success) {
+        alert(data.message || "Scrap request rejected");
+        fetchPendingScrapRequests();
+        fetchScrapRequestHistory();
+      } else {
+        alert(data.error || "Failed to reject scrap request");
+      }
+    } catch (err) {
+      console.error("Error rejecting scrap request:", err);
+      alert("Error connecting to server");
     }
   };
 
@@ -392,10 +574,29 @@ const Scrap: React.FC = () => {
     });
     return Object.entries(groups).map(([type_name, devices]) => ({
       type_name,
-      devices,
+      devices: sortDevicesByAssignedCode(devices),
       count: devices.length,
     }));
   }, [stationList]);
+
+  const scrapRegisterYears = React.useMemo(() => {
+    const years = new Set<string>();
+    scrapRegisterItems.forEach((it) => {
+      if (it.scrapped_at) {
+        const y = new Date(it.scrapped_at).getFullYear();
+        if (!Number.isNaN(y)) years.add(String(y));
+      }
+    });
+    return Array.from(years).sort((a, b) => Number(b) - Number(a));
+  }, [scrapRegisterItems]);
+
+  const scrapRegisterTypes = React.useMemo(() => {
+    const types = new Set<string>();
+    scrapRegisterItems.forEach((it) => {
+      if (it.device_type) types.add(String(it.device_type));
+    });
+    return Array.from(types).sort();
+  }, [scrapRegisterItems]);
 
   // ── Layout stats pill bar ───────────────────────────────────────────────────
   const getLayoutStats = () => {
@@ -461,6 +662,9 @@ const Scrap: React.FC = () => {
             <div className="flex flex-col space-y-2 text-sm p-2">
               <HoveredLink href="/lab-plan">Lab Floor Plans</HoveredLink>
               <HoveredLink href="/lab-configuration">Lab Configuration</HoveredLink>
+              {user?.role === "HOD" && (
+                <HoveredLink href="/assign-lab-incharge">Assign Lab Incharge</HoveredLink>
+              )}
             </div>
           </MenuItem>
 
@@ -486,6 +690,48 @@ const Scrap: React.FC = () => {
       {/* ── Main content ── */}
       <div className="w-full max-w-7xl relative z-20">
 
+        {user?.role !== "HOD" && scrapRequestHistory.length > 0 && (
+          <div className="mb-8 bg-neutral-900/90 rounded-2xl border border-neutral-800 p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-xl font-semibold text-white">My Scrap Requests</h2>
+              <button
+                onClick={fetchScrapRequestHistory}
+                className="px-3 py-2 bg-neutral-800 hover:bg-neutral-700 rounded-lg transition text-white text-sm"
+              >
+                ⟳ Refresh
+              </button>
+            </div>
+            <div className="space-y-3">
+              {scrapRequestHistory.map((req) => (
+                <div key={req.scrap_request_id} className="bg-neutral-800/80 rounded-lg p-4">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-white font-semibold">
+                        {req.lab_name || req.lab_id || "Unknown Lab"} • {req.devices?.length || 0} device(s)
+                      </p>
+                      <p className="text-gray-400 text-xs">
+                        {req.requested_at ? new Date(req.requested_at).toLocaleString() : ""}
+                      </p>
+                    </div>
+                    <span
+                      className={`px-3 py-1 rounded-full text-xs font-semibold ${
+                        req.status === "approved"
+                          ? "bg-green-600/20 text-green-300"
+                          : req.status === "rejected"
+                          ? "bg-red-600/20 text-red-300"
+                          : "bg-yellow-600/20 text-yellow-300"
+                      }`}
+                    >
+                      {req.status.toUpperCase()}
+                    </span>
+                  </div>
+                  {req.remark && <p className="text-gray-300 text-xs mt-2">Remark: {req.remark}</p>}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* ══════════════════════════════════════════════════════════
             VIEW 1 — Labs list
         ══════════════════════════════════════════════════════════ */}
@@ -504,6 +750,20 @@ const Scrap: React.FC = () => {
             <p className="text-gray-400 text-center mb-8">
               Select a lab to view its configuration and components
             </p>
+            <div className="flex justify-center mb-8">
+              <button
+                onClick={async () => {
+                  setShowScrapRegister(true);
+                  setScrapRegisterScope("all");
+                  setScrapRegisterYear("");
+                  setScrapRegisterType("");
+                  await fetchScrapRegister({ scope: "all", year: "", type: "" });
+                }}
+                className="px-4 py-2 bg-cyan-700 hover:bg-cyan-600 rounded-lg transition text-white text-sm"
+              >
+                🌐 View All Labs Register
+              </button>
+            </div>
 
             {loading && (
               <div className="text-center py-12">
@@ -566,11 +826,26 @@ const Scrap: React.FC = () => {
                 <button
                   onClick={async () => {
                     setShowScrapRegister(true);
+                    setScrapRegisterScope("lab");
+                    setScrapRegisterYear("");
+                    setScrapRegisterType("");
                     await fetchScrapRegister();
                   }}
                   className="px-4 py-2 bg-neutral-900 hover:bg-neutral-800 rounded-lg transition text-white text-sm border border-neutral-700"
                 >
                   📒 Scrap Register
+                </button>
+                <button
+                  onClick={async () => {
+                    setShowScrapRegister(true);
+                    setScrapRegisterScope("all");
+                    setScrapRegisterYear("");
+                    setScrapRegisterType("");
+                    await fetchScrapRegister({ scope: "all", year: "", type: "" });
+                  }}
+                  className="px-4 py-2 bg-cyan-700 hover:bg-cyan-600 rounded-lg transition text-white text-sm"
+                >
+                  🌐 All Labs Register
                 </button>
                 <button
                   onClick={() => {
@@ -627,21 +902,9 @@ const Scrap: React.FC = () => {
                                       // Get all assigned codes in this cell
                                       const cellAssignedCodes = devices.map(d => d.assignedCode).filter(Boolean);
                                       
-                                      // Find the matching station from our full stationList
-                                      let fullStationDevices: Device[] = [];
-                                      
-                                      if (cellAssignedCodes.length > 0) {
-                                        // Match by assigned code (e.g. PC-01)
-                                        const wanted = cellAssignedCodes
-                                          .map((c) => String(c).trim().toLowerCase())
-                                          .filter(Boolean);
-                                        const matchingStation = stationList.find((s) =>
-                                          wanted.includes(String(s.assigned_code).trim().toLowerCase())
-                                        );
-                                        if (matchingStation) {
-                                          fullStationDevices = matchingStation.devices;
-                                        }
-                                      }
+                                      // Find the matching station from row/col or assigned code
+                                      const matchingStation = findStationForCell(ri, ci, cellAssignedCodes);
+                                      let fullStationDevices: Device[] = matchingStation?.devices || [];
                                       
                                       // Fallback if no matching station found, or if we want to show 
                                       // exactly what's in the seatingGrid but mapped to full details
@@ -649,12 +912,13 @@ const Scrap: React.FC = () => {
                                          // Create basic representation if full details aren't in stationList
                                          fullStationDevices = devices.map((d, localIdx) => ({
                                           // Prefer real DB id if present; fallback ids are negative to avoid "select all" collisions.
-                                          device_id: (d.device_id ?? d.id ?? -((ri + 1) * 1000000 + (ci + 1) * 1000 + (localIdx + 1))),
+                                          device_id: (d.deviceId ?? d.device_id ?? d.id ?? -((ri + 1) * 1000000 + (ci + 1) * 1000 + (localIdx + 1))),
                                           type_name: d.type,
                                           brand: d.brand || "Unknown",
                                           model: d.model || "",
                                           specification: d.specification || "",
-                                          asset_id: d.assignedCode || d.type,
+                                            asset_id: d.assignedCode || d.type,
+                                            assigned_code: d.assignedCode || "",
                                         }));
                                       }
 
@@ -667,7 +931,7 @@ const Scrap: React.FC = () => {
                                           ")"
                                       );
                                       // Show all devices; only devices with real DB ids can be scrapped.
-                                      setGridDevices(fullStationDevices);
+                                      setGridDevices(sortDevicesByAssignedCode(fullStationDevices));
                                       setShowGridDevices(true);
                                     }
                                   }}
@@ -828,6 +1092,12 @@ const Scrap: React.FC = () => {
               </div>
               <div className="flex gap-2">
                 <button
+                  onClick={() => toggleSelectAll(selectedComponentType.devices)}
+                  className="px-4 py-2 bg-neutral-900 hover:bg-neutral-800 rounded-lg transition text-white text-sm border border-neutral-700"
+                >
+                  Select All
+                </button>
+                <button
                   onClick={() => {
                     setSelectedComponentType(null);
                     setSelectedDeviceIds([]);
@@ -890,7 +1160,11 @@ const Scrap: React.FC = () => {
                             </div>
                           )}
                           <div className="border-t border-neutral-700 pt-2 mt-2">
-                            <p className="text-gray-400 text-xs">Asset Code</p>
+                            <p className="text-gray-400 text-xs">Assigned Code</p>
+                            <p className="text-cyan-300 font-mono text-sm">
+                              {device.assigned_code || "-"}
+                            </p>
+                            <p className="text-gray-400 text-xs mt-1">Asset Code</p>
                             <p className="text-blue-400 font-mono text-sm">{device.asset_id}</p>
                           </div>
                         </div>
@@ -898,15 +1172,21 @@ const Scrap: React.FC = () => {
                     ))}
                   </div>
 
-                  {/* Scrap Selected button moved below */}
+                  {/* Request Scrap button moved below */}
                   {selectedDeviceIds.length > 0 && (
-                    <div className="mt-6 flex items-center justify-center">
+                    <div className="mt-6 flex flex-col items-center justify-center gap-3">
+                      <input
+                        value={scrapRemark}
+                        onChange={(e) => setScrapRemark(e.target.value)}
+                        placeholder="Optional remark for HOD"
+                        className="w-full max-w-lg bg-neutral-800 text-white text-sm rounded-lg px-3 py-2 border border-neutral-700 focus:outline-none focus:border-neutral-500"
+                      />
                       <button
                         onClick={handleScrapDevices}
                         disabled={scrapping}
                         className="px-5 py-3 bg-red-600 hover:bg-red-700 disabled:opacity-50 rounded-lg transition text-white text-sm font-semibold flex items-center gap-2"
                       >
-                        🗑️ {scrapping ? "Scrapping..." : `Scrap Selected (${selectedDeviceIds.length})`}
+                        🧾 {scrapping ? "Submitting..." : `Request Scrap (${selectedDeviceIds.length})`}
                       </button>
                     </div>
                   )}
@@ -914,6 +1194,68 @@ const Scrap: React.FC = () => {
               )}
             </div>
           </motion.div>
+        )}
+        {user?.role === "HOD" && (
+          <div className="mt-8 bg-neutral-900/90 rounded-2xl border border-neutral-800 p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-xl font-semibold text-white">Pending Scrap Requests</h2>
+              <button
+                onClick={fetchPendingScrapRequests}
+                className="px-3 py-2 bg-neutral-800 hover:bg-neutral-700 rounded-lg transition text-white text-sm"
+                disabled={loadingScrapRequests}
+              >
+                ⟳ Refresh
+              </button>
+            </div>
+            {loadingScrapRequests && <p className="text-gray-400">Loading requests…</p>}
+            {!loadingScrapRequests && pendingScrapRequests.length === 0 && (
+              <p className="text-gray-400">No pending requests.</p>
+            )}
+            {!loadingScrapRequests && pendingScrapRequests.length > 0 && (
+              <div className="space-y-3">
+                {pendingScrapRequests.map((req) => (
+                  <div key={req.scrap_request_id} className="bg-neutral-800/80 rounded-lg p-4">
+                    <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
+                      <div>
+                        <p className="text-white font-semibold">
+                          {req.lab_name || req.lab_id || "Unknown Lab"} • {req.devices?.length || 0} device(s)
+                        </p>
+                        <p className="text-gray-400 text-xs">
+                          Requested by {req.requested_by_name || req.requested_by || "Unknown"}
+                          {req.requested_at ? ` • ${new Date(req.requested_at).toLocaleString()}` : ""}
+                        </p>
+                        {req.remark && <p className="text-gray-300 text-xs mt-1">Remark: {req.remark}</p>}
+                        <div className="text-gray-300 text-xs mt-2">
+                          {req.devices?.slice(0, 4).map((d) => (
+                            <span key={d.device_id} className="inline-block mr-2">
+                              {d.type_name} {d.brand} {d.model}
+                            </span>
+                          ))}
+                          {req.devices && req.devices.length > 4 && (
+                            <span className="text-gray-500">+{req.devices.length - 4} more</span>
+                          )}
+                        </div>
+                      </div>
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => handleApproveScrapRequest(req.scrap_request_id)}
+                          className="px-3 py-2 bg-green-600 hover:bg-green-700 rounded-lg transition text-white text-sm"
+                        >
+                          Approve & Scrap
+                        </button>
+                        <button
+                          onClick={() => handleRejectScrapRequest(req.scrap_request_id)}
+                          className="px-3 py-2 bg-red-600 hover:bg-red-700 rounded-lg transition text-white text-sm"
+                        >
+                          Reject
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         )}
       </div>
 
@@ -926,15 +1268,23 @@ const Scrap: React.FC = () => {
                 <h2 className="text-xl font-bold text-white">{gridDevicesTitle}</h2>
                 <p className="text-xs text-gray-400 mt-0.5">Select equipment/components to scrap</p>
               </div>
-              <button
-                onClick={() => {
-                  setShowGridDevices(false);
-                  setSelectedDeviceIds([]);
-                }}
-                className="px-3 py-2 bg-neutral-700 hover:bg-neutral-600 rounded-lg transition text-white text-sm"
-              >
-                Close
-              </button>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => toggleSelectAll(gridDevices)}
+                  className="px-3 py-2 bg-neutral-900 hover:bg-neutral-800 rounded-lg transition text-white text-sm border border-neutral-700"
+                >
+                  Select All
+                </button>
+                <button
+                  onClick={() => {
+                    setShowGridDevices(false);
+                    setSelectedDeviceIds([]);
+                  }}
+                  className="px-3 py-2 bg-neutral-700 hover:bg-neutral-600 rounded-lg transition text-white text-sm"
+                >
+                  Close
+                </button>
+              </div>
             </div>
 
             <div className="p-6 max-h-[70vh] overflow-auto">
@@ -983,7 +1333,11 @@ const Scrap: React.FC = () => {
                           </div>
                         )}
                         <div className="border-t border-neutral-700 pt-2 mt-2">
-                          <p className="text-gray-400 text-xs">Asset Code</p>
+                          <p className="text-gray-400 text-xs">Assigned Code</p>
+                          <p className="text-cyan-300 font-mono text-sm">
+                            {device.assigned_code || "-"}
+                          </p>
+                          <p className="text-gray-400 text-xs mt-1">Asset Code</p>
                           <p className="text-blue-400 font-mono text-sm">{device.asset_id}</p>
                         </div>
                         {!(device.device_id > 0) && (
@@ -998,20 +1352,25 @@ const Scrap: React.FC = () => {
               )}
 
               {selectedDeviceIds.filter((id) => id > 0).length > 0 && (
-                <div className="mt-6 flex items-center justify-center">
+                <div className="mt-6 flex flex-col items-center justify-center gap-3">
+                  <input
+                    value={scrapRemark}
+                    onChange={(e) => setScrapRemark(e.target.value)}
+                    placeholder="Optional remark for HOD"
+                    className="w-full max-w-lg bg-neutral-800 text-white text-sm rounded-lg px-3 py-2 border border-neutral-700 focus:outline-none focus:border-neutral-500"
+                  />
                   <button
                     onClick={async () => {
                       await handleScrapDevices();
-                      await fetchScrapRegister();
                       setShowGridDevices(false);
                     }}
                     disabled={scrapping}
                     className="px-5 py-3 bg-red-600 hover:bg-red-700 disabled:opacity-50 rounded-lg transition text-white text-sm font-semibold flex items-center gap-2"
                   >
-                    🗑️{" "}
+                    🧾{" "}
                     {scrapping
-                      ? "Scrapping..."
-                      : `Scrap Selected (${selectedDeviceIds.filter((id) => id > 0).length})`}
+                      ? "Submitting..."
+                      : `Request Scrap (${selectedDeviceIds.filter((id) => id > 0).length})`}
                   </button>
                 </div>
               )}
@@ -1026,7 +1385,9 @@ const Scrap: React.FC = () => {
           <div className="w-full max-w-5xl bg-neutral-900 border border-neutral-700 rounded-2xl overflow-hidden">
             <div className="flex items-center justify-between px-6 py-4 border-b border-neutral-800">
               <div>
-                <h2 className="text-xl font-bold text-white">Scrap Register</h2>
+                <h2 className="text-xl font-bold text-white">
+                  Scrap Register {scrapRegisterScope === "all" ? "— All Labs" : "— This Lab"}
+                </h2>
                 <p className="text-xs text-gray-400 mt-0.5">All scrapped equipment/components and their details</p>
               </div>
               <div className="flex gap-2">
@@ -1051,7 +1412,7 @@ const Scrap: React.FC = () => {
                   Export as PDF
                 </button>
                 <button
-                  onClick={fetchScrapRegister}
+                  onClick={() => fetchScrapRegister()}
                   className="px-3 py-2 bg-neutral-800 hover:bg-neutral-700 rounded-lg transition text-white text-sm"
                   disabled={scrapRegisterLoading}
                 >
