@@ -2,14 +2,12 @@
 import React, { useState } from "react";
 import { FileUpload } from "@/components/ui/file-upload";
 import { HoverBorderGradient } from "@/components/ui/hover-border-gradient";
-import { Menu, MenuItem, HoveredLink } from "@/components/ui/navbar-menu";
+import AppNavbar from "@/components/AppNavbar";
 import { LoaderOne } from "@/components/ui/loader";
 import { IconSquareRoundedX, IconDownload, IconPlus, IconTrash } from "@tabler/icons-react";
-import { LogoButton } from "@/components/ui/logo-button";
 import { BackgroundGradient } from "@/components/ui/background-gradient";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { useAuth } from "@/contexts/AuthContext";
 
 interface Asset {
   asset_id: string;
@@ -92,11 +90,10 @@ interface ManualDevice {
 }
 
 const OcrPage: React.FC = () => {
-  const { logout, user } = useAuth();
   const [file, setFile] = useState<File | null>(null);
   const [manualBillFile, setManualBillFile] = useState<File | null>(null);
   const [scanResult, setScanResult] = useState<ScanResult | null>(null);
-  const [active, setActive] = useState<string | null>(null);
+  
   const [loading, setLoading] = useState(false);
   const [showRawText, setShowRawText] = useState(false);
   const [normalizedInvoice, setNormalizedInvoice] = useState<NormalizedInvoice | null>(null);
@@ -803,55 +800,7 @@ const OcrPage: React.FC = () => {
         </div>
       )}
 
-      {/* Navbar */}
-      <div className="fixed top-3 right-6 z-50">
-        <Menu setActive={setActive}>
-          <MenuItem setActive={setActive} active={active} item="Asset Management">
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/assets">All Assets</HoveredLink>
-              <HoveredLink href="/ocr">Add Assets</HoveredLink>
-            </div>
-          </MenuItem>
-
-          <MenuItem setActive={setActive} active={active} item="Lab Management">
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/lab-plan">Lab Floor Plans</HoveredLink>
-              <HoveredLink href="/lab-layout">Lab Layout Designer</HoveredLink>
-              <HoveredLink href="/lab-configuration">Lab Configuration</HoveredLink>
-              {user?.role === "HOD" && (
-                <HoveredLink href="/assign-lab-incharge">Assign Lab Incharge</HoveredLink>
-              )}
-            </div>
-          </MenuItem>
-
-          <MenuItem setActive={setActive} active={active} item="Operations">
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/transfers">Transfers</HoveredLink>
-              <HoveredLink href="/dashboard/issues">Issues</HoveredLink>
-              <HoveredLink href="/dashboard/documents">Documents</HoveredLink>
-            </div>
-          </MenuItem>
-
-          <MenuItem setActive={setActive} active={active} item="Analytics">
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/reports">Reports</HoveredLink>
-              <HoveredLink href="/warranty-expiry">Warranty Expiry</HoveredLink>
-            </div>
-          </MenuItem>
-
-          <MenuItem setActive={setActive} active={active} item="Account">
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/settings">Settings</HoveredLink>
-              <button 
-                onClick={logout}
-                className="text-left text-neutral-600 hover:text-neutral-800 transition-colors"
-              >
-                Logout
-              </button>
-            </div>
-          </MenuItem>
-        </Menu>
-      </div>
+      <AppNavbar />
 
       <h1
         className="text-3xl font-bold mb-8 relative z-20 mt-16 px-5 py-2 rounded-xl inline-block"
@@ -888,11 +837,6 @@ const OcrPage: React.FC = () => {
         </button>
       </div>
 
-      {/* Logo Button - Always visible */}
-      <div className="w-full max-w-4xl mb-6 relative z-20">
-        <LogoButton />
-      </div>
-
       {/* Manual Entry Section */}
       {showManualEntry && (
         <div className="w-full max-w-6xl mb-6 relative z-20">
@@ -914,13 +858,13 @@ const OcrPage: React.FC = () => {
                   <div className="flex items-center justify-between p-4">
                     <div className="flex items-center gap-4">
                       <div className={`w-12 h-12 ${manualBillFile.type === 'application/pdf' ? 'bg-red-600' : 'bg-blue-600'} rounded-lg flex items-center justify-center`}>
-                        <span className="text-white font-bold text-sm">
+                        <span className="text-white font-bold text-xs">
                           {manualBillFile.type === 'application/pdf' ? 'PDF' : 'IMG'}
                         </span>
                       </div>
                       <div>
                         <p className="text-gray-200 font-medium">{manualBillFile.name}</p>
-                        <p className="text-gray-400 text-sm">
+                        <p className="text-gray-400 text-xs">
                           {(manualBillFile.size / 1024 / 1024).toFixed(2)} MB
                         </p>
                       </div>
@@ -928,7 +872,7 @@ const OcrPage: React.FC = () => {
                     <HoverBorderGradient
                       as="button"
                       containerClassName="rounded-full"
-                      className="px-4 py-2 bg-red-600 text-white font-semibold text-sm"
+                      className="px-4 py-2 bg-red-600 text-white font-semibold text-xs"
                       onClick={handleRemoveManualBillFile}
                     >
                       Remove
@@ -1398,7 +1342,7 @@ const OcrPage: React.FC = () => {
 
           {/* Manual Entry Results - Display assets like OCR scan */}
           {manualScanResult && (
-            <div className="w-full max-w-6xl mt-6 relative z-20">
+            <div className="w-full max-w-6xl mt-6 relative z-20 bg-black/40 backdrop-blur-md rounded-2xl p-6 border border-white/10">
               {/* Success Message */}
               <div className="mb-6 p-4 bg-green-600/20 border border-green-500 rounded-lg">
                 <h3 className="text-green-400 text-lg font-semibold mb-2">
@@ -1416,27 +1360,27 @@ const OcrPage: React.FC = () => {
                 </h3>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div>
-                    <p className="text-gray-400 text-sm">Vendor Name</p>
+                    <p className="text-gray-400 text-xs">Vendor Name</p>
                     <p className="text-gray-200 font-medium">{manualScanResult.bill_info.vendor_name || "N/A"}</p>
                   </div>
                   <div>
-                    <p className="text-gray-400 text-sm">Bill Number</p>
+                    <p className="text-gray-400 text-xs">Bill Number</p>
                     <p className="text-gray-200 font-medium">{manualScanResult.bill_info.bill_number || "N/A"}</p>
                   </div>
                   <div>
-                    <p className="text-gray-400 text-sm">GSTIN</p>
+                    <p className="text-gray-400 text-xs">GSTIN</p>
                     <p className="text-gray-200 font-medium">{manualScanResult.bill_info.vendor_gstin || "N/A"}</p>
                   </div>
                   <div>
-                    <p className="text-gray-400 text-sm">Bill Date</p>
+                    <p className="text-gray-400 text-xs">Bill Date</p>
                     <p className="text-gray-200 font-medium">{manualScanResult.bill_info.bill_date || "N/A"}</p>
                   </div>
                   <div>
-                    <p className="text-gray-400 text-sm">Total Amount</p>
+                    <p className="text-gray-400 text-xs">Total Amount</p>
                     <p className="text-green-400 font-semibold">{formatCurrency(manualScanResult.bill_info.total_amount)}</p>
                   </div>
                   <div>
-                    <p className="text-gray-400 text-sm">Tax Amount</p>
+                    <p className="text-gray-400 text-xs">Tax Amount</p>
                     <p className="text-gray-200 font-medium">{formatCurrency(manualScanResult.bill_info.tax_amount)}</p>
                   </div>
                 </div>
@@ -1457,7 +1401,7 @@ const OcrPage: React.FC = () => {
                         {/* Asset Info */}
                         <div className="lg:col-span-3">
                           <div className="flex items-center gap-3 mb-3 flex-wrap">
-                            <span className="bg-blue-600 text-white px-3 py-1 rounded-full text-sm font-semibold">
+                            <span className="bg-blue-600 text-white px-3 py-1 rounded-full text-xs font-semibold">
                               {asset.asset_id}
                             </span>
                             <span className="bg-purple-600 text-white px-2 py-1 rounded text-xs">
@@ -1474,7 +1418,7 @@ const OcrPage: React.FC = () => {
                             {asset.name}
                           </h4>
                           
-                          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
                             <div>
                               <p className="text-gray-400">Quantity</p>
                               <p className="text-gray-200 font-medium">{asset.quantity}</p>
@@ -1495,7 +1439,7 @@ const OcrPage: React.FC = () => {
                           
                           {asset.model && (
                             <div className="mt-2">
-                              <p className="text-gray-400 text-sm">Model: <span className="text-gray-200">{asset.model}</span></p>
+                              <p className="text-gray-400 text-xs">Model: <span className="text-gray-200">{asset.model}</span></p>
                             </div>
                           )}
                         </div>
@@ -1595,13 +1539,13 @@ const OcrPage: React.FC = () => {
             <div className="flex items-center justify-between p-4">
               <div className="flex items-center gap-4">
                 <div className={`w-12 h-12 ${file.type === 'application/pdf' ? 'bg-red-600' : 'bg-blue-600'} rounded-lg flex items-center justify-center`}>
-                  <span className="text-white font-bold text-sm">
+                  <span className="text-white font-bold text-xs">
                     {file.type === 'application/pdf' ? 'PDF' : 'IMG'}
                   </span>
                 </div>
                 <div>
                   <p className="text-gray-200 font-medium">{file.name}</p>
-                  <p className="text-gray-400 text-sm">
+                  <p className="text-gray-400 text-xs">
                     {(file.size / 1024 / 1024).toFixed(2)} MB
                   </p>
                 </div>
@@ -1609,7 +1553,7 @@ const OcrPage: React.FC = () => {
               <HoverBorderGradient
                 as="button"
                 containerClassName="rounded-full"
-                className="px-4 py-2 bg-red-600 text-white font-semibold text-sm"
+                className="px-4 py-2 bg-red-600 text-white font-semibold text-xs"
                 onClick={handleRemoveFile}
               >
                 Remove
@@ -1637,7 +1581,7 @@ const OcrPage: React.FC = () => {
 
       {/* Scan Results */}
       {scanResult && !loading && (
-        <div className="w-full max-w-6xl mb-6 relative z-20">
+        <div className="w-full max-w-6xl mb-6 relative z-20 bg-black/40 backdrop-blur-md rounded-2xl p-6 border border-white/10">
           {/* Success Message */}
           <div className="mb-6 p-4 bg-green-600/20 border border-green-500 rounded-lg">
             <div className="flex items-center gap-3 mb-2">
@@ -1679,7 +1623,7 @@ const OcrPage: React.FC = () => {
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
-                <p className="text-gray-400 text-sm mb-1">Vendor Name</p>
+                <p className="text-gray-400 text-xs mb-1">Vendor Name</p>
                 {isEditMode && editableBillInfo ? (
                   <Input
                     value={editableBillInfo.vendor_name}
@@ -1691,7 +1635,7 @@ const OcrPage: React.FC = () => {
                 )}
               </div>
               <div>
-                <p className="text-gray-400 text-sm mb-1">Bill Number</p>
+                <p className="text-gray-400 text-xs mb-1">Bill Number</p>
                 {isEditMode && editableBillInfo ? (
                   <Input
                     value={editableBillInfo.bill_number}
@@ -1703,7 +1647,7 @@ const OcrPage: React.FC = () => {
                 )}
               </div>
               <div>
-                <p className="text-gray-400 text-sm mb-1">GSTIN</p>
+                <p className="text-gray-400 text-xs mb-1">GSTIN</p>
                 {isEditMode && editableBillInfo ? (
                   <Input
                     value={editableBillInfo.vendor_gstin}
@@ -1715,7 +1659,7 @@ const OcrPage: React.FC = () => {
                 )}
               </div>
               <div>
-                <p className="text-gray-400 text-sm mb-1">Bill Date</p>
+                <p className="text-gray-400 text-xs mb-1">Bill Date</p>
                 {isEditMode && editableBillInfo ? (
                   <Input
                     value={editableBillInfo.bill_date}
@@ -1728,7 +1672,7 @@ const OcrPage: React.FC = () => {
                 )}
               </div>
               <div>
-                <p className="text-gray-400 text-sm mb-1">Total Amount</p>
+                <p className="text-gray-400 text-xs mb-1">Total Amount</p>
                 {isEditMode && editableBillInfo ? (
                   <Input
                     type="number"
@@ -1742,7 +1686,7 @@ const OcrPage: React.FC = () => {
                 )}
               </div>
               <div>
-                <p className="text-gray-400 text-sm mb-1">Tax Amount</p>
+                <p className="text-gray-400 text-xs mb-1">Tax Amount</p>
                 {isEditMode && editableBillInfo ? (
                   <Input
                     type="number"
@@ -1758,7 +1702,7 @@ const OcrPage: React.FC = () => {
             </div>
             {editableBillInfo?.vendor_address && (
               <div className="mt-4">
-                <p className="text-gray-400 text-sm mb-1">Vendor Address</p>
+                <p className="text-gray-400 text-xs mb-1">Vendor Address</p>
                 {isEditMode ? (
                   <Input
                     value={editableBillInfo.vendor_address}
@@ -1772,7 +1716,7 @@ const OcrPage: React.FC = () => {
             )}
             {isEditMode && (
               <div className="mt-4 p-3 bg-yellow-900/30 border border-yellow-700 rounded-lg">
-                <p className="text-yellow-300 text-sm">
+                <p className="text-yellow-300 text-xs">
                   ⚠️ You are in edit mode. Make your corrections and click "Done Editing" when finished.
                 </p>
               </div>
@@ -1880,7 +1824,7 @@ const OcrPage: React.FC = () => {
             return (
               <div className="mb-6 p-6 rounded-lg border border-purple-600 bg-purple-900/20">
                 <h3 className="text-purple-300 text-xl font-semibold mb-2">🏷️ Prefix Code Assignment</h3>
-                <p className="text-gray-400 text-sm mb-4">Assign a prefix code per device type. All devices of that type will use this prefix (e.g., APSIT/CS/LA → APSIT/CS/LA/1, /2, ...)</p>
+                <p className="text-gray-400 text-xs mb-4">Assign a prefix code per device type. All devices of that type will use this prefix (e.g., APSIT/CS/LA → APSIT/CS/LA/1, /2, ...)</p>
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                   {deviceTypes.map((dtype) => {
                     const count = editableAssets.filter(a => (a.device_type || a.category || "Other") === dtype).length;
@@ -1896,7 +1840,7 @@ const OcrPage: React.FC = () => {
                             value={prefixCodeMap[dtype] || ""}
                             onChange={(e) => setPrefixCodeMap(prev => ({ ...prev, [dtype]: e.target.value }))}
                             placeholder="e.g., APSIT/CS/LA"
-                            className="bg-gray-700 border-gray-600 text-white text-sm h-9 flex-1 placeholder-gray-500"
+                            className="bg-gray-700 border-gray-600 text-white text-xs h-9 flex-1 placeholder-gray-500"
                           />
                           <button
                             onClick={async () => {
@@ -1952,7 +1896,7 @@ const OcrPage: React.FC = () => {
                                 setEditableAssets(updatedAssets);
                               }
                             }}
-                            className="px-4 py-1 bg-purple-600 hover:bg-purple-700 text-white rounded-lg text-sm font-semibold transition whitespace-nowrap"
+                            className="px-4 py-1 bg-purple-600 hover:bg-purple-700 text-white rounded-lg text-xs font-semibold transition whitespace-nowrap"
                           >
                             Apply
                           </button>
@@ -1974,7 +1918,7 @@ const OcrPage: React.FC = () => {
                   <h3 className="text-yellow-400 text-2xl font-bold flex items-center gap-2">
                     ✏️ Edit Assets (Grouped)
                   </h3>
-                  <p className="text-yellow-300 text-sm mt-1">
+                  <p className="text-yellow-300 text-xs mt-1">
                     Similar devices are grouped together - edit quantity/price collectively
                   </p>
                 </div>
@@ -2007,15 +1951,15 @@ const OcrPage: React.FC = () => {
                 <table className="w-full border border-yellow-700 rounded-lg">
                   <thead className="bg-yellow-900/40">
                     <tr>
-                      <th className="px-3 py-2 text-left text-yellow-200 text-sm font-semibold">#</th>
-                      <th className="px-3 py-2 text-left text-yellow-200 text-sm font-semibold">Asset Name</th>
-                      <th className="px-3 py-2 text-left text-yellow-200 text-sm font-semibold">Brand</th>
-                      <th className="px-3 py-2 text-left text-yellow-200 text-sm font-semibold">Model</th>
-                      <th className="px-3 py-2 text-left text-yellow-200 text-sm font-semibold">Warranty</th>
-                      <th className="px-3 py-2 text-left text-yellow-200 text-sm font-semibold">Total Qty</th>
-                      <th className="px-3 py-2 text-left text-yellow-200 text-sm font-semibold">Unit Price (₹)</th>
-                      <th className="px-3 py-2 text-left text-yellow-200 text-sm font-semibold">Line Total (₹)</th>
-                      <th className="px-3 py-2 text-center text-yellow-200 text-sm font-semibold">Actions</th>
+                      <th className="px-3 py-2 text-left text-yellow-200 text-xs font-semibold">#</th>
+                      <th className="px-3 py-2 text-left text-yellow-200 text-xs font-semibold">Asset Name</th>
+                      <th className="px-3 py-2 text-left text-yellow-200 text-xs font-semibold">Brand</th>
+                      <th className="px-3 py-2 text-left text-yellow-200 text-xs font-semibold">Model</th>
+                      <th className="px-3 py-2 text-left text-yellow-200 text-xs font-semibold">Warranty</th>
+                      <th className="px-3 py-2 text-left text-yellow-200 text-xs font-semibold">Total Qty</th>
+                      <th className="px-3 py-2 text-left text-yellow-200 text-xs font-semibold">Unit Price (₹)</th>
+                      <th className="px-3 py-2 text-left text-yellow-200 text-xs font-semibold">Line Total (₹)</th>
+                      <th className="px-3 py-2 text-center text-yellow-200 text-xs font-semibold">Actions</th>
                     </tr>
                   </thead>
                   <tbody className="bg-gray-800/50">
@@ -2050,7 +1994,7 @@ const OcrPage: React.FC = () => {
                         
                         return (
                           <tr key={groupIndex} className="border-t border-yellow-700/30">
-                            <td className="px-3 py-3 text-gray-300 text-sm font-medium">{groupIndex + 1}</td>
+                            <td className="px-3 py-3 text-gray-300 text-xs font-medium">{groupIndex + 1}</td>
                             <td className="px-3 py-3">
                               <Input
                                 value={group.name}
@@ -2061,7 +2005,7 @@ const OcrPage: React.FC = () => {
                                   });
                                   setEditableAssets(updated);
                                 }}
-                                className="bg-gray-700 text-white border-gray-600 text-sm h-9"
+                                className="bg-gray-700 text-white border-gray-600 text-xs h-9"
                                 placeholder="Asset name"
                               />
                             </td>
@@ -2075,7 +2019,7 @@ const OcrPage: React.FC = () => {
                                   });
                                   setEditableAssets(updated);
                                 }}
-                                className="bg-gray-700 text-white border-gray-600 text-sm h-9"
+                                className="bg-gray-700 text-white border-gray-600 text-xs h-9"
                                 placeholder="Brand"
                               />
                             </td>
@@ -2089,7 +2033,7 @@ const OcrPage: React.FC = () => {
                                   });
                                   setEditableAssets(updated);
                                 }}
-                                className="bg-gray-700 text-white border-gray-600 text-sm h-9"
+                                className="bg-gray-700 text-white border-gray-600 text-xs h-9"
                                 placeholder="Model"
                               />
                             </td>
@@ -2103,7 +2047,7 @@ const OcrPage: React.FC = () => {
                                   });
                                   setEditableAssets(updated);
                                 }}
-                                className="bg-gray-700 text-white border-gray-600 text-sm h-9"
+                                className="bg-gray-700 text-white border-gray-600 text-xs h-9"
                                 placeholder="e.g., 3 Years, 5 Years Onsite"
                               />
                             </td>
@@ -2130,7 +2074,7 @@ const OcrPage: React.FC = () => {
                                   });
                                   setEditableAssets(updated);
                                 }}
-                                className="bg-gray-700 text-white border-gray-600 text-sm h-9 w-20"
+                                className="bg-gray-700 text-white border-gray-600 text-xs h-9 w-20"
                               />
                               <span className="text-xs text-gray-400 ml-1">
                                 ({group.indices.length} items)
@@ -2155,11 +2099,11 @@ const OcrPage: React.FC = () => {
                                   });
                                   setEditableAssets(updated);
                                 }}
-                                className="bg-gray-700 text-white border-gray-600 text-sm h-9 w-28"
+                                className="bg-gray-700 text-white border-gray-600 text-xs h-9 w-28"
                               />
                             </td>
                             <td className="px-3 py-3">
-                              <span className="text-green-400 font-semibold text-sm">
+                              <span className="text-green-400 font-semibold text-xs">
                                 {formatCurrency(lineTotal)}
                               </span>
                             </td>
@@ -2238,7 +2182,7 @@ const OcrPage: React.FC = () => {
                     {/* Asset Info */}
                     <div className="lg:col-span-3">
                       <div className="flex items-center gap-3 mb-3 flex-wrap">
-                        <span className="bg-blue-600 text-white px-3 py-1 rounded-full text-sm font-semibold">
+                        <span className="bg-blue-600 text-white px-3 py-1 rounded-full text-xs font-semibold">
                           {asset.asset_id}
                         </span>
                         <span className="bg-purple-600 text-white px-2 py-1 rounded text-xs">
@@ -2255,7 +2199,7 @@ const OcrPage: React.FC = () => {
                         {asset.name}
                       </h4>
                       
-                      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
                         <div>
                           <p className="text-gray-400">Quantity</p>
                           <p className="text-gray-200 font-medium">{asset.quantity}</p>
@@ -2276,13 +2220,13 @@ const OcrPage: React.FC = () => {
                       {fullCode && (
                         <div className="mt-3">
                           <span className="text-gray-400 text-xs">Asset Code: </span>
-                          <span className="text-purple-300 text-sm font-medium">{fullCode}</span>
+                          <span className="text-purple-300 text-xs font-medium">{fullCode}</span>
                         </div>
                       )}
                       
                       {asset.model && (
                         <div className="mt-2">
-                          <p className="text-gray-400 text-sm">Model: <span className="text-gray-200">{asset.model}</span></p>
+                          <p className="text-gray-400 text-xs">Model: <span className="text-gray-200">{asset.model}</span></p>
                         </div>
                       )}
                     </div>
@@ -2451,7 +2395,7 @@ const OcrPage: React.FC = () => {
                             <td className="px-4 py-3 text-center text-white">{item.quantity ?? "N/A"}</td>
                             <td className="px-4 py-3 text-right text-green-400">{formatCurrency(item.price_per_unit)}</td>
                             <td className="px-4 py-3 text-right text-blue-400 font-semibold">{formatCurrency(item.line_total)}</td>
-                            <td className="px-4 py-3 text-gray-300 text-sm">{item.warranty || "N/A"}</td>
+                            <td className="px-4 py-3 text-gray-300 text-xs">{item.warranty || "N/A"}</td>
                           </tr>
                         ))}
                       </tbody>
@@ -2461,7 +2405,7 @@ const OcrPage: React.FC = () => {
               )}
 
               <div className="mt-4 p-3 bg-blue-900/30 border border-blue-700 rounded-lg">
-                <p className="text-blue-300 text-sm">
+                <p className="text-blue-300 text-xs">
                   ✨ This data was normalized using FLAN-T5-small AI model running on CPU. 
                   All fields have been standardized to canonical format with proper date formatting, 
                   currency normalization, and GSTIN validation.
@@ -2477,7 +2421,7 @@ const OcrPage: React.FC = () => {
                 Raw Extracted Text:
               </h3>
               <pre
-                className="w-full max-h-[600px] overflow-auto p-4 rounded-lg border border-gray-700 bg-gray-800 text-gray-200 text-sm whitespace-pre-wrap break-words"
+                className="w-full max-h-[600px] overflow-auto p-4 rounded-lg border border-gray-700 bg-gray-800 text-gray-200 text-xs whitespace-pre-wrap break-words"
               >
                 {scanResult.raw_text || "No raw text available."}
               </pre>
@@ -2492,3 +2436,4 @@ const OcrPage: React.FC = () => {
 };
 
 export default OcrPage;
+

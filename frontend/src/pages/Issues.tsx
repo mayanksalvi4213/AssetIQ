@@ -1,11 +1,10 @@
 "use client";
 import React, { useEffect, useMemo, useState } from "react";
 import { motion } from "motion/react";
-import { Menu, MenuItem, HoveredLink } from "@/components/ui/navbar-menu";
+import AppNavbar from "@/components/AppNavbar";
 import { PlaceholdersAndVanishInput } from "@/components/ui/placeholders-and-vanish-input";
 import { CometCard } from "@/components/ui/comet-card";
 import { BackgroundGradient } from "@/components/ui/background-gradient";
-import { LogoButton } from "@/components/ui/logo-button";
 import { HoverBorderGradient } from "@/components/ui/hover-border-gradient";
 import { useAuth } from "@/contexts/AuthContext";
 
@@ -71,8 +70,7 @@ interface TicketForm {
 }
 
 export default function Issues() {
-  const [active, setActive] = useState<string | null>(null);
-  const { logout, user } = useAuth();
+  const { user } = useAuth();
   const [labs, setLabs] = useState<LabListItem[]>([]);
   const [selectedLab, setSelectedLab] = useState<Lab | null>(null);
   const [selectedStation, setSelectedStation] = useState<Device[] | null>(null); // All devices at station
@@ -463,71 +461,15 @@ export default function Issues() {
         backgroundRepeat: "no-repeat",
       }}
     >
-      <LogoButton />
-      {/* Top Navbar with Search */}
-      <div className="fixed top-4 inset-x-0 max-w-7xl mx-auto z-50 flex items-center justify-between px-6">
-        <Menu setActive={setActive}>
-          <MenuItem
-            setActive={setActive}
-            active={active}
-            item="Asset Management"
-          >
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/assets">All Assets</HoveredLink>
-              <HoveredLink href="/ocr">Add Assets</HoveredLink>
-            </div>
-          </MenuItem>
-
-          <MenuItem setActive={setActive} active={active} item="Lab Management">
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/lab-plan">Lab Floor Plans</HoveredLink>
-              <HoveredLink href="/lab-layout">Lab Layout Designer</HoveredLink>
-              <HoveredLink href="/lab-configuration">
-                Lab Configuration
-              </HoveredLink>
-              {user?.role === "HOD" && (
-                <HoveredLink href="/assign-lab-incharge">Assign Lab Incharge</HoveredLink>
-              )}
-            </div>
-          </MenuItem>
-
-          <MenuItem setActive={setActive} active={active} item="Operations">
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/transfers">Transfers</HoveredLink>
-              <HoveredLink href="/scrap">Scrap</HoveredLink>
-              <HoveredLink href="/dashboard/issues">Issues</HoveredLink>
-              <HoveredLink href="/dashboard/documents">Documents</HoveredLink>
-            </div>
-          </MenuItem>
-
-          <MenuItem setActive={setActive} active={active} item="Analytics">
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/reports">Reports</HoveredLink>
-              <HoveredLink href="/warranty-expiry">Warranty Expiry</HoveredLink>
-            </div>
-          </MenuItem>
-
-          <MenuItem setActive={setActive} active={active} item="Account">
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/settings">Settings</HoveredLink>
-              <button 
-                onClick={logout}
-                className="text-left text-neutral-600 hover:text-neutral-800 transition-colors"
-              >
-                Logout
-              </button>
-            </div>
-          </MenuItem>
-        </Menu>
-
-        <div className="w-full max-w-sm">
+      <AppNavbar
+        rightContent={
           <PlaceholdersAndVanishInput
             placeholders={placeholders}
             onChange={handleChange}
             onSubmit={onSubmit}
           />
-        </div>
-      </div>
+        }
+      />
 
       {/* Page Content */}
       <div className="pt-32 px-6 max-w-7xl mx-auto">
@@ -567,7 +509,7 @@ export default function Issues() {
                 <div className="p-6 text-white bg-neutral-800/95 rounded-2xl backdrop-blur-sm h-full flex flex-col justify-between">
                   <div>
                     <h2 className="text-2xl font-semibold mb-2">{lab.lab_name}</h2>
-                    <p className="text-gray-400 text-sm">Lab ID: {lab.lab_id}</p>
+                    <p className="text-gray-400 text-xs">Lab ID: {lab.lab_id}</p>
                   </div>
                   <button className="mt-4 px-4 py-2 bg-blue-600 rounded-lg text-white font-semibold hover:bg-blue-700 transition-colors">
                     View Issues
@@ -607,7 +549,7 @@ export default function Issues() {
                   <h2 className="text-2xl font-bold">
                     {selectedLab.labName || selectedLab.labNumber} - Device Issues
                   </h2>
-                  <p className="text-gray-400 text-sm">
+                  <p className="text-gray-400 text-xs">
                     Lab ID: {selectedLab.labNumber} | Grid: {selectedLab.seatingArrangement?.rows ?? 0}×{selectedLab.seatingArrangement?.columns ?? 0}
                   </p>
                 </div>
@@ -689,7 +631,7 @@ export default function Issues() {
                                       {openIssuesCount}
                                     </div>
                                   )}
-                                  <div className="text-white font-bold text-[10px] truncate w-full text-center">
+                                  <div className="text-white font-bold text-[12px] truncate w-full text-center">
                                     {stationId || "—"}
                                   </div>
                                   <div className="text-white text-lg leading-none">{emoji}</div>
@@ -697,7 +639,7 @@ export default function Issues() {
                                     {devices.map((d, di) => (
                                       <div
                                         key={di}
-                                        className="text-green-300 text-[9px] font-mono leading-tight truncate"
+                                        className="text-green-300 text-[12px] font-mono leading-tight truncate"
                                         title={d.assignedCode || ""}
                                       >
                                         {d.assignedCode || d.type}
@@ -706,10 +648,10 @@ export default function Issues() {
                                   </div>
                                   <div className="flex gap-1 mt-0.5 flex-wrap justify-center">
                                     {cell.os.includes("Windows") && (
-                                      <div className="text-[8px] px-1 bg-blue-800 text-white rounded">Win</div>
+                                      <div className="text-[12px] px-1 bg-blue-800 text-white rounded">Win</div>
                                     )}
                                     {cell.os.includes("Linux") && (
-                                      <div className="text-[8px] px-1 bg-orange-600 text-white rounded">Linux</div>
+                                      <div className="text-[12px] px-1 bg-orange-600 text-white rounded">Linux</div>
                                     )}
                                   </div>
                                 </>
@@ -727,15 +669,15 @@ export default function Issues() {
                   <div className="mt-6 flex gap-6 items-center">
                     <div className="flex items-center gap-2">
                       <div className="w-4 h-4 bg-green-600 rounded"></div>
-                      <span className="text-sm text-gray-300">No Issues</span>
+                      <span className="text-xs text-gray-300">No Issues</span>
                     </div>
                     <div className="flex items-center gap-2">
                       <div className="w-4 h-4 bg-red-600 rounded"></div>
-                      <span className="text-sm text-gray-300">Has Issues</span>
+                      <span className="text-xs text-gray-300">Has Issues</span>
                     </div>
                     <div className="flex items-center gap-2">
                       <div className="w-4 h-4 bg-neutral-800 border border-gray-600 rounded"></div>
-                      <span className="text-sm text-gray-300">Empty</span>
+                      <span className="text-xs text-gray-300">Empty</span>
                     </div>
                   </div>
                 </div>
@@ -792,7 +734,7 @@ export default function Issues() {
                   <h3 className="text-xl font-bold">
                     Station: {selectedStation[0]?.assignedCode || selectedStation[0]?.id}
                   </h3>
-                  <p className="text-gray-400 text-sm">
+                  <p className="text-gray-400 text-xs">
                     {selectedStation.length} device(s) at this station
                   </p>
                 </div>
@@ -831,7 +773,7 @@ export default function Issues() {
                               </div>
                             )}
                           </div>
-                          <div className="text-sm text-gray-400 mt-1">
+                          <div className="text-xs text-gray-400 mt-1">
                             Device ID: {device.deviceId}
                             {device.invoiceNumber && ` • Invoice: ${device.invoiceNumber}`}
                           </div>
@@ -857,7 +799,7 @@ export default function Issues() {
                 })}
               </div>
 
-              <div className="mt-6 text-center text-sm text-gray-400">
+              <div className="mt-6 text-center text-xs text-gray-400">
                 Click on a device to view details and raise tickets
               </div>
             </motion.div>
@@ -891,7 +833,7 @@ export default function Issues() {
                   <h3 className="text-xl font-bold">
                     {selectedDevice.type} - {selectedDevice.assignedCode || selectedDevice.id}
                   </h3>
-                  <p className="text-gray-400 text-sm">
+                  <p className="text-gray-400 text-xs">
                     {selectedDevice.brand || ""} {selectedDevice.model || ""}
                   </p>
                 </div>
@@ -915,7 +857,7 @@ export default function Issues() {
                 <h4 className="font-semibold mb-2 text-gray-300">
                   Device Details
                 </h4>
-                <div className="grid grid-cols-2 gap-3 text-sm text-gray-400">
+                <div className="grid grid-cols-2 gap-3 text-xs text-gray-400">
                   <div>
                     <span className="font-semibold">Assigned Code:</span>{" "}
                     {selectedDevice.assignedCode || selectedDevice.id || "N/A"}
@@ -968,7 +910,7 @@ export default function Issues() {
                                 {issue.severity.toUpperCase()}
                               </span>
                             </div>
-                            <p className="text-gray-400 text-sm mb-2">
+                            <p className="text-gray-400 text-xs mb-2">
                               {issue.description}
                             </p>
                           </div>
@@ -992,14 +934,14 @@ export default function Issues() {
                             {issue.status === "open" && (
                               <button
                                 onClick={() => handleUpdateIssueStatus(issue.id, "in-progress")}
-                                className="px-3 py-1.5 bg-yellow-600 hover:bg-yellow-700 text-white text-sm rounded-lg transition"
+                                className="px-3 py-1.5 bg-yellow-600 hover:bg-yellow-700 text-white text-xs rounded-lg transition"
                               >
                                 ⚙️ Mark In Progress
                               </button>
                             )}
                             <button
                               onClick={() => handleUpdateIssueStatus(issue.id, "resolved")}
-                              className="px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white text-sm rounded-lg transition"
+                              className="px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white text-xs rounded-lg transition"
                             >
                               ✓ Mark Resolved
                             </button>
@@ -1069,10 +1011,10 @@ export default function Issues() {
               <h3 className="text-xl font-bold mb-4">
                 🎫 Raise Support Ticket
               </h3>
-              <p className="text-gray-400 text-sm mb-2">
+              <p className="text-gray-400 text-xs mb-2">
                 Station: <span className="text-white font-semibold">{selectedDevice.assignedCode || selectedDevice.id}</span>
               </p>
-              <p className="text-gray-400 text-sm mb-6">
+              <p className="text-gray-400 text-xs mb-6">
                 Device: <span className="text-white font-semibold">{selectedDevice.type} {selectedDevice.brand && `- ${selectedDevice.brand}`} {selectedDevice.model && `${selectedDevice.model}`}</span> (ID: {selectedDevice.deviceId})
               </p>
 
@@ -1152,7 +1094,7 @@ export default function Issues() {
                 )}
 
                 {ticketForm.issueKey !== "other" && (
-                  <div className="text-sm text-gray-300">
+                  <div className="text-xs text-gray-300">
                     <span className="font-semibold">Auto severity:</span>{" "}
                     <span className={`px-2 py-1 rounded text-white ${getSeverityColor(selectedIssueOption.severity)}`}>
                       {selectedIssueOption.severity.toUpperCase()} ({selectedIssueOption.active ? "Device remains active" : "Device marked inactive"})
@@ -1185,3 +1127,4 @@ export default function Issues() {
     </div>
   );
 }
+

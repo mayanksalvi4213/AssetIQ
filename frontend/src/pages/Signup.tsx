@@ -209,7 +209,7 @@ export default function Signup() {
                   <Label htmlFor="role" className="text-white">Role</Label>
                   <select
                     id="role"
-                    className="h-10 w-full rounded-md border border-gray-700 bg-gray-900/50 px-3 text-sm text-white placeholder-gray-400 focus:border-blue-500 focus:ring-blue-500"
+                    className="h-10 w-full rounded-md border border-gray-700 bg-gray-900/50 px-3 text-xs text-white placeholder-gray-400 focus:border-blue-500 focus:ring-blue-500"
                     value={role}
                     onChange={(e) => {
                       const value = e.target.value as Role | "";
@@ -234,7 +234,7 @@ export default function Signup() {
                 </button>
 
                 <div className="text-center">
-                  <p className="text-gray-400 text-sm">
+                  <p className="text-gray-400 text-xs">
                     Already have an account?{" "}
                     <a href="/login" className="text-blue-400 hover:text-blue-300 transition-colors duration-200 font-medium">
                       Login
@@ -253,3 +253,4 @@ export default function Signup() {
 const LabelInputContainer = ({ children, className }: { children: React.ReactNode; className?: string }) => (
   <div className={cn("flex w-full flex-col space-y-2", className)}>{children}</div>
 );
+

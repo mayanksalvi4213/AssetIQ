@@ -1,11 +1,9 @@
 "use client";
 import React, { useState, useEffect, useMemo } from "react";
 import { motion } from "motion/react";
-import { Menu, MenuItem, HoveredLink } from "@/components/ui/navbar-menu";
 import { PlaceholdersAndVanishInput } from "@/components/ui/placeholders-and-vanish-input";
 import { CometCard } from "@/components/ui/comet-card";
-import { LogoButton } from "@/components/ui/logo-button";
-import { useAuth } from "@/contexts/AuthContext";
+import AppNavbar from "@/components/AppNavbar";
 import { QRCodeSVG } from "qrcode.react";
 
 interface GridCell {
@@ -52,8 +50,6 @@ interface LabListItem {
 }
 
 export default function Labplan() {
-  const [active, setActive] = useState<string | null>(null);
-  const { logout, user } = useAuth();
   const [labs, setLabs] = useState<LabListItem[]>([]);
   const [selectedLab, setSelectedLab] = useState<Lab | null>(null);
   const [selectedDevice, setSelectedDevice] = useState<any>(null);
@@ -301,65 +297,17 @@ export default function Labplan() {
       backgroundPosition: 'center',
       backgroundRepeat: 'no-repeat'
     }}>
-      <LogoButton />
-      {/* ✅ Top Navbar with Search */}
-      <div className="fixed top-4 inset-x-0 max-w-7xl mx-auto z-50 flex items-center justify-between px-6">
-        <Menu setActive={setActive}>
-          <MenuItem setActive={setActive} active={active} item="Asset Management">
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/assets">All Assets</HoveredLink>
-              <HoveredLink href="/ocr">Add Assets</HoveredLink>
-              
-            </div>
-          </MenuItem>
-
-          <MenuItem setActive={setActive} active={active} item="Lab Management">
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/lab-plan">Lab Floor Plans</HoveredLink>
-              <HoveredLink href="/lab-layout">Lab Layout Designer</HoveredLink>
-              <HoveredLink href="/lab-configuration">Lab Configuration</HoveredLink>
-              {user?.role === "HOD" && (
-                <HoveredLink href="/assign-lab-incharge">Assign Lab Incharge</HoveredLink>
-              )}
-            </div>
-          </MenuItem>
-
-          <MenuItem setActive={setActive} active={active} item="Operations">
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/transfers">Transfers</HoveredLink>
-              <HoveredLink href="/dashboard/issues">Issues</HoveredLink>
-              <HoveredLink href="/dashboard/documents">Documents</HoveredLink>
-            </div>
-          </MenuItem>
-
-          <MenuItem setActive={setActive} active={active} item="Analytics">
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/reports">Reports</HoveredLink>
-              <HoveredLink href="/warranty-expiry">Warranty Expiry</HoveredLink>
-            </div>
-          </MenuItem>
-
-          <MenuItem setActive={setActive} active={active} item="Account">
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/settings">Settings</HoveredLink>
-              <button 
-                onClick={logout}
-                className="text-left text-neutral-600 hover:text-neutral-800 transition-colors"
-              >
-                Logout
-              </button>
-            </div>
-          </MenuItem>
-        </Menu>
-
-        <div className="w-full max-w-sm">
-          <PlaceholdersAndVanishInput
-            placeholders={placeholders}
-            onChange={handleChange}
-            onSubmit={onSubmit}
-          />
-        </div>
-      </div>
+      <AppNavbar
+        rightContent={
+          <div className="w-full max-w-sm">
+            <PlaceholdersAndVanishInput
+              placeholders={placeholders}
+              onChange={handleChange}
+              onSubmit={onSubmit}
+            />
+          </div>
+        }
+      />
 
       {/* ✅ Page Content */}
       <div className="pt-32 px-6 max-w-7xl mx-auto">
@@ -397,7 +345,7 @@ export default function Labplan() {
                   <div className="p-6 text-white bg-neutral-800/95 rounded-2xl backdrop-blur-sm h-full flex flex-col justify-between">
                     <div>
                       <h2 className="text-2xl font-semibold mb-2">{lab.lab_name}</h2>
-                      <p className="text-gray-300 text-sm">
+                      <p className="text-gray-300 text-xs">
                         Lab ID: {lab.lab_id}
                       </p>
                     </div>
@@ -437,9 +385,9 @@ export default function Labplan() {
               <div className="flex items-center justify-between mb-6">
                 <div>
                   <h2 className="text-2xl font-bold">{selectedLab.labName} - Floor Plan</h2>
-                  <p className="text-gray-400 text-sm">Lab ID: {selectedLab.labNumber} | Grid: {selectedLab.seatingArrangement?.rows ?? 0}×{selectedLab.seatingArrangement?.columns ?? 0}</p>
+                  <p className="text-gray-400 text-xs">Lab ID: {selectedLab.labNumber} | Grid: {selectedLab.seatingArrangement?.rows ?? 0}×{selectedLab.seatingArrangement?.columns ?? 0}</p>
                 </div>
-                <div className="flex flex-col items-end text-sm text-gray-300">
+                <div className="flex flex-col items-end text-xs text-gray-300">
                   <span className="font-semibold text-white">Total Lab Cost</span>
                   <span className="text-green-400 text-lg font-bold">₹{labCost.toFixed(2)}</span>
                 </div>
@@ -481,7 +429,7 @@ export default function Labplan() {
               {labStats && Object.keys(labStats.deviceTypes).length > 0 && (
                 <div className="mb-6 flex flex-wrap gap-2">
                   {Object.entries(labStats.deviceTypes).map(([type, count]) => (
-                    <span key={type} className="px-3 py-1 bg-neutral-800 border border-neutral-600 rounded-full text-sm">
+                    <span key={type} className="px-3 py-1 bg-neutral-800 border border-neutral-600 rounded-full text-xs">
                       {type}: <span className="text-white font-bold">{count}</span>
                     </span>
                   ))}
@@ -500,11 +448,11 @@ export default function Labplan() {
                         className="bg-neutral-800 p-3 rounded-lg cursor-pointer hover:bg-neutral-700 transition"
                       >
                         <p className="font-semibold">{eq.type}</p>
-                        <p className="text-sm text-gray-400">{eq.brand} {eq.model}</p>
+                        <p className="text-xs text-gray-400">{eq.brand} {eq.model}</p>
                         <div className="flex items-center justify-between mt-1">
-                          <p className="text-sm text-gray-400">Qty: {eq.quantity}</p>
+                          <p className="text-xs text-gray-400">Qty: {eq.quantity}</p>
                           {eq.unitPrice && eq.unitPrice > 0 && (
-                            <p className="text-sm text-green-400 font-semibold">₹{eq.unitPrice.toFixed(2)}/unit</p>
+                            <p className="text-xs text-green-400 font-semibold">₹{eq.unitPrice.toFixed(2)}/unit</p>
                           )}
                         </div>
                         <p className="text-xs text-blue-400 mt-1">📄 Invoice: {eq.invoiceNumber}</p>
@@ -590,25 +538,25 @@ export default function Labplan() {
                             >
                               {hasDevices ? (
                                 <>
-                                  <div className="text-white font-bold text-[10px] truncate w-full text-center">
+                                  <div className="text-white font-bold text-[12px] truncate w-full text-center">
                                     {cell.deviceGroup?.assignedCode || cell.id || "—"}
                                   </div>
                                   <div className="text-white text-lg leading-none">{emoji}</div>
                                   {/* Device prefix codes */}
                                   <div className="text-center w-full space-y-0.5 mt-0.5">
                                     {cell.deviceGroup!.devices.map((d: any, di: number) => (
-                                      <div key={di} className="text-green-300 text-[9px] font-mono leading-tight truncate" title={d.assignedCode || ''}>
+                                      <div key={di} className="text-green-300 text-[12px] font-mono leading-tight truncate" title={d.assignedCode || ''}>
                                         {d.assignedCode || d.type}
                                       </div>
                                     ))}
                                   </div>
                                   <div className="flex gap-1 mt-0.5 flex-wrap justify-center">
-                                    {hasWindows && <div className="text-[8px] px-1 bg-blue-800 text-white rounded">Win</div>}
-                                    {hasLinux && <div className="text-[8px] px-1 bg-orange-600 text-white rounded">Linux</div>}
+                                    {hasWindows && <div className="text-[12px] px-1 bg-blue-800 text-white rounded">Win</div>}
+                                    {hasLinux && <div className="text-[12px] px-1 bg-orange-600 text-white rounded">Linux</div>}
                                   </div>
                                   {/* Station QR button */}
                                   <button
-                                    className="mt-0.5 px-1.5 py-0.5 bg-cyan-600 hover:bg-cyan-700 text-white text-[8px] rounded flex items-center gap-0.5"
+                                    className="mt-0.5 px-1.5 py-0.5 bg-cyan-600 hover:bg-cyan-700 text-white text-[12px] rounded flex items-center gap-0.5"
                                     title="View Station QR"
                                     onClick={(e) => {
                                       e.stopPropagation();
@@ -632,7 +580,7 @@ export default function Labplan() {
                                   </button>
                                   {/* Pending transfer badge */}
                                   {cell.deviceGroup!.devices.some((d: any) => pendingOutgoingDeviceIds.has(d.deviceId)) && (
-                                    <div className="text-[8px] px-1.5 py-0.5 rounded bg-orange-600 text-white font-semibold mt-0.5">
+                                    <div className="text-[12px] px-1.5 py-0.5 rounded bg-orange-600 text-white font-semibold mt-0.5">
                                       ⏳ Transfer Pending
                                     </div>
                                   )}
@@ -640,9 +588,9 @@ export default function Labplan() {
                               ) : isStationType ? (
                                 <>
                                   <div className="text-cyan-300 text-xl leading-none mb-1">{emoji}</div>
-                                  <div className="text-cyan-200/80 font-medium text-[10px] text-center leading-tight">{cell.equipmentType}</div>
+                                  <div className="text-cyan-200/80 font-medium text-[12px] text-center leading-tight">{cell.equipmentType}</div>
                                   {cell.id && (
-                                    <div className="text-gray-500 text-[8px] mt-0.5 font-mono">{cell.id}</div>
+                                    <div className="text-gray-500 text-[12px] mt-0.5 font-mono">{cell.id}</div>
                                   )}
                                 </>
                               ) : (
@@ -659,23 +607,23 @@ export default function Labplan() {
                   <div className="mt-6 flex gap-6 items-center flex-wrap">
                     <div className="flex items-center gap-2">
                       <div className="w-4 h-4 bg-green-900/60 border border-green-500 rounded"></div>
-                      <span className="text-sm text-gray-300">Configured Station</span>
+                      <span className="text-xs text-gray-300">Configured Station</span>
                     </div>
                     <div className="flex items-center gap-2">
                       <div className="w-4 h-4 bg-yellow-900/60 border border-yellow-500 rounded"></div>
-                      <span className="text-sm text-gray-300">Has Issues</span>
+                      <span className="text-xs text-gray-300">Has Issues</span>
                     </div>
                     <div className="flex items-center gap-2">
                       <div className="w-4 h-4 bg-neutral-800/80 border border-cyan-800/60 rounded"></div>
-                      <span className="text-sm text-gray-300">Station Type (no devices)</span>
+                      <span className="text-xs text-gray-300">Station Type (no devices)</span>
                     </div>
                     <div className="flex items-center gap-2">
                       <div className="w-4 h-4 bg-neutral-800 border border-gray-600 rounded"></div>
-                      <span className="text-sm text-gray-300">Empty</span>
+                      <span className="text-xs text-gray-300">Empty</span>
                     </div>
                     <div className="flex items-center gap-2">
                       <div className="w-4 h-4 bg-orange-800 border border-orange-500 rounded"></div>
-                      <span className="text-sm text-gray-300">Transfer Pending (outgoing)</span>
+                      <span className="text-xs text-gray-300">Transfer Pending (outgoing)</span>
                     </div>
                   </div>
                 </div>
@@ -691,7 +639,7 @@ export default function Labplan() {
                   <div className="flex items-center justify-between mb-4">
                     <div>
                       <h3 className="text-xl font-bold">Station Details</h3>
-                      <p className="text-gray-400 text-sm mt-1">
+                      <p className="text-gray-400 text-xs mt-1">
                         Showing {activeStationList.length} stations with devices (out of {stationList.length} total)
                       </p>
                     </div>
@@ -726,7 +674,7 @@ export default function Labplan() {
                     </div>
                   ) : (
                     <div className="overflow-x-auto bg-neutral-900 rounded-lg border border-neutral-700">
-                      <table className="w-full text-sm text-left">
+                      <table className="w-full text-xs text-left">
                         <thead className="text-xs uppercase bg-neutral-800 border-b-2 border-neutral-600">
                           <tr>
                             <th className="px-4 py-3 font-bold text-white">Station</th>
@@ -756,7 +704,7 @@ export default function Labplan() {
                                     {station.os.split(',').map((osName: string, osIdx: number) => {
                                       const trimmed = osName.trim();
                                       return (
-                                        <span key={osIdx} className={`inline-block px-2 py-0.5 text-[10px] font-semibold rounded-full ${
+                                        <span key={osIdx} className={`inline-block px-2 py-0.5 text-[12px] font-semibold rounded-full ${
                                           trimmed === 'Windows' ? 'bg-blue-600/80 text-blue-100' :
                                           trimmed === 'Linux' ? 'bg-orange-600/80 text-orange-100' :
                                           trimmed === 'Dual Boot' ? 'bg-purple-600/80 text-purple-100' :
@@ -776,7 +724,7 @@ export default function Labplan() {
                                   {station.devices.map((device: any, deviceIdx: number) => (
                                     <div key={deviceIdx} className="bg-neutral-800 p-3 rounded-lg border border-neutral-600">
                                       <div className="flex items-center gap-2 mb-1">
-                                        <span className="font-bold text-white text-sm">
+                                        <span className="font-bold text-white text-xs">
                                           {device.type}:
                                         </span>
                                         <span className="text-gray-200 font-medium">
@@ -850,7 +798,7 @@ export default function Labplan() {
                                       <span className="text-green-400 font-mono text-xs font-bold">
                                         {device.prefixCode || '—'}
                                       </span>
-                                      <span className="text-gray-500 text-[10px]">({device.type})</span>
+                                      <span className="text-gray-500 text-[12px]">({device.type})</span>
                                     </div>
                                   ))}
                                 </div>
@@ -877,7 +825,7 @@ export default function Labplan() {
                                         <QRCodeSVG value={stQr} size={64} />
                                       </div>
                                       <button
-                                        className="mt-1 text-cyan-400 hover:text-cyan-300 text-[10px] underline"
+                                        className="mt-1 text-cyan-400 hover:text-cyan-300 text-[12px] underline"
                                         onClick={() => setStationQrModal({
                                           stationCode: station.assignedCode,
                                           qrValue: stQr,
@@ -903,7 +851,7 @@ export default function Labplan() {
                                     return (
                                       <div key={qrIdx} className="flex flex-col items-center bg-white p-2 rounded">
                                         <QRCodeSVG value={qrVal} size={60} />
-                                        <span className="text-[10px] text-black mt-1 font-mono">{device.prefixCode || device.type}</span>
+                                        <span className="text-[12px] text-black mt-1 font-mono">{device.prefixCode || device.type}</span>
                                       </div>
                                     );
                                   })}
@@ -969,7 +917,7 @@ export default function Labplan() {
                     <p className="font-semibold text-gray-300">Operating Systems:</p>
                     <div className="flex gap-2 mt-1">
                       {selectedDevice.os.map((os: string, idx: number) => (
-                        <span key={idx} className="px-2 py-1 bg-blue-600 text-white text-sm rounded">
+                        <span key={idx} className="px-2 py-1 bg-blue-600 text-white text-xs rounded">
                           {os}
                         </span>
                       ))}
@@ -985,28 +933,28 @@ export default function Labplan() {
                         <div key={idx} className="bg-neutral-800 p-3 rounded-lg">
                           <p className="font-semibold">{device.type}</p>
                           {device.assignedCode && (
-                            <p className="text-sm text-green-400 font-mono font-bold">Prefix: {device.assignedCode}</p>
+                            <p className="text-xs text-green-400 font-mono font-bold">Prefix: {device.assignedCode}</p>
                           )}
                           {device.brand && (
-                            <p className="text-sm text-gray-400">Brand: {device.brand}</p>
+                            <p className="text-xs text-gray-400">Brand: {device.brand}</p>
                           )}
                           {device.model && (
-                            <p className="text-sm text-gray-400">Model: {device.model}</p>
+                            <p className="text-xs text-gray-400">Model: {device.model}</p>
                           )}
                           {device.specification && (
-                            <p className="text-sm text-gray-400">Spec: {device.specification}</p>
+                            <p className="text-xs text-gray-400">Spec: {device.specification}</p>
                           )}
                           {device.assetCode && (
-                            <p className="text-sm text-blue-400 font-mono">Asset: {device.assetCode}</p>
+                            <p className="text-xs text-blue-400 font-mono">Asset: {device.assetCode}</p>
                           )}
                           {device.invoiceNumber && (
-                            <p className="text-sm text-gray-400">Invoice: {device.invoiceNumber}</p>
+                            <p className="text-xs text-gray-400">Invoice: {device.invoiceNumber}</p>
                           )}
                           {device.unitPrice > 0 && (
-                            <p className="text-sm text-gray-400">Price: ₹{device.unitPrice}</p>
+                            <p className="text-xs text-gray-400">Price: ₹{device.unitPrice}</p>
                           )}
                           {device.warrantyYears && (
-                            <p className="text-sm text-gray-400">Warranty: {device.warrantyYears} years</p>
+                            <p className="text-xs text-gray-400">Warranty: {device.warrantyYears} years</p>
                           )}
                           {device.isLinked && (
                             <span className="text-xs px-2 py-1 bg-purple-600 text-white rounded mt-1 inline-block">
@@ -1070,8 +1018,8 @@ export default function Labplan() {
                   <div className="bg-neutral-800 p-4 rounded-lg">
                     <h4 className="font-semibold text-lg mb-2">Selected Equipment</h4>
                     <p className="text-white">{selectedEquipment.type} - {selectedEquipment.brand} {selectedEquipment.model}</p>
-                    <p className="text-sm text-gray-400">Quantity: {selectedEquipment.quantity}</p>
-                    <p className="text-sm text-gray-400">Specification: {selectedEquipment.specification}</p>
+                    <p className="text-xs text-gray-400">Quantity: {selectedEquipment.quantity}</p>
+                    <p className="text-xs text-gray-400">Specification: {selectedEquipment.specification}</p>
                   </div>
 
                   {/* Bill Information */}
@@ -1147,7 +1095,7 @@ export default function Labplan() {
                             </div>
                             
                             {device.assetCode && (
-                              <p className="text-blue-400 text-sm font-mono">Asset: {device.assetCode}</p>
+                              <p className="text-blue-400 text-xs font-mono">Asset: {device.assetCode}</p>
                             )}
                             
                             {device.assignedCode ? (
@@ -1244,9 +1192,9 @@ export default function Labplan() {
                       <div className="mt-3 text-center">
                         <p className="font-bold text-lg text-black">{qr.assignedCode}</p>
                         {qr.isStation ? (
-                          <p className="text-sm text-cyan-700 font-semibold">📍 Station QR</p>
+                          <p className="text-xs text-cyan-700 font-semibold">📍 Station QR</p>
                         ) : (
-                          <p className="text-sm text-gray-700">{qr.type}</p>
+                          <p className="text-xs text-gray-700">{qr.type}</p>
                         )}
                         {qr.prefixCode && (
                           <p className="text-xs text-green-700 font-mono font-bold mt-1">{qr.prefixCode}</p>
@@ -1299,9 +1247,9 @@ export default function Labplan() {
                       <div className="mt-3 text-center">
                         <p className="font-bold text-lg text-black">{qr.assignedCode}</p>
                         {qr.isStation ? (
-                          <p className="text-sm text-gray-700 font-semibold">Station QR</p>
+                          <p className="text-xs text-gray-700 font-semibold">Station QR</p>
                         ) : (
-                          <p className="text-sm text-gray-700">{qr.type}</p>
+                          <p className="text-xs text-gray-700">{qr.type}</p>
                         )}
                         {qr.prefixCode && (
                           <p className="text-xs text-gray-600 font-mono font-bold mt-1">{qr.prefixCode}</p>
@@ -1357,7 +1305,7 @@ export default function Labplan() {
                   {stationQrModal.devices.map((d: any, i: number) => (
                     <div key={i} className="bg-neutral-800 p-2 rounded flex items-center justify-between">
                       <div>
-                        <span className="text-white text-sm font-medium">{d.type}</span>
+                        <span className="text-white text-xs font-medium">{d.type}</span>
                         {d.brand && <span className="text-gray-400 text-xs ml-2">{d.brand} {d.model}</span>}
                       </div>
                       {d.prefixCode && (
@@ -1381,3 +1329,4 @@ export default function Labplan() {
     </div>
   );
 }
+

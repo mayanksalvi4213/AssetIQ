@@ -1,7 +1,6 @@
 "use client";
 import React, { useState, useEffect, useMemo } from "react";
-import { Menu, MenuItem, HoveredLink } from "@/components/ui/navbar-menu";
-import { LogoButton } from "@/components/ui/logo-button";
+import AppNavbar from "@/components/AppNavbar";
 import { motion } from "motion/react";
 import { useAuth } from "@/contexts/AuthContext";
 
@@ -112,8 +111,7 @@ function getDeviceEmoji(typeName: string): string {
 }
 
 const Transfers: React.FC = () => {
-  const [active, setActive] = useState<string | null>(null);
-  const { logout, user } = useAuth();
+  const { user } = useAuth();
   const [view, setView] = useState<'create' | 'pending'>(
     (user?.role === 'HOD' || user?.role === 'Lab Incharge' || user?.role === 'Lab Assistant') ? 'pending' : 'create'
   );
@@ -146,6 +144,10 @@ const Transfers: React.FC = () => {
   const [pendingIncomingCells, setPendingIncomingCells] = useState<Record<string, { device_id: number; device_type: string; transfer_id: number }[]>>({});
   const [pendingDestCellMap, setPendingDestCellMap] = useState<Record<string, Record<number, { row: number; column: number; label: string }>>>({});
   const [historyDestCellMap, setHistoryDestCellMap] = useState<Record<string, Record<number, { row: number; column: number; label: string }>>>({});
+  const [transferHistoryYear, setTransferHistoryYear] = useState<string>("");
+  const [transferHistoryDeviceType, setTransferHistoryDeviceType] = useState<string>("");
+  const [transferHistoryFromLab, setTransferHistoryFromLab] = useState<string>("");
+  const [transferHistoryToLab, setTransferHistoryToLab] = useState<string>("");
 
   useEffect(() => {
     fetchLabs();
@@ -687,28 +689,28 @@ const Transfers: React.FC = () => {
           >
             {hasDevices && station ? (
               <>
-                <div className="text-white font-bold text-[10px] truncate w-full text-center">{station.assignedCode}</div>
+                <div className="text-white font-bold text-[12px] truncate w-full text-center">{station.assignedCode}</div>
                 <div className="text-white text-lg leading-none">{emoji}</div>
                 <div className="text-center w-full space-y-0.5 mt-0.5">
                   {station.devices.map((d, di) => (
-                    <div key={di} className="text-green-300 text-[9px] font-mono leading-tight truncate" title={d.assigned_code || ''}>
+                    <div key={di} className="text-green-300 text-[12px] font-mono leading-tight truncate" title={d.assigned_code || ''}>
                       {d.assigned_code || d.type_name}
                     </div>
                   ))}
                 </div>
                 <div className="flex gap-1 mt-0.5 flex-wrap justify-center">
-                  {hasWindows && <div className="text-[8px] px-1 bg-blue-800 text-white rounded">Win</div>}
-                  {hasLinux && <div className="text-[8px] px-1 bg-orange-600 text-white rounded">Linux</div>}
+                  {hasWindows && <div className="text-[12px] px-1 bg-blue-800 text-white rounded">Win</div>}
+                  {hasLinux && <div className="text-[12px] px-1 bg-orange-600 text-white rounded">Linux</div>}
                 </div>
                 {isSource && selectionState !== 'none' && (
-                  <div className={`mt-0.5 text-[8px] px-1.5 py-0.5 rounded font-semibold ${
+                  <div className={`mt-0.5 text-[12px] px-1.5 py-0.5 rounded font-semibold ${
                     selectionState === 'all' ? 'bg-blue-600 text-white' : 'bg-yellow-600 text-white'
                   }`}>
                     {selectionState === 'all' ? '✓ All Selected' : `${station.devices.filter((d: Device) => allSelectedDevices.some((sd: Device) => sd.device_id === d.device_id)).length}/${deviceCount}`}
                   </div>
                 )}
                 {isSource && pendingCount > 0 && (
-                  <div className="mt-0.5 text-[8px] px-1.5 py-0.5 rounded font-semibold bg-orange-600 text-white">
+                  <div className="mt-0.5 text-[12px] px-1.5 py-0.5 rounded font-semibold bg-orange-600 text-white">
                     ⏳ {pendingCount}/{deviceCount} Pending
                   </div>
                 )}
@@ -716,7 +718,7 @@ const Transfers: React.FC = () => {
             ) : station ? (
               <>
                 {!isSource && (
-                  <div className="text-cyan-300 text-[9px] font-mono truncate w-full text-center">{station.assignedCode}</div>
+                  <div className="text-cyan-300 text-[12px] font-mono truncate w-full text-center">{station.assignedCode}</div>
                 )}
                 <div className="text-gray-500 text-xs">{isSource ? 'Empty' : 'Free Slot'}</div>
               </>
@@ -784,6 +786,79 @@ const Transfers: React.FC = () => {
     };
   }, [allSelectedDevices, selectedDestByDevice, destLayoutCells]);
 
+  const transferHistoryYears = useMemo(() => {
+    const years = new Set<string>();
+    transferHistory.forEach((t) => {
+      if (t.requested_at) {
+        const y = new Date(t.requested_at).getFullYear();
+        if (!Number.isNaN(y)) years.add(String(y));
+      }
+    });
+    return Array.from(years).sort((a, b) => Number(b) - Number(a));
+  }, [transferHistory]);
+
+  const transferHistoryDeviceTypes = useMemo(() => {
+    const types = new Set<string>();
+    transferHistory.forEach((t) => {
+      (t.devices || []).forEach((d) => {
+        if (d.type_name) types.add(String(d.type_name));
+      });
+    });
+    return Array.from(types).sort();
+  }, [transferHistory]);
+
+  const transferHistoryFromLabs = useMemo(() => {
+    const labsSet = new Set<string>();
+    transferHistory.forEach((t) => {
+      const name = t.from_lab_name || t.from_lab_id;
+      if (name) labsSet.add(String(name));
+    });
+    return Array.from(labsSet).sort();
+  }, [transferHistory]);
+
+  const transferHistoryToLabs = useMemo(() => {
+    const labsSet = new Set<string>();
+    transferHistory.forEach((t) => {
+      const name = t.to_lab_name || t.to_lab_id;
+      if (name) labsSet.add(String(name));
+    });
+    return Array.from(labsSet).sort();
+  }, [transferHistory]);
+
+  const filteredTransferHistory = useMemo(() => {
+    return transferHistory.filter((t) => {
+      if (transferHistoryYear && t.requested_at) {
+        const y = new Date(t.requested_at).getFullYear();
+        if (String(y) !== transferHistoryYear) return false;
+      } else if (transferHistoryYear && !t.requested_at) {
+        return false;
+      }
+
+      if (transferHistoryFromLab) {
+        const fromLabel = String(t.from_lab_name || t.from_lab_id || "");
+        if (fromLabel !== transferHistoryFromLab) return false;
+      }
+
+      if (transferHistoryToLab) {
+        const toLabel = String(t.to_lab_name || t.to_lab_id || "");
+        if (toLabel !== transferHistoryToLab) return false;
+      }
+
+      if (transferHistoryDeviceType) {
+        const hasType = (t.devices || []).some((d) => String(d.type_name) === transferHistoryDeviceType);
+        if (!hasType) return false;
+      }
+
+      return true;
+    });
+  }, [
+    transferHistory,
+    transferHistoryYear,
+    transferHistoryFromLab,
+    transferHistoryToLab,
+    transferHistoryDeviceType,
+  ]);
+
 
 
   // Handle click on destination cell — brush-style assignment
@@ -821,58 +896,7 @@ const Transfers: React.FC = () => {
         backgroundRepeat: "no-repeat",
       }}
     >
-      {/* Navbar */}
-      <div className="fixed top-3 right-6 z-50">
-        <Menu setActive={setActive}>
-          <MenuItem setActive={setActive} active={active} item="Asset Management">
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/assets">All Assets</HoveredLink>
-              <HoveredLink href="/ocr">Add Assets</HoveredLink>
-            </div>
-          </MenuItem>
-
-          <MenuItem setActive={setActive} active={active} item="Lab Management">
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/lab-plan">Lab Floor Plans</HoveredLink>
-              <HoveredLink href="/lab-layout">Lab Layout Designer</HoveredLink>
-              <HoveredLink href="/lab-configuration">Lab Configuration</HoveredLink>
-              {user?.role === "HOD" && (
-                <HoveredLink href="/assign-lab-incharge">Assign Lab Incharge</HoveredLink>
-              )}
-            </div>
-          </MenuItem>
-
-          <MenuItem setActive={setActive} active={active} item="Operations">
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/transfers">Transfers</HoveredLink>
-              <HoveredLink href="/scrap">Scrap</HoveredLink>
-              <HoveredLink href="/dashboard/issues">Issues</HoveredLink>
-              <HoveredLink href="/documents">Documents</HoveredLink>
-            </div>
-          </MenuItem>
-
-          <MenuItem setActive={setActive} active={active} item="Analytics">
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/reports">Reports</HoveredLink>
-              <HoveredLink href="/warranty-expiry">Warranty Expiry</HoveredLink>
-            </div>
-          </MenuItem>
-
-          <MenuItem setActive={setActive} active={active} item="Account">
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/settings">Settings</HoveredLink>
-              <button 
-                onClick={logout}
-                className="text-left text-neutral-600 hover:text-neutral-800 transition-colors"
-              >
-                Logout
-              </button>
-            </div>
-          </MenuItem>
-        </Menu>
-      </div>
-
-      <LogoButton />
+      <AppNavbar />
 
       <motion.div
         initial={{ opacity: 0, y: 20 }}
@@ -963,7 +987,7 @@ const Transfers: React.FC = () => {
                         <>
                     <div className="flex justify-between items-start mb-4">
                       <div>
-                        <div className="text-sm text-gray-400">
+                        <div className="text-xs text-gray-400">
                           Transfer Request #{transfer.transfer_id}
                           {transfer.transfer_type === 'station' && (
                             <span className="ml-2 text-xs bg-purple-600 text-white px-2 py-0.5 rounded">Entire Station</span>
@@ -972,7 +996,7 @@ const Transfers: React.FC = () => {
                         <div className="text-lg font-semibold text-white mt-1">
                           {transfer.from_lab_name} → {transfer.to_lab_name}
                         </div>
-                        <div className="text-sm text-gray-400 mt-1">
+                        <div className="text-xs text-gray-400 mt-1">
                           Requested by: {transfer.requested_by_name || transfer.requested_by || 'Unknown'} on {new Date(transfer.requested_at!).toLocaleString()}
                         </div>
                       </div>
@@ -1002,7 +1026,7 @@ const Transfers: React.FC = () => {
 
                     {devicesByDest.size > 0 && (
                       <div className="mb-3">
-                        <div className="text-sm text-gray-400 mb-2">Destination Cells:</div>
+                        <div className="text-xs text-gray-400 mb-2">Destination Cells:</div>
                         <div className="flex flex-wrap gap-2">
                           {[...devicesByDest.entries()].map(([cellId, devices]) => (
                             (() => {
@@ -1028,7 +1052,7 @@ const Transfers: React.FC = () => {
                     )}
 
                     <div className="mb-3">
-                      <div className="text-sm text-gray-400 mb-2">Devices to Transfer:</div>
+                      <div className="text-xs text-gray-400 mb-2">Devices to Transfer:</div>
                       <div className="bg-neutral-800/50 rounded p-3 space-y-1">
                         {transfer.devices?.map((device, idx) => (
                           (() => {
@@ -1037,14 +1061,14 @@ const Transfers: React.FC = () => {
                             const cellMeta = destCellId ? pendingDestCellMap[String(transfer.to_lab_id)]?.[destCellId] : undefined;
                             const cellLabel = destCellId ? (cellMeta ? `R${cellMeta.row},C${cellMeta.column}` : `Cell ${destCellId}`) : undefined;
                             return (
-                          <div key={device.device_id} className="text-sm text-white py-1 flex items-center gap-2">
+                          <div key={device.device_id} className="text-xs text-white py-1 flex items-center gap-2">
                             <span>{getDeviceEmoji(device.type_name)}</span>
                             <span>{idx + 1}. {device.type_name} - {device.brand} {device.model}</span>
                             {device.asset_id && <span className="text-gray-400">({device.asset_id})</span>}
                             {device.assigned_code && <span className="text-green-300 font-mono text-xs">[{device.assigned_code}]</span>}
                             {device.station_code && <span className="text-cyan-400 text-xs">@ {device.station_code}</span>}
                             {cellLabel && (
-                              <span className="text-[10px] bg-cyan-800/60 border border-cyan-500 text-cyan-100 px-1.5 py-0.5 rounded">
+                              <span className="text-[12px] bg-cyan-800/60 border border-cyan-500 text-cyan-100 px-1.5 py-0.5 rounded">
                                 → {cellLabel}
                               </span>
                             )}
@@ -1057,8 +1081,8 @@ const Transfers: React.FC = () => {
 
                     {transfer.remark && (
                       <div>
-                        <div className="text-sm text-gray-400">Remark:</div>
-                        <div className="text-white text-sm mt-1">{transfer.remark}</div>
+                        <div className="text-xs text-gray-400">Remark:</div>
+                        <div className="text-white text-xs mt-1">{transfer.remark}</div>
                       </div>
                     )}
                         </>
@@ -1076,7 +1100,7 @@ const Transfers: React.FC = () => {
           <div className="bg-neutral-800/95 rounded-2xl backdrop-blur-sm p-6">
             <div className="mb-6">
               <h2 className="text-2xl font-semibold text-white">Create Transfer Request</h2>
-              <p className="text-sm text-gray-400 mt-1">
+              <p className="text-xs text-gray-400 mt-1">
                 Select source lab, click stations to pick devices, then choose destination
               </p>
             </div>
@@ -1163,14 +1187,14 @@ const Transfers: React.FC = () => {
                           <div className="flex items-center justify-between mb-1">
                             <div className="flex items-center gap-2">
                               {isActiveBrush && (
-                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-cyan-600 text-white font-bold animate-pulse">BRUSH</span>
+                                <span className="text-[12px] px-1.5 py-0.5 rounded bg-cyan-600 text-white font-bold animate-pulse">BRUSH</span>
                               )}
                               {ti.type === 'station' ? (
                                 <span className="text-blue-300 text-xs font-semibold">
                                   🖥️ Station: {ti.stationCode} ({ti.devices.length} devices)
                                 </span>
                               ) : (
-                                <span className="text-white text-sm flex items-center gap-1">
+                                <span className="text-white text-xs flex items-center gap-1">
                                   {getDeviceEmoji(ti.devices[0].type_name)} {ti.devices[0].type_name} - {ti.devices[0].brand} {ti.devices[0].model}
                                   {ti.devices[0].assigned_code && <span className="text-green-300 font-mono text-xs">[{ti.devices[0].assigned_code}]</span>}
                                 </span>
@@ -1192,7 +1216,7 @@ const Transfers: React.FC = () => {
                                       return next;
                                     });
                                   }}
-                                  className="px-1.5 py-0.5 text-[10px] rounded bg-red-700 hover:bg-red-600 text-white"
+                                  className="px-1.5 py-0.5 text-[12px] rounded bg-red-700 hover:bg-red-600 text-white"
                                 >
                                   ✕
                                 </button>
@@ -1202,7 +1226,7 @@ const Transfers: React.FC = () => {
                                   e.stopPropagation();
                                   handleRemoveTransferItem(ti.id);
                                 }}
-                                className="text-red-400 hover:text-red-300 text-sm"
+                                className="text-red-400 hover:text-red-300 text-xs"
                               >
                                 Remove
                               </button>
@@ -1323,21 +1347,21 @@ const Transfers: React.FC = () => {
                                 title={`${cell.stationTypeLabel}\nAllowed: ${cell.allowedDeviceTypes.join(', ') || 'none'}\nFree: ${cell.freeForTypes.join(', ') || 'none'}\nOccupied: ${cell.currentDeviceTypes.join(', ') || 'none'}`}
                               >
                                 <div className="text-lg leading-none">{cell.icon || '⬜'}</div>
-                                <div className="text-white text-[9px] font-semibold truncate w-full text-center mt-0.5">{cell.stationTypeLabel || cell.stationTypeName}</div>
+                                <div className="text-white text-[12px] font-semibold truncate w-full text-center mt-0.5">{cell.stationTypeLabel || cell.stationTypeName}</div>
                                 {cell.stationLabel && (
-                                  <div className="text-gray-400 text-[8px] truncate w-full text-center">{cell.stationLabel}</div>
+                                  <div className="text-gray-400 text-[12px] truncate w-full text-center">{cell.stationLabel}</div>
                                 )}
                                 {hasDevices && (
                                   <div className="text-center w-full space-y-0.5 mt-0.5">
                                     {cell.currentDevices.map((d, i) => (
-                                      <div key={i} className="text-green-300 text-[8px] font-mono leading-tight truncate">
+                                      <div key={i} className="text-green-300 text-[12px] font-mono leading-tight truncate">
                                         {getDeviceEmoji(d.deviceType)} {d.prefixCode || d.deviceType}
                                       </div>
                                     ))}
                                   </div>
                                 )}
                                 {!isNonSelectable && hasFreeSlots && !hasDevices && (
-                                  <div className="text-cyan-300 text-[8px] mt-0.5">Free</div>
+                                  <div className="text-cyan-300 text-[12px] mt-0.5">Free</div>
                                 )}
                                 {isAssignedDest && (() => {
                                   const assignedItem = transferItems.find(ti =>
@@ -1348,17 +1372,17 @@ const Transfers: React.FC = () => {
                                     <div className="mt-0.5 w-full text-center space-y-0.5">
                                       {assignedItem.type === 'station' ? (
                                         <>
-                                          <div className="text-[8px] px-1 py-0.5 rounded bg-blue-700 text-white font-bold truncate">
+                                          <div className="text-[12px] px-1 py-0.5 rounded bg-blue-700 text-white font-bold truncate">
                                             ↙ {assignedItem.stationCode}
                                           </div>
                                           {assignedItem.devices.map(d => (
-                                            <div key={d.device_id} className="text-[7px] text-cyan-200 font-mono truncate">
+                                            <div key={d.device_id} className="text-[12px] text-cyan-200 font-mono truncate">
                                               {getDeviceEmoji(d.type_name)} {d.assigned_code || d.type_name}
                                             </div>
                                           ))}
                                         </>
                                       ) : (
-                                        <div className="text-[8px] px-1 py-0.5 rounded bg-blue-700 text-white font-mono truncate">
+                                        <div className="text-[12px] px-1 py-0.5 rounded bg-blue-700 text-white font-mono truncate">
                                           ↙ {assignedItem.devices[0].assigned_code || assignedItem.devices[0].type_name}
                                         </div>
                                       )}
@@ -1367,11 +1391,11 @@ const Transfers: React.FC = () => {
                                 })()}
                                 {pendingIncoming.length > 0 && (
                                   <div className="mt-0.5 w-full text-center">
-                                    <div className="text-[8px] px-1 py-0.5 rounded bg-orange-700 text-white font-semibold">
+                                    <div className="text-[12px] px-1 py-0.5 rounded bg-orange-700 text-white font-semibold">
                                       ⏳ {pendingIncoming.length} incoming
                                     </div>
                                     {pendingIncoming.slice(0, 3).map((pi, idx) => (
-                                      <div key={idx} className="text-[7px] text-orange-200 font-mono truncate">
+                                      <div key={idx} className="text-[12px] text-orange-200 font-mono truncate">
                                         {pi.device_type || 'device'}
                                       </div>
                                     ))}
@@ -1396,12 +1420,12 @@ const Transfers: React.FC = () => {
                     Destination Assignment Status
                   </h3>
                   {assignmentValidation.allOk ? (
-                    <div className="text-sm text-green-300">✓ All selected devices are assigned to valid destination stations.</div>
+                    <div className="text-xs text-green-300">✓ All selected devices are assigned to valid destination stations.</div>
                   ) : (
                     <div className="space-y-3">
                       {assignmentValidation.unassigned.length > 0 && (
                         <div className="rounded-lg p-3 border bg-yellow-900/30 border-yellow-600">
-                          <div className="text-yellow-300 text-sm font-semibold mb-1">Unassigned Devices</div>
+                          <div className="text-yellow-300 text-xs font-semibold mb-1">Unassigned Devices</div>
                           <div className="text-xs text-yellow-200">
                             {assignmentValidation.unassigned.map(d => `${d.type_name}${d.assigned_code ? ` (${d.assigned_code})` : ''}`).join(', ')}
                           </div>
@@ -1409,7 +1433,7 @@ const Transfers: React.FC = () => {
                       )}
                       {assignmentValidation.invalid.length > 0 && (
                         <div className="rounded-lg p-3 border bg-red-900/30 border-red-600">
-                          <div className="text-red-300 text-sm font-semibold mb-1">Invalid Assignments</div>
+                          <div className="text-red-300 text-xs font-semibold mb-1">Invalid Assignments</div>
                           <div className="space-y-1">
                             {assignmentValidation.invalid.map((x, idx) => (
                               <div key={idx} className="text-xs text-red-200">
@@ -1426,7 +1450,7 @@ const Transfers: React.FC = () => {
 
               {/* Capacity Error Banner */}
               {capacityError && (
-                <div className="bg-red-900/40 border border-red-500 rounded-lg p-4 text-red-200 text-sm">
+                <div className="bg-red-900/40 border border-red-500 rounded-lg p-4 text-red-200 text-xs">
                   ⚠️ {capacityError}
                 </div>
               )}
@@ -1455,9 +1479,9 @@ const Transfers: React.FC = () => {
                     </div>
 
                     <div className="mb-4 p-3 bg-neutral-700/50 rounded">
-                      <div className="text-gray-400 text-sm">Position: Row {selectedStation.row}, Column {selectedStation.column}</div>
-                      <div className="text-gray-400 text-sm">OS: {selectedStation.os}</div>
-                      <div className="text-gray-400 text-sm">Devices: {selectedStation.devices.length}</div>
+                      <div className="text-gray-400 text-xs">Position: Row {selectedStation.row}, Column {selectedStation.column}</div>
+                      <div className="text-gray-400 text-xs">OS: {selectedStation.os}</div>
+                      <div className="text-gray-400 text-xs">Devices: {selectedStation.devices.length}</div>
                     </div>
 
                     <div className="flex gap-3 mb-4">
@@ -1523,7 +1547,7 @@ const Transfers: React.FC = () => {
                               >
                                 <div>
                                   <div className="flex items-center justify-between">
-                                    <div className="text-white text-sm flex items-center gap-2">
+                                    <div className="text-white text-xs flex items-center gap-2">
                                       <span>{getDeviceEmoji(device.type_name)}</span>
                                       <span>{device.type_name} - {device.brand} {device.model}</span>
                                       {device.assigned_code && <span className="text-green-300 font-mono text-xs">[{device.assigned_code}]</span>}
@@ -1533,7 +1557,7 @@ const Transfers: React.FC = () => {
                                       )}
                                     </div>
                                     {isSelected && (
-                                      <span className="text-green-400 text-sm">✓ Selected</span>
+                                      <span className="text-green-400 text-xs">✓ Selected</span>
                                     )}
                                     {isPending && (
                                       <span className="text-orange-400 text-xs font-semibold">⏳ Pending Transfer</span>
@@ -1596,119 +1620,171 @@ const Transfers: React.FC = () => {
         )}
 
         {/* Transfer History */}
-        <div className="mt-10 bg-neutral-800/95 rounded-2xl backdrop-blur-sm p-6">
-          <div className="flex items-center justify-between mb-4">
+        <details className="mt-10 bg-neutral-800/95 rounded-2xl backdrop-blur-sm border border-neutral-700" open>
+          <summary className="cursor-pointer select-none px-6 py-4 flex items-center justify-between">
             <div>
               <h2 className="text-2xl font-semibold text-white">Transfer History</h2>
-              <p className="text-sm text-gray-400 mt-1">Approved and rejected transfer records</p>
+              <p className="text-xs text-gray-400 mt-1">Approved and rejected transfer records</p>
             </div>
-            <div className="flex gap-2">
-              <button
-                onClick={fetchTransferHistory}
-                className="text-xs px-3 py-1.5 rounded bg-neutral-600 hover:bg-neutral-500 text-white"
-              >
-                🔄 Refresh
-              </button>
-              <button
-                onClick={handleExportHistoryExcel}
-                className="text-xs px-3 py-1.5 rounded bg-green-600 hover:bg-green-700 text-white"
-              >
-                📥 Export Excel
-              </button>
-              <button
-                onClick={handleExportHistoryPdf}
-                className="text-xs px-3 py-1.5 rounded bg-red-600 hover:bg-red-700 text-white"
-              >
-                📄 Export PDF
-              </button>
-            </div>
-          </div>
+            <span className="text-xs text-gray-400">Click to expand/collapse</span>
+          </summary>
 
-          {loadingHistory ? (
-            <div className="text-center py-10 text-gray-400">Loading transfer history...</div>
-          ) : transferHistory.length === 0 ? (
-            <div className="text-center py-10 text-gray-400">No transfer history found</div>
-          ) : (
-            <div className="space-y-4">
-              {transferHistory.map((transfer) => (
-                <div
-                  key={transfer.transfer_id}
-                  className="bg-neutral-700/50 rounded-lg p-5 border border-neutral-600"
+          <div className="px-6 pb-6">
+            <div className="flex flex-wrap items-center gap-3 mb-4">
+              <div className="flex gap-2">
+                <button
+                  onClick={fetchTransferHistory}
+                  className="text-xs px-3 py-1.5 rounded bg-neutral-600 hover:bg-neutral-500 text-white"
                 >
-                  <div className="flex justify-between items-start mb-4">
-                    <div>
-                      <div className="text-sm text-gray-400">
-                        Transfer #{transfer.transfer_id}
-                        {transfer.transfer_type === 'station' && (
-                          <span className="ml-2 text-xs bg-purple-600 text-white px-2 py-0.5 rounded">Entire Station</span>
-                        )}
+                  🔄 Refresh
+                </button>
+                <button
+                  onClick={handleExportHistoryExcel}
+                  className="text-xs px-3 py-1.5 rounded bg-green-600 hover:bg-green-700 text-white"
+                >
+                  📥 Export Excel
+                </button>
+                <button
+                  onClick={handleExportHistoryPdf}
+                  className="text-xs px-3 py-1.5 rounded bg-red-600 hover:bg-red-700 text-white"
+                >
+                  📄 Export PDF
+                </button>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <select
+                  value={transferHistoryYear}
+                  onChange={(e) => setTransferHistoryYear(e.target.value)}
+                  className="bg-neutral-700 text-white text-xs px-3 py-1.5 rounded border border-neutral-600"
+                >
+                  <option value="">All Years</option>
+                  {transferHistoryYears.map((y) => (
+                    <option key={y} value={y}>{y}</option>
+                  ))}
+                </select>
+                <select
+                  value={transferHistoryDeviceType}
+                  onChange={(e) => setTransferHistoryDeviceType(e.target.value)}
+                  className="bg-neutral-700 text-white text-xs px-3 py-1.5 rounded border border-neutral-600"
+                >
+                  <option value="">All Device Types</option>
+                  {transferHistoryDeviceTypes.map((t) => (
+                    <option key={t} value={t}>{t}</option>
+                  ))}
+                </select>
+                <select
+                  value={transferHistoryFromLab}
+                  onChange={(e) => setTransferHistoryFromLab(e.target.value)}
+                  className="bg-neutral-700 text-white text-xs px-3 py-1.5 rounded border border-neutral-600"
+                >
+                  <option value="">From Lab (All)</option>
+                  {transferHistoryFromLabs.map((lab) => (
+                    <option key={lab} value={lab}>{lab}</option>
+                  ))}
+                </select>
+                <select
+                  value={transferHistoryToLab}
+                  onChange={(e) => setTransferHistoryToLab(e.target.value)}
+                  className="bg-neutral-700 text-white text-xs px-3 py-1.5 rounded border border-neutral-600"
+                >
+                  <option value="">To Lab (All)</option>
+                  {transferHistoryToLabs.map((lab) => (
+                    <option key={lab} value={lab}>{lab}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            {loadingHistory ? (
+              <div className="text-center py-10 text-gray-400">Loading transfer history...</div>
+            ) : filteredTransferHistory.length === 0 ? (
+              <div className="text-center py-10 text-gray-400">No transfer history found</div>
+            ) : (
+              <div className="space-y-4">
+                {filteredTransferHistory.map((transfer) => (
+                  <details
+                    key={transfer.transfer_id}
+                    className="bg-neutral-700/50 rounded-lg border border-neutral-600"
+                  >
+                    <summary className="cursor-pointer select-none px-5 py-4 flex items-center justify-between">
+                      <div>
+                        <div className="text-xs text-gray-400">
+                          Transfer #{transfer.transfer_id}
+                          {transfer.transfer_type === 'station' && (
+                            <span className="ml-2 text-xs bg-purple-600 text-white px-2 py-0.5 rounded">Entire Station</span>
+                          )}
+                        </div>
+                        <div className="text-lg font-semibold text-white mt-1">
+                          {transfer.from_lab_name} → {transfer.to_lab_name}
+                        </div>
+                        <div className="text-xs text-gray-400 mt-1">
+                          Requested by: {transfer.requested_by_name || transfer.requested_by || 'Unknown'}
+                          {transfer.requested_at && ` on ${new Date(transfer.requested_at).toLocaleString()}`}
+                        </div>
                       </div>
-                      <div className="text-lg font-semibold text-white mt-1">
-                        {transfer.from_lab_name} → {transfer.to_lab_name}
-                      </div>
-                      <div className="text-sm text-gray-400 mt-1">
-                        Requested by: {transfer.requested_by_name || transfer.requested_by || 'Unknown'}
-                        {transfer.requested_at && ` on ${new Date(transfer.requested_at).toLocaleString()}`}
-                      </div>
-                      <div className="text-sm text-gray-400">
+                      <span
+                        className={`text-xs px-3 py-1.5 rounded-lg font-semibold ${
+                          transfer.status === 'approved'
+                            ? 'bg-green-700/60 border border-green-500 text-green-200'
+                            : 'bg-red-700/60 border border-red-500 text-red-200'
+                        }`}
+                      >
+                        {transfer.status.toUpperCase()}
+                      </span>
+                    </summary>
+
+                    <div className="px-5 pb-5">
+                      <div className="text-xs text-gray-400 mb-2">
                         {transfer.approved_by || transfer.approved_by_name
                           ? `Processed by: ${transfer.approved_by_name || transfer.approved_by}`
                           : 'Processed by: —'}
                         {transfer.approved_at && ` on ${new Date(transfer.approved_at).toLocaleString()}`}
                       </div>
-                    </div>
-                    <span
-                      className={`text-xs px-3 py-1.5 rounded-lg font-semibold ${
-                        transfer.status === 'approved'
-                          ? 'bg-green-700/60 border border-green-500 text-green-200'
-                          : 'bg-red-700/60 border border-red-500 text-red-200'
-                      }`}
-                    >
-                      {transfer.status.toUpperCase()}
-                    </span>
-                  </div>
 
-                  <div className="mb-3">
-                    <div className="text-sm text-gray-400 mb-2">Devices:</div>
-                    <div className="bg-neutral-800/50 rounded p-3 space-y-1">
-                      {(transfer.devices || []).map((device) => {
-                        const destMap = (transfer.device_dest_map || {}) as Record<string, number>;
-                        const destCellId = destMap[String(device.device_id)];
-                        const cellMeta = destCellId ? historyDestCellMap[String(transfer.to_lab_id)]?.[destCellId] : undefined;
-                        const cellLabel = destCellId
-                          ? (cellMeta ? `R${cellMeta.row},C${cellMeta.column}` : `Cell ${destCellId}`)
-                          : '—';
+                      <div className="mb-3">
+                        <div className="text-xs text-gray-400 mb-2">Devices transferred:</div>
+                        <div className="bg-neutral-800/50 rounded p-3 space-y-1">
+                          {(transfer.devices || []).map((device) => {
+                            const destMap = (transfer.device_dest_map || {}) as Record<string, number>;
+                            const destCellId = destMap[String(device.device_id)];
+                            const cellMeta = destCellId ? historyDestCellMap[String(transfer.to_lab_id)]?.[destCellId] : undefined;
+                            const cellLabel = destCellId
+                              ? (cellMeta ? `R${cellMeta.row},C${cellMeta.column}` : `Cell ${destCellId}`)
+                              : '—';
 
-                        return (
-                          <div key={device.device_id} className="text-sm text-white py-1 flex items-center gap-2">
-                            <span>{getDeviceEmoji(device.type_name)}</span>
-                            <span>{device.type_name} - {device.brand} {device.model}</span>
-                            {device.asset_id && <span className="text-gray-400">({device.asset_id})</span>}
-                            {device.assigned_code && <span className="text-green-300 font-mono text-xs">[{device.assigned_code}]</span>}
-                            {device.station_code && <span className="text-cyan-400 text-xs">@ {device.station_code}</span>}
-                            <span className="text-[10px] bg-cyan-800/60 border border-cyan-500 text-cyan-100 px-1.5 py-0.5 rounded">
-                              → {cellLabel}
-                            </span>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
+                            return (
+                              <div key={device.device_id} className="text-xs text-white py-1 flex items-center gap-2">
+                                <span>{getDeviceEmoji(device.type_name)}</span>
+                                <span>{device.type_name} - {device.brand} {device.model}</span>
+                                {device.asset_id && <span className="text-gray-400">({device.asset_id})</span>}
+                                {device.assigned_code && <span className="text-green-300 font-mono text-xs">[{device.assigned_code}]</span>}
+                                {device.station_code && <span className="text-cyan-400 text-xs">@ {device.station_code}</span>}
+                                <span className="text-[12px] bg-cyan-800/60 border border-cyan-500 text-cyan-100 px-1.5 py-0.5 rounded">
+                                  → {cellLabel}
+                                </span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
 
-                  {transfer.remark && (
-                    <div>
-                      <div className="text-sm text-gray-400">Remark:</div>
-                      <div className="text-white text-sm mt-1">{transfer.remark}</div>
+                      {transfer.remark && (
+                        <div>
+                          <div className="text-xs text-gray-400">Remark:</div>
+                          <div className="text-white text-xs mt-1">{transfer.remark}</div>
+                        </div>
+                      )}
                     </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
+                  </details>
+                ))}
+              </div>
+            )}
+          </div>
+        </details>
       </motion.div>
     </div>
   );
 };
 
 export default Transfers;
+

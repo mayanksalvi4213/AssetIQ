@@ -26,7 +26,7 @@ export default function ForgotPassword() {
       <BackgroundGradient containerClassName="w-full max-w-md" className="rounded-3xl">
         <div className="shadow-input w-full rounded-3xl bg-neutral-900/70 backdrop-blur-md border border-white/15 p-6 md:p-10">
           <h2 className="text-2xl font-bold">Reset Password</h2>
-          <p className="mt-2 text-sm text-gray-300">Enter your email to receive reset instructions.</p>
+          <p className="mt-2 text-xs text-gray-300">Enter your email to receive reset instructions.</p>
 
           <form onSubmit={handleSubmit} className="mt-6">
             <LabelInputContainer className="mb-4">
@@ -47,7 +47,7 @@ export default function ForgotPassword() {
               Send Reset Link →
             </button>
 
-            <p className="mt-6 text-center text-sm text-gray-400">
+            <p className="mt-6 text-center text-xs text-gray-400">
               Remembered your password? {""}
               <Link to="/login" className="font-medium text-blue-400 hover:underline hover:text-blue-300">Back to Login</Link>
             </p>
@@ -65,5 +65,6 @@ const LabelInputContainer = ({
   children: React.ReactNode;
   className?: string;
 }) => <div className={cn("flex w-full flex-col space-y-2", className)}>{children}</div>;
+
 
 

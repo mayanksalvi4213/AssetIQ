@@ -1,9 +1,7 @@
 "use client";
 import React, { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { Menu, MenuItem, HoveredLink } from "@/components/ui/navbar-menu";
-import { LogoButton } from "@/components/ui/logo-button";
-import { useAuth } from "@/contexts/AuthContext";
+import AppNavbar from "@/components/AppNavbar";
 import { WobbleCard } from "@/components/ui/wobble-card";
 
 // ─── Types ───────────────────────────────────────────────────
@@ -163,14 +161,14 @@ const renderInsights = (text: string) => {
               key === "ACTION ITEMS" ? "md:col-span-2" : ""
             }`}
           >
-            <h3 className="text-sm font-semibold text-gray-200 mb-3 flex items-center gap-2">
+            <h3 className="text-xs font-semibold text-gray-200 mb-3 flex items-center gap-2">
               <span className="text-base">{icon}</span> {sec.heading}
             </h3>
             <ul className="space-y-2">
               {sec.lines.map((line, li) => {
                 const text = line.replace(/^[\d]+\.\s*/, "").replace(/^-\s*/, "");
                 return (
-                  <li key={li} className="flex gap-2 text-sm text-gray-400 leading-relaxed">
+                  <li key={li} className="flex gap-2 text-xs text-gray-400 leading-relaxed">
                     <span className="text-gray-600 mt-0.5 shrink-0">•</span>
                     <span>{bold(text)}</span>
                   </li>
@@ -201,9 +199,6 @@ const Section: React.FC<{ title: string; children: React.ReactNode; className?: 
 
 // ─── Main Component ──────────────────────────────────────────
 export default function ProactiveMaintenance() {
-  const [active, setActive] = useState<string | null>(null);
-  const { logout, user } = useAuth();
-
   const [data, setData] = useState<MaintenanceData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -336,54 +331,22 @@ export default function ProactiveMaintenance() {
         backgroundRepeat: "no-repeat",
       }}
     >
-      {/* Navbar */}
-      <div className="fixed top-3 right-6 z-50">
-        <Menu setActive={setActive}>
-          <MenuItem setActive={setActive} active={active} item="Asset Management">
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/assets">All Assets</HoveredLink>
-              <HoveredLink href="/ocr">Add Assets</HoveredLink>
-            </div>
-          </MenuItem>
-          <MenuItem setActive={setActive} active={active} item="Lab Management">
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/lab-plan">Lab Floor Plans</HoveredLink>
-              <HoveredLink href="/lab-layout">Lab Layout Designer</HoveredLink>
-              <HoveredLink href="/lab-configuration">Lab Configuration</HoveredLink>
-              {user?.role === "HOD" && (
-                <HoveredLink href="/assign-lab-incharge">Assign Lab Incharge</HoveredLink>
-              )}
-            </div>
-          </MenuItem>
-          <MenuItem setActive={setActive} active={active} item="Operations">
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/transfers">Transfers</HoveredLink>
-              <HoveredLink href="/dashboard/issues">Issues</HoveredLink>
-              <HoveredLink href="/documents">Documents</HoveredLink>
-            </div>
-          </MenuItem>
-          <MenuItem setActive={setActive} active={active} item="Analytics">
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/reports">Reports</HoveredLink>
-              <HoveredLink href="/warranty-expiry">Warranty Expiry</HoveredLink>
-            </div>
-          </MenuItem>
-          <MenuItem setActive={setActive} active={active} item="Account">
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/settings">Settings</HoveredLink>
-              <button onClick={logout} className="text-left text-neutral-600 hover:text-neutral-800 transition-colors">
-                Logout
-              </button>
-            </div>
-          </MenuItem>
-        </Menu>
+      <AppNavbar />
+
+      <div className="inline-block mt-16 mb-6">
+        <h1
+          className="text-3xl font-bold px-5 py-2 rounded-xl"
+          style={{
+            background:
+              "linear-gradient(135deg, rgba(10, 14, 25, 0.75) 0%,rgba(15, 23, 42, 0.80) 25%,rgba(8, 10, 15, 0.88) 50%,rgba(15, 23, 42, 0.80) 75%, rgba(20, 18, 16, 0.75) 100%",
+            color: "white",
+            boxShadow:
+              "0 4px 15px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.1)",
+          }}
+        >
+          🛡️ Proactive Maintenance
+        </h1>
       </div>
-
-      <LogoButton />
-
-      <h1 className="text-3xl font-bold mb-6 mt-16 text-gray-200">
-        🛡️ Proactive Maintenance
-      </h1>
 
       {/* Loading / Error */}
       {loading && (
@@ -414,7 +377,7 @@ export default function ProactiveMaintenance() {
               <WobbleCard key={card.label} containerClassName={card.color} className="p-4">
                 <div className="text-center">
                   <p className="text-3xl font-bold text-white">{card.value}</p>
-                  <p className="text-sm text-white/80 mt-1">{card.label}</p>
+                  <p className="text-xs text-white/80 mt-1">{card.label}</p>
                 </div>
               </WobbleCard>
             ))}
@@ -430,7 +393,7 @@ export default function ProactiveMaintenance() {
               <button
                 key={t.key}
                 onClick={() => setTab(t.key)}
-                className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+                className={`px-4 py-2 rounded-lg text-xs font-medium transition-all ${
                   tab === t.key
                     ? "bg-yellow-600 text-white shadow-lg shadow-yellow-600/30"
                     : "bg-neutral-800 text-gray-400 hover:bg-neutral-700 hover:text-gray-200"
@@ -446,14 +409,14 @@ export default function ProactiveMaintenance() {
             {tab === "risk" && (
               <motion.div key="risk" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-6">
                 <Section title="At-Risk Assets (Health Score ≤ 75)">
-                  <p className="text-gray-400 text-sm mb-4">
+                  <p className="text-gray-400 text-xs mb-4">
                     These devices have open issues, recent problems, or warranty concerns. Includes critical, high, and medium risk assets.
                   </p>
                   {data.high_risk_assets.length === 0 ? (
                     <div className="text-center py-12">
                       <p className="text-2xl mb-2">✅</p>
                       <p className="text-green-400 font-semibold">All assets are healthy!</p>
-                      <p className="text-gray-500 text-sm mt-1">No devices currently require urgent attention.</p>
+                      <p className="text-gray-500 text-xs mt-1">No devices currently require urgent attention.</p>
                     </div>
                   ) : (
                     <div className="space-y-3">
@@ -487,15 +450,15 @@ export default function ProactiveMaintenance() {
                               </div>
                               <div>
                                 <p className="text-xl font-bold text-white">{dev.issue_count}</p>
-                                <p className="text-[10px] text-gray-500 uppercase">Issues</p>
+                                <p className="text-[12px] text-gray-500 uppercase">Issues</p>
                               </div>
                               <div>
                                 <p className="text-xl font-bold text-red-400">{dev.open_issues}</p>
-                                <p className="text-[10px] text-gray-500 uppercase">Open</p>
+                                <p className="text-[12px] text-gray-500 uppercase">Open</p>
                               </div>
                               <div>
                                 <p className="text-xl font-bold text-orange-400">{dev.severe_issues}</p>
-                                <p className="text-[10px] text-gray-500 uppercase">Severe</p>
+                                <p className="text-[12px] text-gray-500 uppercase">Severe</p>
                               </div>
                             </div>
                           </div>
@@ -519,7 +482,7 @@ export default function ProactiveMaintenance() {
             {tab === "ai" && (
               <motion.div key="ai" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-6">
                 <Section title="AI-Powered Maintenance Analysis">
-                  <p className="text-gray-400 text-sm mb-4">
+                  <p className="text-gray-400 text-xs mb-4">
                     Get proactive maintenance recommendations from the local AI model by analyzing asset health,
                     warranty status, and issue patterns.
                   </p>
@@ -544,7 +507,7 @@ export default function ProactiveMaintenance() {
                   )}
 
                   {aiError && (
-                    <div className="bg-red-900/40 border border-red-700 rounded-lg p-4 text-red-300 text-sm">
+                    <div className="bg-red-900/40 border border-red-700 rounded-lg p-4 text-red-300 text-xs">
                       <p className="font-semibold mb-1">Could not load AI insights</p>
                       <p>{aiError}</p>
                       <button onClick={fetchAiInsights} className="mt-3 text-xs underline text-red-400 hover:text-red-300">
@@ -569,18 +532,18 @@ export default function ProactiveMaintenance() {
             {tab === "alerts" && (
               <motion.div key="alerts" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-6">
                 <Section title="Send Maintenance Alerts">
-                  <p className="text-gray-400 text-sm mb-6">
+                  <p className="text-gray-400 text-xs mb-6">
                     Automatically send alerts for all at-risk assets to <strong className="text-white">HOD</strong> and <strong className="text-white">Lab Incharge</strong> users.
                     No manual selection needed — all critical and high-risk assets are included.
                   </p>
 
                   {/* Recipients preview */}
                   <div className="rounded-xl border border-neutral-700/50 bg-neutral-800/50 p-5 mb-6">
-                    <h3 className="text-sm font-semibold text-gray-300 mb-3 flex items-center gap-2">
+                    <h3 className="text-xs font-semibold text-gray-300 mb-3 flex items-center gap-2">
                       <span>👥</span> Alert Recipients
                     </h3>
                     {recipientsLoading ? (
-                      <div className="flex items-center gap-2 text-gray-500 text-sm">
+                      <div className="flex items-center gap-2 text-gray-500 text-xs">
                         <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
                           <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
                           <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.4 0 0 5.4 0 12h4z" />
@@ -588,11 +551,11 @@ export default function ProactiveMaintenance() {
                         Loading recipients…
                       </div>
                     ) : recipients.length === 0 ? (
-                      <p className="text-gray-500 text-sm">No HOD or Lab Incharge users found in the system.</p>
+                      <p className="text-gray-500 text-xs">No HOD or Lab Incharge users found in the system.</p>
                     ) : (
                       <div className="space-y-2">
                         {recipients.map((r) => (
-                          <div key={r.id} className="flex items-center gap-3 text-sm">
+                          <div key={r.id} className="flex items-center gap-3 text-xs">
                             <div className={`w-2 h-2 rounded-full shrink-0 ${
                               r.role === "HOD" ? "bg-blue-500" : "bg-green-500"
                             }`} />
@@ -617,17 +580,17 @@ export default function ProactiveMaintenance() {
 
                   {/* Alert summary */}
                   <div className="rounded-xl border border-neutral-700/50 bg-neutral-800/50 p-5 mb-6">
-                    <h3 className="text-sm font-semibold text-gray-300 mb-3 flex items-center gap-2">
+                    <h3 className="text-xs font-semibold text-gray-300 mb-3 flex items-center gap-2">
                       <span>📋</span> Alert Contents
                     </h3>
                     {data.high_risk_assets.length === 0 ? (
                       <div className="text-center py-4">
                         <p className="text-green-400 font-semibold">✅ No at-risk assets to alert about!</p>
-                        <p className="text-gray-500 text-sm mt-1">All devices are in good health.</p>
+                        <p className="text-gray-500 text-xs mt-1">All devices are in good health.</p>
                       </div>
                     ) : (
                       <>
-                        <p className="text-gray-400 text-sm mb-3">
+                        <p className="text-gray-400 text-xs mb-3">
                           The alert will include <strong className="text-white">{data.high_risk_assets.length}</strong> at-risk asset{data.high_risk_assets.length !== 1 ? "s" : ""}:
                         </p>
                         <div className="flex flex-wrap gap-2 mb-2">
@@ -692,7 +655,7 @@ export default function ProactiveMaintenance() {
                     <motion.div
                       initial={{ opacity: 0, y: -10 }}
                       animate={{ opacity: 1, y: 0 }}
-                      className={`rounded-xl p-5 mt-4 text-sm ${
+                      className={`rounded-xl p-5 mt-4 text-xs ${
                         alertResult.success
                           ? "bg-green-900/40 border border-green-700 text-green-300"
                           : "bg-red-900/40 border border-red-700 text-red-300"
@@ -732,3 +695,4 @@ export default function ProactiveMaintenance() {
     </div>
   );
 }
+

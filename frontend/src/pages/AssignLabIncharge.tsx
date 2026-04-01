@@ -1,8 +1,7 @@
 "use client";
 import React, { useEffect, useMemo, useState } from "react";
 import { motion } from "motion/react";
-import { Menu, MenuItem, HoveredLink } from "@/components/ui/navbar-menu";
-import { LogoButton } from "@/components/ui/logo-button";
+import AppNavbar from "@/components/AppNavbar";
 import { Label } from "@/components/ui/label";
 import { useAuth } from "@/contexts/AuthContext";
 
@@ -20,8 +19,7 @@ interface LabIncharge {
 }
 
 export default function AssignLabIncharge() {
-  const { logout, user } = useAuth();
-  const [active, setActive] = useState<string | null>(null);
+  const { user } = useAuth();
   const [labs, setLabs] = useState<LabSummary[]>([]);
   const [incharges, setIncharges] = useState<LabIncharge[]>([]);
   const [selectedLabs, setSelectedLabs] = useState<Record<number, string>>({});
@@ -121,55 +119,7 @@ export default function AssignLabIncharge() {
         backgroundRepeat: "no-repeat",
       }}
     >
-      <div className="fixed top-2 inset-x-0 max-w-6xl mx-auto z-50 flex items-center justify-center px-4 py-2">
-        <Menu setActive={setActive}>
-          <MenuItem setActive={setActive} active={active} item="Asset Management">
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/assets">All Assets</HoveredLink>
-              <HoveredLink href="/ocr">Add Assets</HoveredLink>
-            </div>
-          </MenuItem>
-          <MenuItem setActive={setActive} active={active} item="Lab Management">
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/lab-plan">Lab Floor Plans</HoveredLink>
-              <HoveredLink href="/lab-layout">Lab Layout Designer</HoveredLink>
-              <HoveredLink href="/lab-configuration">Lab Configuration</HoveredLink>
-              {user?.role === "HOD" && (
-                <HoveredLink href="/assign-lab-incharge">Assign Lab Incharge</HoveredLink>
-              )}
-            </div>
-          </MenuItem>
-          <MenuItem setActive={setActive} active={active} item="Operations">
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/transfers">Transfers</HoveredLink>
-              <HoveredLink href="/scrap">Scrap</HoveredLink>
-              <HoveredLink href="/dashboard/issues">Issues</HoveredLink>
-              <HoveredLink href="/dashboard/documents">Documents</HoveredLink>
-            </div>
-          </MenuItem>
-          <MenuItem setActive={setActive} active={active} item="Analytics">
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/reports">Reports</HoveredLink>
-              <HoveredLink href="/warranty-expiry">Warranty Expiry</HoveredLink>
-            </div>
-          </MenuItem>
-          <MenuItem setActive={setActive} active={active} item="Account">
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/settings">Settings</HoveredLink>
-              <button
-                onClick={logout}
-                className="text-left text-neutral-600 hover:text-neutral-800 transition-colors"
-              >
-                Logout
-              </button>
-            </div>
-          </MenuItem>
-        </Menu>
-      </div>
-
-      <div className="fixed top-4 left-4 z-50">
-        <LogoButton />
-      </div>
+      <AppNavbar />
 
       <div className="flex items-start justify-center pt-24 px-4 pb-12">
         <div
@@ -219,7 +169,7 @@ export default function AssignLabIncharge() {
                         <div className="text-white font-semibold text-lg">
                           {incharge.first_name} {incharge.last_name}
                         </div>
-                        <div className="text-gray-400 text-sm">{incharge.email}</div>
+                        <div className="text-gray-400 text-xs">{incharge.email}</div>
                         <div className="text-gray-500 text-xs mt-1">
                           Assigned Lab: {incharge.assigned_lab || "Unassigned"}
                         </div>
@@ -227,7 +177,7 @@ export default function AssignLabIncharge() {
 
                       <div className="flex flex-col sm:flex-row sm:items-end gap-3">
                         <div>
-                          <Label className="text-gray-300 text-sm">Assign Lab</Label>
+                          <Label className="text-gray-300 text-xs">Assign Lab</Label>
                           <select
                             value={selectedLabs[incharge.id] || ""}
                             onChange={(e) =>
@@ -249,7 +199,7 @@ export default function AssignLabIncharge() {
                         <button
                           onClick={() => assignLab(incharge.id)}
                           disabled={isSaving[incharge.id] || !selectedLabs[incharge.id]}
-                          className="px-4 py-2 bg-cyan-600 hover:bg-cyan-700 text-white rounded-lg transition text-sm disabled:opacity-50"
+                          className="px-4 py-2 bg-cyan-600 hover:bg-cyan-700 text-white rounded-lg transition text-xs disabled:opacity-50"
                         >
                           {isSaving[incharge.id] ? "Assigning…" : "Assign Lab"}
                         </button>
@@ -265,3 +215,4 @@ export default function AssignLabIncharge() {
     </div>
   );
 }
+

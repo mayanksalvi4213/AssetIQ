@@ -19,9 +19,10 @@ import threading
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from dotenv import load_dotenv
-from io import BytesIO
+from io import BytesIO, StringIO
+import csv
 from reportlab.lib import colors
-from reportlab.lib.pagesizes import letter, A4
+from reportlab.lib.pagesizes import letter, A4, landscape
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image as RLImage
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
@@ -1165,32 +1166,7 @@ def save_devices():
         
         cursor = conn.cursor()
         
-        # IMPORTANT: Check and fix dept column type if needed
-        try:
-            cursor.execute("""
-                SELECT data_type, character_maximum_length 
-                FROM information_schema.columns 
-                WHERE table_name = 'devices' AND column_name = 'dept'
-            """)
-            column_info = cursor.fetchone()
-            if column_info:
-                data_type = column_info['data_type']
-                max_length = column_info['character_maximum_length']
-                print(f"dept column type: {data_type}, max_length: {max_length}")
-                
-                # If it's char with length 1 or too small, we need to alter it
-                if (data_type == 'character' and max_length == 1):
-                    print("⚠️  WARNING: dept column is 'char(1)' - this will truncate values!")
-                    print("🔧 Attempting to alter column to varchar(50)...")
-                    try:
-                        cursor.execute("ALTER TABLE devices ALTER COLUMN dept TYPE varchar(50)")
-                        conn.commit()
-                        print("✅ Successfully altered dept column to varchar(50)")
-                    except Exception as alter_error:
-                        print(f"❌ Failed to alter column: {alter_error}")
-                        conn.rollback()
-        except Exception as check_error:
-            print(f"Could not check column type: {check_error}")
+        # NOTE: Schema migrations removed from runtime (assumed already applied).
         
         # Fetch bill_id and bill_date from bills table
         cursor.execute(
@@ -2302,6 +2278,18 @@ def export_lab_station_pdf(lab_id):
         doc = SimpleDocTemplate(pdf_buffer, pagesize=A4, topMargin=0.5*inch)
         elements = []
         styles = getSampleStyleSheet()
+        cell_style = ParagraphStyle(
+            'TransferCell',
+            parent=styles['Normal'],
+            fontSize=7,
+            leading=9
+        )
+        cell_style = ParagraphStyle(
+            'TransferCell',
+            parent=styles['Normal'],
+            fontSize=7,
+            leading=9
+        )
         
         # Add header image if exists
         header_path = os.path.join(os.path.dirname(__file__), 'header.png')
@@ -3292,6 +3280,7 @@ def get_deadstock_register():
             deadstock_entries.append({
                 "srNo": str(sr_no),
                 "labName": row['lab_name'],
+                "status": "Active",
                 "stationCode": row['assigned_code'],
                 "itemDescription": item_description,
                 "deviceCount": 1,
@@ -3348,11 +3337,44 @@ def get_deadstock_register():
             WHERE lsd.device_id IS NULL
               AND (d.assigned_code IS NULL OR d.assigned_code = '')
               AND d.lab_id IS NULL
+                            AND NOT EXISTS (
+                                    SELECT 1 FROM scrapped_devices sd WHERE sd.device_id = d.device_id
+                            )
             ORDER BY b.bill_date DESC, d.device_id
         """
 
         cursor.execute(unassigned_query)
         unassigned_rows = cursor.fetchall()
+
+        scrapped_query = """
+            SELECT
+                sd.device_id,
+                sd.device_type,
+                sd.brand,
+                sd.model,
+                sd.specification,
+                sd.asset_code,
+                sd.station_code,
+                sd.lab_name,
+                sd.cost,
+                sd.scrapped_at,
+                d.warranty_years,
+                d.purchase_date,
+                d.dept,
+                d.assigned_code,
+                b.vendor_name,
+                b.gstin,
+                b.bill_date,
+                b.stock_entry,
+                COALESCE(b.invoice_number, d.invoice_number) AS invoice_number
+            FROM scrapped_devices sd
+            LEFT JOIN devices d ON sd.device_id = d.device_id
+            LEFT JOIN bills b ON d.bill_id = b.bill_id
+            ORDER BY sd.scrapped_at DESC NULLS LAST, sd.device_id
+        """
+
+        cursor.execute(scrapped_query)
+        scrapped_rows = cursor.fetchall()
         cursor.close()
         conn.close()
 
@@ -3371,6 +3393,7 @@ def get_deadstock_register():
             deadstock_entries.append({
                 "srNo": str(sr_no),
                 "labName": "Unassigned",
+                "status": "Unassigned",
                 "stationCode": "UNASSIGNED",
                 "itemDescription": item_description,
                 "deviceCount": 1,
@@ -3396,6 +3419,50 @@ def get_deadstock_register():
                 "specification": row['specification'] or "",
                 "assetCode": row['asset_code'] or "",
                 "unitPrice": unit_price
+            })
+            sr_no += 1
+
+        for row in scrapped_rows:
+            device_type = row['device_type'] or "Unknown"
+            desc_parts = [device_type]
+            if row['brand']:
+                desc_parts.append(row['brand'])
+            if row['model']:
+                desc_parts.append(row['model'])
+            item_description = " ".join(desc_parts)
+
+            cost_value = float(row['cost']) if row.get('cost') is not None else 0
+            purchase_date = row['purchase_date'].strftime("%d/%m/%Y") if row.get('purchase_date') else ""
+
+            deadstock_entries.append({
+                "srNo": str(sr_no),
+                "labName": row.get('lab_name') or "Unknown",
+                "status": "Scrapped",
+                "stationCode": row.get('station_code') or "SCRAPPED",
+                "itemDescription": item_description,
+                "deviceCount": 1,
+                "devices": [],
+                "supplierInfo": row.get('vendor_name') or "",
+                "orderNo": row.get('gstin') or "",
+                "billNo": row.get('invoice_number') or "",
+                "billDate": row.get('bill_date').strftime("%d/%m/%Y") if row.get('bill_date') else "",
+                "centralStore": row.get('stock_entry') or "",
+                "quantity": "01",
+                "ratePerUnit": f"{cost_value:.2f}/-",
+                "cost": f"{cost_value:.2f}/-",
+                "dateOfDelivery": purchase_date,
+                "dateOfInstallation": purchase_date,
+                "identityNo": row.get('asset_code') or "",
+                "assignedCode": row.get('assigned_code') or "",
+                "remark": row.get('dept') or "",
+                "signOfLabInCharge": "",
+                "warrantyYears": row.get('warranty_years') or 0,
+                "deviceType": device_type,
+                "brand": row.get('brand') or "",
+                "model": row.get('model') or "",
+                "specification": row.get('specification') or "",
+                "assetCode": row.get('asset_code') or "",
+                "unitPrice": cost_value,
             })
             sr_no += 1
         
@@ -4308,7 +4375,7 @@ def resolve_transfer_dest_cell(cursor, lab_id, cell_id):
 
     cursor.execute("""
         SELECT lc.row_number, lc.column_number,
-               COALESCE(lc.station_label, st.name, 'Station') AS label
+               COALESCE(lc.label, st.name, 'Station') AS label
         FROM lab_layout_cells lc
         JOIN station_types st ON lc.station_type_id = st.station_type_id
         JOIN labs l ON lc.layout_id = l.layout_id
@@ -4397,13 +4464,15 @@ def export_transfer_history_excel():
             """)
 
         rows = cursor.fetchall()
-        lines = []
         header = [
             "Transfer ID", "Status", "From Lab", "To Lab", "Requested By", "Requested At",
             "Approved By", "Approved At", "Transfer Type", "Device Type", "Brand", "Model",
             "Asset Code", "Assigned Code", "Station Code", "Dest Cell", "Dest Position", "Remark"
         ]
-        lines.append(",".join(header))
+        csv_text = StringIO()
+        csv_text.write("\ufeff")
+        writer = csv.writer(csv_text, quoting=csv.QUOTE_ALL)
+        writer.writerow(header)
 
         for row in rows:
             device_ids = json.loads(row['device_ids']) if isinstance(row['device_ids'], str) else row['device_ids']
@@ -4456,12 +4525,10 @@ def export_transfer_history_excel():
                     pos or dest_label,
                     (row['remark'] or "").replace("\n", " ").replace("\r", " ")
                 ]
-                safe_line = [str(v).replace('"', '""') for v in line]
-                lines.append(",".join([f'"{v}"' for v in safe_line]))
+                writer.writerow(line)
 
-        csv_data = "\n".join(lines)
         output = BytesIO()
-        output.write(csv_data.encode('utf-8'))
+        output.write(csv_text.getvalue().encode('utf-8'))
         output.seek(0)
 
         cursor.close()
@@ -4547,15 +4614,50 @@ def export_transfer_history_pdf():
         rows = cursor.fetchall()
 
         buffer = BytesIO()
-        doc = SimpleDocTemplate(buffer, pagesize=A4)
+        doc = SimpleDocTemplate(
+            buffer,
+            pagesize=landscape(A4),
+            topMargin=0.45 * inch,
+            bottomMargin=0.45 * inch,
+            leftMargin=0.55 * inch,
+            rightMargin=0.55 * inch,
+        )
         styles = getSampleStyleSheet()
+        cell_style = ParagraphStyle(
+            'TransferCell',
+            parent=styles['Normal'],
+            fontSize=9,
+            leading=12,
+            wordWrap='CJK'
+        )
         elems = []
 
+        header_candidates = [
+            os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'frontend', 'public', 'header.png')),
+            os.path.join(os.path.dirname(__file__), 'header.png')
+        ]
+        for header_path in header_candidates:
+            if os.path.exists(header_path):
+                header_img = Image.open(header_path)
+                img_w, img_h = header_img.size
+                target_w = doc.width
+                target_h = (img_h / img_w) * target_w
+                max_header_h = 1.1 * inch
+                if target_h > max_header_h:
+                    scale = max_header_h / target_h
+                    target_w = target_w * scale
+                    target_h = max_header_h
+                elems.append(RLImage(header_path, width=target_w, height=target_h))
+                elems.append(Spacer(1, 0.18 * inch))
+                break
+
         elems.append(Paragraph("Transfer History", styles['Title']))
-        elems.append(Spacer(1, 0.2 * inch))
+        elems.append(Paragraph(f"Generated on: {datetime.now().strftime('%Y-%m-%d')}", styles['Normal']))
+        elems.append(Spacer(1, 0.18 * inch))
 
         table_data = [[
-            "Transfer", "From", "To", "Status", "Requested", "Approved", "Device", "Destination"
+            "Transfer", "From", "To", "Status", "Requested", "Approved",
+            "Device", "Asset Code", "Destination"
         ]]
 
         for row in rows:
@@ -4566,6 +4668,7 @@ def export_transfer_history_pdf():
                     et.name as type_name,
                     d.brand,
                     d.model,
+                    d.asset_code as asset_id,
                     d.assigned_code
                 FROM devices d
                 LEFT JOIN equipment_types et ON d.type_id = et.type_id
@@ -4586,26 +4689,41 @@ def export_transfer_history_pdf():
 
                 device_text = f"{dev['type_name']} {dev['brand'] or ''} {dev['model'] or ''}"
                 table_data.append([
-                    f"#{row['transfer_id']}",
-                    row['from_lab_name'] or row['from_lab_id'],
-                    row['to_lab_name'] or row['to_lab_id'],
-                    row['status'],
-                    row['requested_at'].strftime('%Y-%m-%d') if row['requested_at'] else '',
-                    row['approved_at'].strftime('%Y-%m-%d') if row['approved_at'] else '',
-                    device_text.strip(),
-                    dest_text.strip()
+                    Paragraph(f"#{row['transfer_id']}", cell_style),
+                    Paragraph(row['from_lab_name'] or row['from_lab_id'] or "", cell_style),
+                    Paragraph(row['to_lab_name'] or row['to_lab_id'] or "", cell_style),
+                    Paragraph(row['status'], cell_style),
+                    Paragraph(row['requested_at'].strftime('%Y-%m-%d') if row['requested_at'] else '', cell_style),
+                    Paragraph(row['approved_at'].strftime('%Y-%m-%d') if row['approved_at'] else '', cell_style),
+                    Paragraph(device_text.strip(), cell_style),
+                    Paragraph(dev['asset_id'] or "", cell_style),
+                    Paragraph(dest_text.strip(), cell_style)
                 ])
 
-        table = Table(table_data, repeatRows=1)
+        table = Table(
+            table_data,
+            repeatRows=1,
+            colWidths=[
+                0.75 * inch, 1.3 * inch, 1.3 * inch, 0.75 * inch, 0.9 * inch,
+                0.9 * inch, 1.9 * inch, 1.05 * inch, 1.55 * inch
+            ]
+        )
+        table.hAlign = 'CENTER'
         table.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#4B5563')),
             ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
             ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+            ('ALIGN', (3, 1), (5, -1), 'CENTER'),
             ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, 0), 9),
-            ('FONTSIZE', (0, 1), (-1, -1), 8),
+            ('FONTSIZE', (0, 0), (-1, 0), 10),
+            ('FONTSIZE', (0, 1), (-1, -1), 9),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.whitesmoke, colors.lightgrey]),
             ('GRID', (0, 0), (-1, -1), 0.25, colors.grey),
             ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('LEFTPADDING', (0, 0), (-1, -1), 5),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 5),
+            ('TOPPADDING', (0, 0), (-1, -1), 6),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
         ]))
 
         elems.append(table)
@@ -7017,119 +7135,17 @@ print("[Scheduler] APScheduler started — daily warranty check at 08:00 IST")
 # Scrap Devices + Scrap Register
 # -----------------------------
 def _ensure_scrapped_devices_table(cursor):
-    # Create table if missing (fresh DB)
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS scrapped_devices (
-            scrap_id UUID PRIMARY KEY,
-            device_id INTEGER,
-            asset_code TEXT,
-            device_type TEXT,
-            brand TEXT,
-            model TEXT,
-            specification TEXT,
-            lab_id TEXT,
-            station_code TEXT,
-            scrapped_by TEXT,
-            scrapped_by_user_id INTEGER,
-            scrapped_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
-        )
-        """
-    )
-
-    # Backward-compatible auto-migration for older schemas
-    # (If table exists but is missing some columns, add them.)
-    cursor.execute("ALTER TABLE scrapped_devices ADD COLUMN IF NOT EXISTS scrap_id UUID")
-    cursor.execute("ALTER TABLE scrapped_devices ADD COLUMN IF NOT EXISTS device_id INTEGER")
-    cursor.execute("ALTER TABLE scrapped_devices ADD COLUMN IF NOT EXISTS asset_code TEXT")
-    cursor.execute("ALTER TABLE scrapped_devices ADD COLUMN IF NOT EXISTS device_type TEXT")
-    cursor.execute("ALTER TABLE scrapped_devices ADD COLUMN IF NOT EXISTS brand TEXT")
-    cursor.execute("ALTER TABLE scrapped_devices ADD COLUMN IF NOT EXISTS model TEXT")
-    cursor.execute("ALTER TABLE scrapped_devices ADD COLUMN IF NOT EXISTS specification TEXT")
-    cursor.execute("ALTER TABLE scrapped_devices ADD COLUMN IF NOT EXISTS lab_id TEXT")
-    cursor.execute("ALTER TABLE scrapped_devices ADD COLUMN IF NOT EXISTS lab_name TEXT")
-    cursor.execute("ALTER TABLE scrapped_devices ADD COLUMN IF NOT EXISTS station_code TEXT")
-    # Older deployments may have scrapped_by as INTEGER. Keep that column as-is and
-    # store human-readable user/email in a separate text column.
-    cursor.execute("ALTER TABLE scrapped_devices ADD COLUMN IF NOT EXISTS scrapped_by_text TEXT")
-    cursor.execute("ALTER TABLE scrapped_devices ADD COLUMN IF NOT EXISTS scrapped_by_user_id INTEGER")
-    cursor.execute(
-        "ALTER TABLE scrapped_devices ADD COLUMN IF NOT EXISTS scrapped_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP"
-    )
-    cursor.execute("ALTER TABLE scrapped_devices ADD COLUMN IF NOT EXISTS dead_stock_number TEXT")
-    cursor.execute("ALTER TABLE scrapped_devices ADD COLUMN IF NOT EXISTS cost NUMERIC")
-    cursor.execute("ALTER TABLE scrapped_devices ADD COLUMN IF NOT EXISTS justification_for_scrapping TEXT")
-    cursor.execute("ALTER TABLE scrapped_devices ADD COLUMN IF NOT EXISTS approval_of_hod TEXT")
-
-    # NOTE: Do not attempt to coerce legacy columns (like scrapped_by INTEGER) here,
-    # because we want to remain compatible with existing data and constraints.
-
-    # Ensure a primary key exists (if possible)
-    cursor.execute(
-        """
-        DO $$
-        BEGIN
-            IF NOT EXISTS (
-                SELECT 1 FROM information_schema.table_constraints
-                WHERE table_name = 'scrapped_devices'
-                  AND constraint_type = 'PRIMARY KEY'
-            ) THEN
-                -- If the table existed without a PK, try to set one on scrap_id.
-                -- Note: this assumes existing rows may have NULL scrap_id; PK will still be valid for new inserts.
-                ALTER TABLE scrapped_devices ADD PRIMARY KEY (scrap_id);
-            END IF;
-        EXCEPTION WHEN others THEN
-            -- Ignore if we cannot add a primary key due to existing duplicates/nulls.
-            NULL;
-        END $$;
-        """
-    )
-    cursor.execute(
-        "CREATE INDEX IF NOT EXISTS idx_scrapped_devices_device_id ON scrapped_devices(device_id)"
-    )
-    cursor.execute(
-        "CREATE INDEX IF NOT EXISTS idx_scrapped_devices_scrapped_at ON scrapped_devices(scrapped_at DESC)"
-    )
+    # Schema migrations removed from runtime (assumed already applied).
+    return None
 
 
 def _ensure_scrap_requests_table(cursor):
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS scrap_requests (
-            scrap_request_id SERIAL PRIMARY KEY,
-            device_ids JSONB NOT NULL,
-            lab_id TEXT,
-            status TEXT DEFAULT 'pending',
-            remark TEXT,
-            requested_by TEXT,
-            requested_by_user_id INTEGER,
-            requested_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-            approved_by TEXT,
-            approved_at TIMESTAMPTZ
-        )
-        """
-    )
-    cursor.execute("ALTER TABLE scrap_requests ADD COLUMN IF NOT EXISTS device_ids JSONB")
-    cursor.execute("ALTER TABLE scrap_requests ADD COLUMN IF NOT EXISTS lab_id TEXT")
-    cursor.execute("ALTER TABLE scrap_requests ADD COLUMN IF NOT EXISTS status TEXT")
-    cursor.execute("ALTER TABLE scrap_requests ADD COLUMN IF NOT EXISTS remark TEXT")
-    cursor.execute("ALTER TABLE scrap_requests ADD COLUMN IF NOT EXISTS requested_by TEXT")
-    cursor.execute("ALTER TABLE scrap_requests ADD COLUMN IF NOT EXISTS requested_by_user_id INTEGER")
-    cursor.execute("ALTER TABLE scrap_requests ADD COLUMN IF NOT EXISTS requested_at TIMESTAMPTZ")
-    cursor.execute("ALTER TABLE scrap_requests ADD COLUMN IF NOT EXISTS approved_by TEXT")
-    cursor.execute("ALTER TABLE scrap_requests ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ")
-    cursor.execute(
-        "CREATE INDEX IF NOT EXISTS idx_scrap_requests_status ON scrap_requests(status)"
-    )
-    cursor.execute(
-        "CREATE INDEX IF NOT EXISTS idx_scrap_requests_requested_at ON scrap_requests(requested_at DESC)"
-    )
+    # Schema migrations removed from runtime (assumed already applied).
+    return None
 
 
 def _scrap_devices_by_ids(cursor, conn, device_ids, user, justification=None):
-    # Ensure schema exists and COMMIT DDL before DML.
-    _ensure_scrapped_devices_table(cursor)
-    conn.commit()
+    # Schema migrations removed from runtime (assumed already applied).
 
     cursor.execute(
         """
@@ -7143,6 +7159,7 @@ def _scrap_devices_by_ids(cursor, conn, device_ids, user, justification=None):
             lsd.brand,
             lsd.model,
             lsd.specification,
+            lsd.station_id,
             ls.lab_id AS station_lab_id,
             ls.assigned_code AS station_code,
             d.unit_price
@@ -7169,19 +7186,23 @@ def _scrap_devices_by_ids(cursor, conn, device_ids, user, justification=None):
     inserted = 0
     for did in device_ids:
         info = by_id.get(did, {})
+        scrap_id_value = info.get("asset_code")
+        cost_value = info.get("unit_price") if info.get("unit_price") is not None else 0
         cursor.execute(
             """
-            INSERT INTO scrapped_devices
-              (scrap_id, device_id, asset_code, device_type, brand, model, specification,
-               lab_id, lab_name, station_code, scrapped_by_text, scrapped_by_user_id,
-               dead_stock_number, cost, justification_for_scrapping, approval_of_hod)
-            VALUES
-              (%s, %s, %s, %s, %s, %s, %s,
-               %s, %s, %s, %s, %s,
-               %s, %s, %s, %s)
+                        INSERT INTO scrapped_devices
+                            (scrap_id, device_id, asset_code, device_type, brand, model, specification,
+                             lab_id, lab_name, station_id, station_code,
+                             scrapped_by, scrapped_by_text, scrapped_by_user_id,
+                             dead_stock_number, cost, justification_for_scrapping, reason, notes)
+                        VALUES
+                            (%s, %s, %s, %s, %s, %s, %s,
+                             %s, %s, %s, %s,
+                             %s, %s, %s,
+                             %s, %s, %s, %s, %s)
             """,
             (
-                str(uuid.uuid4()),
+                scrap_id_value,
                 did,
                 info.get("asset_code"),
                 info.get("device_type"),
@@ -7190,13 +7211,16 @@ def _scrap_devices_by_ids(cursor, conn, device_ids, user, justification=None):
                 info.get("specification"),
                 info.get("station_lab_id") or info.get("device_lab_id"),
                 info.get("lab_name"),
+                                info.get("station_id"),
                 info.get("station_code"),
+                                scrapped_by_user_id,
                 scrapped_by_text,
                 scrapped_by_user_id,
                 info.get("asset_code"),
-                info.get("unit_price"),
+                cost_value,
                 justification,
-                None,
+                                justification,
+                                None,
             ),
         )
         inserted += 1
@@ -7432,9 +7456,12 @@ def get_pending_scrap_requests():
                 cursor.execute(
                     """
                     SELECT d.device_id, et.name AS type_name, d.brand, d.model,
-                           d.asset_code AS asset_id, d.assigned_code
+                           d.asset_code AS asset_id, d.assigned_code,
+                           d.bill_id, d.invoice_number,
+                           b.vendor_name, b.bill_date
                     FROM devices d
                     LEFT JOIN equipment_types et ON d.type_id = et.type_id
+                    LEFT JOIN bills b ON d.bill_id = b.bill_id
                     WHERE d.device_id = ANY(%s)
                     """,
                     (device_ids,),
@@ -7583,56 +7610,28 @@ def get_scrap_request_history():
         _ensure_scrap_requests_table(cursor)
         conn.commit()
 
-        if getattr(user, "role", None) == "HOD":
-            cursor.execute(
-                """
-                SELECT
-                    sr.scrap_request_id,
-                    sr.device_ids,
-                    sr.lab_id,
-                    l.lab_name,
-                    sr.status,
-                    sr.remark,
-                    sr.requested_by,
-                    TRIM(CONCAT_WS(' ', u_req.first_name, u_req.last_name)) AS requested_by_name,
-                    sr.requested_at,
-                    sr.approved_by,
-                    TRIM(CONCAT_WS(' ', u_app.first_name, u_app.last_name)) AS approved_by_name,
-                    sr.approved_at
-                FROM scrap_requests sr
-                LEFT JOIN labs l ON sr.lab_id = l.lab_id
-                LEFT JOIN users u_req ON sr.requested_by = u_req.email
-                LEFT JOIN users u_app ON sr.approved_by = u_app.email
-                WHERE sr.status <> 'pending'
-                ORDER BY COALESCE(sr.approved_at, sr.requested_at) DESC
-                """
-            )
-        else:
-            requester = (getattr(user, "email", None) or f"user:{getattr(user, 'id', None)}")
-            cursor.execute(
-                """
-                SELECT
-                    sr.scrap_request_id,
-                    sr.device_ids,
-                    sr.lab_id,
-                    l.lab_name,
-                    sr.status,
-                    sr.remark,
-                    sr.requested_by,
-                    TRIM(CONCAT_WS(' ', u_req.first_name, u_req.last_name)) AS requested_by_name,
-                    sr.requested_at,
-                    sr.approved_by,
-                    TRIM(CONCAT_WS(' ', u_app.first_name, u_app.last_name)) AS approved_by_name,
-                    sr.approved_at
-                FROM scrap_requests sr
-                LEFT JOIN labs l ON sr.lab_id = l.lab_id
-                LEFT JOIN users u_req ON sr.requested_by = u_req.email
-                LEFT JOIN users u_app ON sr.approved_by = u_app.email
-                WHERE sr.requested_by = %s
-                ORDER BY COALESCE(sr.approved_at, sr.requested_at) DESC
-                """,
-                (requester,),
-            )
+        cursor.execute(
+            """
+            SELECT
+                sr.scrap_request_id,
+                sr.device_ids,
+                sr.lab_id,
+                l.lab_name,
+                sr.status,
+                sr.remark,
+                sr.requested_by,
+                TRIM(CONCAT_WS(' ', u_req.first_name, u_req.last_name)) AS requested_by_name,
+                sr.requested_at,
+                sr.approved_by,
+                TRIM(CONCAT_WS(' ', u_app.first_name, u_app.last_name)) AS approved_by_name,
+                sr.approved_at
+            FROM scrap_requests sr
+            LEFT JOIN labs l ON sr.lab_id = l.lab_id
+            LEFT JOIN users u_req ON sr.requested_by = u_req.email
+            LEFT JOIN users u_app ON sr.approved_by = u_app.email
+            ORDER BY COALESCE(sr.approved_at, sr.requested_at) DESC
+            """
+        )
 
         history = []
         for row in cursor.fetchall():
@@ -7640,9 +7639,12 @@ def get_scrap_request_history():
             cursor.execute(
                 """
                 SELECT d.device_id, et.name AS type_name, d.brand, d.model,
-                       d.asset_code AS asset_id, d.assigned_code
+                       d.asset_code AS asset_id, d.assigned_code,
+                       d.bill_id, d.invoice_number,
+                       b.vendor_name, b.bill_date
                 FROM devices d
                 LEFT JOIN equipment_types et ON d.type_id = et.type_id
+                LEFT JOIN bills b ON d.bill_id = b.bill_id
                 WHERE d.device_id = ANY(%s)
                 """,
                 (device_ids,),
@@ -7705,13 +7707,13 @@ def get_scrapped_devices():
             where = []
             params = []
             if lab_id:
-                where.append("lab_id = %s")
+                where.append("sd.lab_id = %s")
                 params.append(lab_id)
             if year and str(year).isdigit():
-                where.append("EXTRACT(YEAR FROM scrapped_at) = %s")
+                where.append("EXTRACT(YEAR FROM sd.scrapped_at) = %s")
                 params.append(int(year))
             if device_type:
-                where.append("device_type = %s")
+                where.append("sd.device_type = %s")
                 params.append(device_type)
 
             limit_val = 500
@@ -7723,14 +7725,17 @@ def get_scrapped_devices():
             where_sql = f"WHERE {' AND '.join(where)}" if where else ""
             cursor.execute(
                 f"""
-                SELECT scrap_id, device_id, asset_code, device_type, brand, model, specification,
-                       lab_id, lab_name, station_code,
-                       dead_stock_number, cost, justification_for_scrapping, approval_of_hod,
-                       COALESCE(scrapped_by_text, scrapped_by::text) AS scrapped_by,
-                       scrapped_at
-                FROM scrapped_devices
+                  SELECT sd.scrap_id, sd.device_id, sd.asset_code, sd.device_type, sd.brand, sd.model, sd.specification,
+                      sd.lab_id, sd.lab_name, sd.station_code,
+                      sd.dead_stock_number, COALESCE(sd.cost, d.unit_price) AS cost,
+                      sd.justification_for_scrapping,
+                      COALESCE(sd.scrapped_by_text, sd.scrapped_by::text) AS scrapped_by,
+                      sd.scrapped_at,
+                      d.assigned_code
+                FROM scrapped_devices sd
+                LEFT JOIN devices d ON sd.device_id = d.device_id
                 {where_sql}
-                ORDER BY scrapped_at DESC
+                ORDER BY sd.scrapped_at DESC
                 LIMIT {limit_val}
                 """,
                 tuple(params),
@@ -7743,6 +7748,7 @@ def get_scrapped_devices():
                         "scrap_id": str(r.get("scrap_id")) if r.get("scrap_id") is not None else None,
                         "device_id": r.get("device_id"),
                         "asset_code": r.get("asset_code"),
+                        "assigned_code": r.get("assigned_code"),
                         "device_type": r.get("device_type"),
                         "brand": r.get("brand"),
                         "model": r.get("model"),
@@ -7753,7 +7759,6 @@ def get_scrapped_devices():
                         "dead_stock_number": r.get("dead_stock_number"),
                         "cost": float(r.get("cost")) if r.get("cost") is not None else None,
                         "justification_for_scrapping": r.get("justification_for_scrapping"),
-                        "approval_of_hod": r.get("approval_of_hod"),
                         "scrapped_by": r.get("scrapped_by"),
                         "scrapped_at": r.get("scrapped_at").isoformat() if r.get("scrapped_at") else None,
                     }

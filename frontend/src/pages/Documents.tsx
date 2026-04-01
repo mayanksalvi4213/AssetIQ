@@ -1,10 +1,8 @@
 "use client";
 import React, { useState, useEffect } from "react";
-import { Menu, MenuItem, HoveredLink } from "@/components/ui/navbar-menu";
-import { LogoButton } from "@/components/ui/logo-button";
+import AppNavbar from "@/components/AppNavbar";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
-import { useAuth } from "@/contexts/AuthContext";
 
 interface Bill {
   id: number;
@@ -22,6 +20,7 @@ interface Bill {
 interface DeadStockEntry {
   srNo: string;
   labName: string;
+  status?: string;
   stationCode: string;
   itemDescription: string;
   deviceCount: number;
@@ -49,8 +48,6 @@ interface DeadStockEntry {
 }
 
 const Documents: React.FC = () => {
-  const [active, setActive] = useState<string | null>(null);
-  const { logout, user } = useAuth();
   const [activeTab, setActiveTab] = useState<"bills" | "deadstock">("bills");
   const [bills, setBills] = useState<Bill[]>([]);
   const [deadStockData, setDeadStockData] = useState<DeadStockEntry[]>([]);
@@ -385,57 +382,7 @@ const Documents: React.FC = () => {
         backgroundRepeat: "no-repeat",
       }}
     >
-      {/* Navbar */}
-      <div className="fixed top-3 right-6 z-50">
-        <Menu setActive={setActive}>
-          <MenuItem setActive={setActive} active={active} item="Asset Management">
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/assets">All Assets</HoveredLink>
-              <HoveredLink href="/ocr">Add Assets</HoveredLink>
-            </div>
-          </MenuItem>
-
-          <MenuItem setActive={setActive} active={active} item="Lab Management">
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/lab-plan">Lab Floor Plans</HoveredLink>
-              <HoveredLink href="/lab-layout">Lab Layout Designer</HoveredLink>
-              <HoveredLink href="/lab-configuration">Lab Configuration</HoveredLink>
-              {user?.role === "HOD" && (
-                <HoveredLink href="/assign-lab-incharge">Assign Lab Incharge</HoveredLink>
-              )}
-            </div>
-          </MenuItem>
-
-          <MenuItem setActive={setActive} active={active} item="Operations">
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/transfers">Transfers</HoveredLink>
-              <HoveredLink href="/dashboard/issues">Issues</HoveredLink>
-              <HoveredLink href="/documents">Documents</HoveredLink>
-            </div>
-          </MenuItem>
-
-          <MenuItem setActive={setActive} active={active} item="Analytics">
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/reports">Reports</HoveredLink>
-              <HoveredLink href="/warranty-expiry">Warranty Expiry</HoveredLink>
-            </div>
-          </MenuItem>
-
-          <MenuItem setActive={setActive} active={active} item="Account">
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/settings">Settings</HoveredLink>
-              <button 
-                onClick={logout}
-                className="text-left text-neutral-600 hover:text-neutral-800 transition-colors"
-              >
-                Logout
-              </button>
-            </div>
-          </MenuItem>
-        </Menu>
-      </div>
-
-      <LogoButton />
+      <AppNavbar />
 
       {/* Heading */}
       <h1 
@@ -478,7 +425,7 @@ const Documents: React.FC = () => {
         {error && (
           <div className="mb-4 p-4 bg-red-600/20 border border-red-600 rounded-lg text-red-200">
             <p className="font-semibold">Error:</p>
-            <p className="text-sm">{error}</p>
+            <p className="text-xs">{error}</p>
             <p className="text-xs mt-2">Make sure the backend server is running on http://localhost:5000</p>
           </div>
         )}
@@ -546,7 +493,7 @@ const Documents: React.FC = () => {
                           >
                             <td className="px-4 py-3">{bill.billNo}</td>
                             <td className="px-4 py-3">{bill.supplier}</td>
-                            <td className="px-4 py-3 text-sm">{bill.gstin}</td>
+                            <td className="px-4 py-3 text-xs">{bill.gstin}</td>
                             <td className="px-4 py-3">{bill.date}</td>
                             <td className="px-4 py-3">₹{bill.amount.toLocaleString()}</td>
                             <td className="px-4 py-3">₹{bill.taxAmount.toLocaleString()}</td>
@@ -554,7 +501,7 @@ const Documents: React.FC = () => {
                             <td className="px-4 py-3">
                               <button
                                 onClick={() => handleViewBill(bill)}
-                                className="px-3 py-1 bg-blue-600 rounded hover:bg-blue-700 transition-colors text-sm"
+                                className="px-3 py-1 bg-blue-600 rounded hover:bg-blue-700 transition-colors text-xs"
                               >
                                 View
                               </button>
@@ -572,10 +519,15 @@ const Documents: React.FC = () => {
             {activeTab === "deadstock" && (
               (() => {
                 const labOptions = Array.from(new Set(deadStockData.map(item => item.labName))).filter(Boolean);
+                if (deadStockData.some(item => item.status === "Scrapped")) {
+                  labOptions.push("Scrapped");
+                }
                 const yearOptions = Array.from(new Set(deadStockData.map(item => getYearFromDate(item.billDate || item.dateOfDelivery || "")))).filter(Boolean);
                 const deviceTypeOptions = Array.from(new Set(deadStockData.map(item => item.deviceType).filter(Boolean))).filter(Boolean) as string[];
                 const filteredDeadStockData = deadStockData.filter((item) => {
-                  const matchesLab = deadstockLabFilter === "all" || item.labName === deadstockLabFilter;
+                  const statusLabel = item.status || (item.labName === "Unassigned" ? "Unassigned" : "Active");
+                  const labLabel = statusLabel === "Scrapped" ? "Scrapped" : item.labName;
+                  const matchesLab = deadstockLabFilter === "all" || labLabel === deadstockLabFilter;
                   const itemYear = getYearFromDate(item.billDate || item.dateOfDelivery || "");
                   const matchesYear = deadstockYearFilter === "all" || itemYear === deadstockYearFilter;
                   const matchesDeviceType = deadstockDeviceTypeFilter === "all" || item.deviceType === deadstockDeviceTypeFilter;
@@ -588,7 +540,7 @@ const Documents: React.FC = () => {
                   <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-4 mb-2">
                     <div>
                       <h2 className="text-2xl font-semibold text-white">Dead Stock Register</h2>
-                      <p className="text-sm text-gray-400 mt-1">A. P. SHAH INSTITUTE OF TECHNOLOGY</p>
+                      <p className="text-xs text-gray-400 mt-1">A. P. SHAH INSTITUTE OF TECHNOLOGY</p>
                       <p className="text-xs text-gray-500">Survey No. 12, Opp. Hypercity Mall, Kasarvadavali, Ghodbunder Road, Thane (W)-400 615.</p>
                     </div>
                     <div className="flex flex-wrap gap-3">
@@ -597,7 +549,7 @@ const Documents: React.FC = () => {
                         <select
                           value={deadstockLabFilter}
                           onChange={(e) => setDeadstockLabFilter(e.target.value)}
-                          className="px-3 py-2 bg-neutral-700 text-white rounded-lg text-sm border border-neutral-600"
+                          className="px-3 py-2 bg-neutral-700 text-white rounded-lg text-xs border border-neutral-600"
                         >
                           <option value="all">All</option>
                           {labOptions.map((lab) => (
@@ -610,7 +562,7 @@ const Documents: React.FC = () => {
                         <select
                           value={deadstockYearFilter}
                           onChange={(e) => setDeadstockYearFilter(e.target.value)}
-                          className="px-3 py-2 bg-neutral-700 text-white rounded-lg text-sm border border-neutral-600"
+                          className="px-3 py-2 bg-neutral-700 text-white rounded-lg text-xs border border-neutral-600"
                         >
                           <option value="all">All</option>
                           {yearOptions.map((year) => (
@@ -623,7 +575,7 @@ const Documents: React.FC = () => {
                         <select
                           value={deadstockDeviceTypeFilter}
                           onChange={(e) => setDeadstockDeviceTypeFilter(e.target.value)}
-                          className="px-3 py-2 bg-neutral-700 text-white rounded-lg text-sm border border-neutral-600"
+                          className="px-3 py-2 bg-neutral-700 text-white rounded-lg text-xs border border-neutral-600"
                         >
                           <option value="all">All</option>
                           {deviceTypeOptions.map((deviceType) => (
@@ -656,7 +608,7 @@ const Documents: React.FC = () => {
                 </div>
                 
                 <div className="overflow-x-auto">
-                  <table className="w-full min-w-[1400px] text-left text-white text-sm border border-gray-600">
+                  <table className="w-full min-w-[1400px] text-left text-white text-xs border border-gray-600">
                     <thead className="bg-neutral-700/80">
                       <tr>
                         <th className="px-2 py-2 border border-gray-600">Sr. No.</th>
@@ -679,18 +631,27 @@ const Documents: React.FC = () => {
                     <tbody>
                       {filteredDeadStockData.length === 0 ? (
                         <tr>
-                          <td colSpan={14} className="px-4 py-8 text-center text-gray-400">
+                          <td colSpan={15} className="px-4 py-8 text-center text-gray-400">
                             No dead stock entries found. Configure labs first.
                           </td>
                         </tr>
                       ) : (
                         filteredDeadStockData.map((item, index) => (
+                          (() => {
+                            const statusLabel = item.status || (item.labName === "Unassigned" ? "Unassigned" : "Active");
+                            const labLabel = statusLabel === "Scrapped" ? "Scrapped" : item.labName;
+                            const labClass = statusLabel === "Scrapped"
+                              ? "text-orange-300"
+                              : item.labName === "Unassigned"
+                                ? "text-yellow-300"
+                                : "text-blue-400";
+                            return (
                           <tr
                             key={index}
                             className="border-b border-gray-700 hover:bg-neutral-700/30"
                           >
                             <td className="px-2 py-3 border border-gray-600 font-semibold">{item.srNo}</td>
-                            <td className="px-2 py-3 border border-gray-600 font-semibold text-blue-400">{item.labName}</td>
+                            <td className={`px-2 py-3 border border-gray-600 font-semibold ${labClass}`}>{labLabel}</td>
                             <td className="px-2 py-3 border border-gray-600 font-bold text-green-400">{item.stationCode}</td>
                             <td className="px-3 py-3 border border-gray-600">
                               <div className="bg-neutral-800/50 p-2 rounded border border-neutral-600">
@@ -723,6 +684,8 @@ const Documents: React.FC = () => {
                             <td className="px-2 py-3 border border-gray-600 text-xs font-mono">{item.assignedCode || ""}</td>
                             <td className="px-2 py-3 border border-gray-600 text-center">{item.warrantyYears}y</td>
                           </tr>
+                            );
+                          })()
                         ))
                       )}
                     </tbody>
@@ -745,3 +708,4 @@ const Documents: React.FC = () => {
 };
 
 export default Documents;
+
