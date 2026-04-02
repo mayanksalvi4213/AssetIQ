@@ -60,6 +60,7 @@ interface LabListItem {
   lab_name: string;
   rows: number;
   columns: number;
+  incharge_name?: string;
 }
 
 interface TicketForm {
@@ -79,6 +80,8 @@ export default function Issues() {
   const [loadingLabs, setLoadingLabs] = useState(false);
   const [loadingLabDetail, setLoadingLabDetail] = useState(false);
   const [labError, setLabError] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [highlightQuery, setHighlightQuery] = useState("");
   const [ticketForm, setTicketForm] = useState<TicketForm>({
     title: "",
     description: "",
@@ -93,12 +96,14 @@ export default function Issues() {
     "Search by issue...",
   ];
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    console.log("Search:", e.target.value);
+    setSearchQuery(e.target.value);
   };
   const onSubmit = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    console.log("Search submitted");
   };
+
+  const normalizedQuery = useMemo(() => searchQuery.trim().toLowerCase(), [searchQuery]);
+  const normalizedHighlight = useMemo(() => highlightQuery.trim().toLowerCase(), [highlightQuery]);
 
   // Device-specific issue options
   const getIssueOptionsForDevice = (deviceType: string) => {
@@ -278,7 +283,91 @@ export default function Issues() {
 
   useEffect(() => {
     fetchLabs();
+    const params = new URLSearchParams(window.location.search);
+    const labParam = params.get("lab");
+    const searchParam = params.get("search");
+    const stationParam = params.get("station");
+    const deviceParam = params.get("device");
+    if (searchParam) {
+      setSearchQuery(searchParam);
+    }
+    if (stationParam) {
+      setHighlightQuery(stationParam);
+    } else if (deviceParam) {
+      setHighlightQuery(deviceParam);
+    } else if (searchParam) {
+      setHighlightQuery(searchParam);
+    }
+    if (labParam) {
+      fetchLabDetails(labParam);
+    }
   }, []);
+
+  const handlePageClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!highlightQuery) return;
+    const target = e.target as HTMLElement;
+    if (target.closest('[data-highlight-match="true"]')) return;
+    setHighlightQuery("");
+  };
+
+  const filteredLabs = useMemo(() => {
+    if (!normalizedQuery) return labs;
+    return labs.filter((lab) => {
+      const haystack = [lab.lab_name, lab.lab_id, lab.incharge_name]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+      return haystack.includes(normalizedQuery);
+    });
+  }, [labs, normalizedQuery]);
+
+  const matchesIssueSearch = (issue: Issue) => {
+    if (!normalizedQuery) return true;
+    const haystack = [
+      issue.id,
+      issue.title,
+      issue.description,
+      issue.status,
+      issue.severity,
+      issue.reportedBy,
+      issue.reportedDate,
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
+    return haystack.includes(normalizedQuery);
+  };
+
+  const matchesDeviceSearch = (device: Device) => {
+    if (!normalizedQuery) return true;
+    const baseTokens = [
+      device.deviceId,
+      device.id,
+      device.assignedCode,
+      device.type,
+      device.brand,
+      device.model,
+      device.invoiceNumber,
+      device.billId,
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
+    const issueMatch = (device.issues || []).some(matchesIssueSearch);
+    return baseTokens.includes(normalizedQuery) || issueMatch;
+  };
+
+  const filteredStationDevices = useMemo(() => {
+    if (!selectedStation) return null;
+    if (!normalizedQuery) return selectedStation;
+    return selectedStation.filter(matchesDeviceSearch);
+  }, [selectedStation, normalizedQuery]);
+
+  const filteredIssues = useMemo(() => {
+    if (!selectedDevice) return [] as Issue[];
+    if (!normalizedQuery) return selectedDevice.issues || [];
+    return (selectedDevice.issues || []).filter(matchesIssueSearch);
+  }, [selectedDevice, normalizedQuery]);
 
   const gridWithDevices = useMemo(() => {
     if (!selectedLab?.seatingArrangement) return null;
@@ -460,6 +549,7 @@ export default function Issues() {
         backgroundPosition: "center",
         backgroundRepeat: "no-repeat",
       }}
+      onClick={handlePageClick}
     >
       <AppNavbar
         rightContent={
@@ -499,7 +589,7 @@ export default function Issues() {
         {/* Lab Cards List */}
         {!loadingLabs && !labError && (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-            {labs.map((lab) => (
+            {filteredLabs.map((lab) => (
             <div
               key={lab.lab_id}
               onClick={() => fetchLabDetails(lab.lab_id)}
@@ -510,6 +600,9 @@ export default function Issues() {
                   <div>
                     <h2 className="text-2xl font-semibold mb-2">{lab.lab_name}</h2>
                     <p className="text-gray-400 text-xs">Lab ID: {lab.lab_id}</p>
+                    <p className="text-gray-400 text-[14px] mt-1">
+                      Incharge: {lab.incharge_name ? lab.incharge_name : "Unassigned"}
+                    </p>
                   </div>
                   <button className="mt-4 px-4 py-2 bg-blue-600 rounded-lg text-white font-semibold hover:bg-blue-700 transition-colors">
                     View Issues
@@ -521,9 +614,11 @@ export default function Issues() {
           </div>
         )}
 
-        {!loadingLabs && !labError && labs.length === 0 && (
+        {!loadingLabs && !labError && filteredLabs.length === 0 && (
           <div className="text-center py-12">
-            <p className="text-gray-400">No labs found. Create a lab in Lab Configuration first.</p>
+            <p className="text-gray-400">
+              {normalizedQuery ? "No labs match your search." : "No labs found. Create a lab in Lab Configuration first."}
+            </p>
           </div>
         )}
 
@@ -573,6 +668,32 @@ export default function Issues() {
                           const primaryDevice = devices.find((d) => d.type?.toLowerCase() === "pc") || devices[0];
                           const stationId = deviceGroup?.assignedCode || cell.id || primaryDevice?.assignedCode;
                           const hasDevices = devices.length > 0;
+                          const stationTokens = [stationId, cell.id, deviceGroup?.assignedCode]
+                            .filter(Boolean)
+                            .join(" ")
+                            .toLowerCase();
+                          const stationMatchesSearch = !normalizedQuery
+                            || stationTokens.includes(normalizedQuery)
+                            || devices.some(matchesDeviceSearch);
+                          const isSearchFilteredOut = normalizedQuery && !stationMatchesSearch;
+                          const hasActiveHighlight = Boolean(normalizedHighlight);
+                          const isHighlightMatch = normalizedHighlight
+                            ? (
+                              (stationId || "").toLowerCase().includes(normalizedHighlight)
+                              || devices.some((d) => {
+                                const deviceHaystack = [
+                                  d.assignedCode,
+                                  d.id,
+                                  d.deviceId,
+                                  d.invoiceNumber,
+                                ]
+                                  .filter(Boolean)
+                                  .join(" ")
+                                  .toLowerCase();
+                                return deviceHaystack.includes(normalizedHighlight);
+                              })
+                            )
+                            : false;
                           
                           // Check if ANY device at this station has issues or is inactive
                           const allIssues = devices.flatMap(d => d.issues || []);
@@ -603,8 +724,9 @@ export default function Issues() {
                           return (
                             <div
                               key={colIdx}
+                              data-highlight-match={isHighlightMatch ? "true" : "false"}
                               onClick={() => {
-                                if (hasDevices && devices.length > 0) {
+                                if (hasDevices && devices.length > 0 && !isSearchFilteredOut && (!hasActiveHighlight || isHighlightMatch)) {
                                   // Show all devices at this station
                                   const allDevices = devices.map((d) => ({
                                     ...d,
@@ -621,6 +743,9 @@ export default function Issues() {
                                 w-28 rounded-lg border-2 flex flex-col items-center justify-center transition relative p-1
                                 ${hasDevices ? "cursor-pointer" : ""}
                                 ${background}
+                                ${isSearchFilteredOut ? "opacity-30" : ""}
+                                ${hasActiveHighlight && !isHighlightMatch ? "opacity-30" : ""}
+                                ${isHighlightMatch ? "ring-2 ring-cyan-400 shadow-[0_0_12px_rgba(34,211,238,0.6)]" : ""}
                               `}
                               style={{ minHeight: hasDevices ? `${Math.max(96, 60 + deviceCount * 14)}px` : "96px" }}
                             >
@@ -735,7 +860,7 @@ export default function Issues() {
                     Station: {selectedStation[0]?.assignedCode || selectedStation[0]?.id}
                   </h3>
                   <p className="text-gray-400 text-xs">
-                    {selectedStation.length} device(s) at this station
+                    {(filteredStationDevices || []).length} device(s) at this station
                   </p>
                 </div>
                 <button
@@ -747,7 +872,10 @@ export default function Issues() {
               </div>
 
               <div className="space-y-3">
-                {selectedStation.map((device) => {
+                {(filteredStationDevices || []).length === 0 ? (
+                  <div className="text-xs text-gray-400">No devices match your search.</div>
+                ) : (
+                  (filteredStationDevices || []).map((device) => {
                   const totalIssues = device.issues?.length || 0;
                   const openIssues = device.issues?.filter(i => i.status !== "resolved").length || 0;
                   
@@ -796,7 +924,8 @@ export default function Issues() {
                       )}
                     </div>
                   );
-                })}
+                })
+                )}
               </div>
 
               <div className="mt-6 text-center text-xs text-gray-400">
@@ -889,9 +1018,9 @@ export default function Issues() {
 
               {/* Issues List */}
               <div className="mb-6">
-                {selectedDevice.issues.length > 0 ? (
+                {filteredIssues.length > 0 ? (
                   <div className="space-y-3">
-                    {selectedDevice.issues.map((issue) => (
+                    {filteredIssues.map((issue) => (
                       <div
                         key={issue.id}
                         className="bg-neutral-800 p-4 rounded-lg border-l-4 border-l-red-500"
@@ -953,7 +1082,7 @@ export default function Issues() {
                 ) : (
                   <div className="bg-green-900/20 border border-green-600 p-4 rounded-lg text-center">
                     <p className="text-green-400">
-                      ✓ No issues reported for this device
+                      ✓ {normalizedQuery ? "No issues match your search" : "No issues reported for this device"}
                     </p>
                   </div>
                 )}

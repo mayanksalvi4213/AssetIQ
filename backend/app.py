@@ -1617,9 +1617,19 @@ def get_labs():
         cursor = conn.cursor()
         
         cursor.execute(
-            """SELECT lab_id, lab_name, rows, columns 
-               FROM labs 
-               ORDER BY lab_id"""
+            """
+            SELECT l.lab_id, l.lab_name, l.rows, l.columns,
+                   COALESCE(
+                       string_agg(TRIM(CONCAT_WS(' ', u.first_name, u.last_name)), ', '),
+                       ''
+                   ) AS incharge_name
+            FROM labs l
+            LEFT JOIN users u
+              ON u.assigned_lab = l.lab_id
+             AND u.role = 'Lab Incharge'
+            GROUP BY l.lab_id, l.lab_name, l.rows, l.columns
+            ORDER BY l.lab_id
+            """
         )
         labs = cursor.fetchall()
         
@@ -2403,7 +2413,13 @@ def raise_issue():
 
         # Validate device
         cursor.execute(
-            "SELECT device_id, is_active FROM devices WHERE device_id = %s",
+            """
+                 SELECT d.device_id, d.is_active, d.lab_id, d.assigned_code, d.asset_code,
+                   COALESCE(et.name, 'Unknown') AS type_name
+            FROM devices d
+            LEFT JOIN equipment_types et ON d.type_id = et.type_id
+            WHERE d.device_id = %s
+            """,
             (device_id,)
         )
         device_row = cursor.fetchone()
@@ -2411,6 +2427,17 @@ def raise_issue():
             cursor.close()
             conn.close()
             return jsonify({"success": False, "error": "Device not found"}), 404
+
+        # Ensure issue_id sequence is in sync (handles manual inserts / migrations)
+        cursor.execute(
+            """
+            SELECT setval(
+                pg_get_serial_sequence('device_issues', 'issue_id'),
+                COALESCE((SELECT MAX(issue_id) FROM device_issues), 0) + 1,
+                false
+            )
+            """
+        )
 
         # Insert issue with severity and reported_by
         cursor.execute(
@@ -2422,6 +2449,17 @@ def raise_issue():
         issue_row = cursor.fetchone()
         issue_id = issue_row['issue_id']
         reported_at = issue_row['reported_at']
+
+        # Ensure history_id sequence is in sync (handles manual inserts / migrations)
+        cursor.execute(
+            """
+            SELECT setval(
+                pg_get_serial_sequence('device_issue_history', 'history_id'),
+                COALESCE((SELECT MAX(history_id) FROM device_issue_history), 0) + 1,
+                false
+            )
+            """
+        )
 
         # History log
         cursor.execute(
@@ -2446,6 +2484,11 @@ def raise_issue():
             "critical": "#ef4444", "high": "#f97316",
             "medium": "#eab308", "low": "#22c55e"
         }.get(severity, "#6b7280")
+        lab_number = device_row.get("lab_id") or "Unassigned"
+        assigned_code = device_row.get("assigned_code") or "—"
+        device_type = device_row.get("type_name") or "Unknown"
+        asset_code = device_row.get("asset_code") or f"#{device_id}"
+
         _issue_html = f"""
         <html><body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f3f4f6;padding:20px;">
           <div style="max-width:620px;margin:0 auto;background:white;border-radius:12px;overflow:hidden;box-shadow:0 4px 6px rgba(0,0,0,0.1);">
@@ -2456,7 +2499,10 @@ def raise_issue():
             <div style="padding:20px 28px;">
               <table style="width:100%;font-size:14px;border-collapse:collapse;">
                 <tr><td style="padding:8px 0;color:#6b7280;width:130px;">Issue Title</td><td style="padding:8px 0;font-weight:600;color:#111;">{title}</td></tr>
-                <tr><td style="padding:8px 0;color:#6b7280;">Device ID</td><td style="padding:8px 0;color:#374151;">#{device_id}</td></tr>
+                <tr><td style="padding:8px 0;color:#6b7280;">Asset Code</td><td style="padding:8px 0;color:#374151;">{asset_code}</td></tr>
+                                <tr><td style="padding:8px 0;color:#6b7280;">Lab Number</td><td style="padding:8px 0;color:#374151;">{lab_number}</td></tr>
+                                <tr><td style="padding:8px 0;color:#6b7280;">Device Type</td><td style="padding:8px 0;color:#374151;">{device_type}</td></tr>
+                                <tr><td style="padding:8px 0;color:#6b7280;">Assigned Code</td><td style="padding:8px 0;color:#374151;">{assigned_code}</td></tr>
                 <tr><td style="padding:8px 0;color:#6b7280;">Severity</td>
                     <td style="padding:8px 0;"><span style="background:{sev_color};color:white;padding:2px 10px;border-radius:8px;font-size:12px;font-weight:600;">{severity.upper()}</span></td></tr>
                 <tr><td style="padding:8px 0;color:#6b7280;">Reported By</td><td style="padding:8px 0;color:#374151;">{reported_by}</td></tr>
@@ -2468,10 +2514,10 @@ def raise_issue():
             </div>
           </div>
         </body></html>"""
-        send_notification_email(
+        send_notification_to_lab_incharge(
             subject=f"🚨 New Issue: {title} [Severity: {severity.upper()}]",
             html_body=_issue_html,
-            role_filter=["Lab Assistant", "Lab Incharge"]
+            lab_id=device_row.get("lab_id")
         )
 
         return jsonify({
@@ -2523,6 +2569,7 @@ def update_issue_status():
         cursor.execute("""
             SELECT di.issue_id, di.issue_title, di.severity, di.status, di.device_id,
                    d.asset_code, d.assigned_code, d.brand, d.model,
+                     d.lab_id,
                    COALESCE(et.name, 'Unknown') AS type_name,
                    COALESCE(l.lab_name, 'Unassigned') AS lab_name
             FROM device_issues di
@@ -2550,6 +2597,17 @@ def update_issue_status():
                 "UPDATE device_issues SET status = %s, resolved_at = NULL WHERE issue_id = %s",
                 (new_status, issue_id)
             )
+
+        # Ensure history_id sequence is in sync (handles manual inserts / migrations)
+        cursor.execute(
+            """
+            SELECT setval(
+                pg_get_serial_sequence('device_issue_history', 'history_id'),
+                COALESCE((SELECT MAX(history_id) FROM device_issue_history), 0) + 1,
+                false
+            )
+            """
+        )
 
         # Log history with who changed it
         cursor.execute(
@@ -2606,10 +2664,10 @@ def update_issue_status():
             </div>
           </div>
         </body></html>"""
-        send_notification_email(
+        send_notification_to_lab_incharge(
             subject=f"{_subject_prefix}: {issue_title_str} [{asset_label}]",
             html_body=_status_html,
-            role_filter=["Lab Assistant", "Lab Incharge"]
+            lab_id=issue_row.get("lab_id")
         )
 
         return jsonify({
@@ -4753,10 +4811,10 @@ def approve_transfer(transfer_id):
         # Get current user (should be HOD)
         user_info = get_current_user()
         user_email = user_info.email if user_info else 'Unknown'
-        
+
         conn = db.get_connection()
         cursor = conn.cursor()
-        
+
         # Get transfer details (read device_dest_map if available)
         cursor.execute("""
             SELECT 1
@@ -4767,29 +4825,40 @@ def approve_transfer(transfer_id):
 
         if has_device_dest_map:
             cursor.execute("""
-                SELECT from_lab_id, to_lab_id, device_ids, transfer_type, station_ids, dest_cell_id, device_dest_map
-                FROM transfer_requests
-                WHERE transfer_id = %s AND status = 'pending'
+                SELECT tr.from_lab_id, tr.to_lab_id, tr.device_ids, tr.transfer_type, tr.station_ids,
+                       tr.dest_cell_id, tr.device_dest_map, tr.requested_by,
+                       l1.lab_name AS from_lab_name, l2.lab_name AS to_lab_name
+                FROM transfer_requests tr
+                LEFT JOIN labs l1 ON tr.from_lab_id = l1.lab_id
+                LEFT JOIN labs l2 ON tr.to_lab_id = l2.lab_id
+                WHERE tr.transfer_id = %s AND tr.status = 'pending'
             """, (transfer_id,))
         else:
             cursor.execute("""
-                SELECT from_lab_id, to_lab_id, device_ids, transfer_type, station_ids, dest_cell_id
-                FROM transfer_requests
-                WHERE transfer_id = %s AND status = 'pending'
+                SELECT tr.from_lab_id, tr.to_lab_id, tr.device_ids, tr.transfer_type, tr.station_ids,
+                       tr.dest_cell_id, tr.requested_by,
+                       l1.lab_name AS from_lab_name, l2.lab_name AS to_lab_name
+                FROM transfer_requests tr
+                LEFT JOIN labs l1 ON tr.from_lab_id = l1.lab_id
+                LEFT JOIN labs l2 ON tr.to_lab_id = l2.lab_id
+                WHERE tr.transfer_id = %s AND tr.status = 'pending'
             """, (transfer_id,))
-        
+
         result = cursor.fetchone()
         if not result:
             return jsonify({'success': False, 'error': 'Transfer request not found or already processed'}), 404
-        
+
         from_lab_id = result['from_lab_id']
         to_lab_id = result['to_lab_id']
         device_ids_json = result['device_ids']
         transfer_type = result.get('transfer_type', 'individual')
         station_ids_json = result.get('station_ids')
         dest_cell_id = result.get('dest_cell_id')
+        requested_by_email = result.get('requested_by')
+        from_lab_name = result.get('from_lab_name') or from_lab_id
+        to_lab_name = result.get('to_lab_name') or to_lab_id
         device_dest_map_json = result.get('device_dest_map') if has_device_dest_map else None
-        
+
         device_ids = json.loads(device_ids_json) if isinstance(device_ids_json, str) else device_ids_json
         station_ids = json.loads(station_ids_json) if isinstance(station_ids_json, str) and station_ids_json else (station_ids_json or [])
         device_dest_map = json.loads(device_dest_map_json) if isinstance(device_dest_map_json, str) and device_dest_map_json else (device_dest_map_json or {})
@@ -4953,16 +5022,40 @@ def approve_transfer(transfer_id):
                 approved_at = NOW()
             WHERE transfer_id = %s
         """, (user_email, transfer_id))
-        
+
         conn.commit()
         cursor.close()
         conn.close()
-        
+
+        approval_html = f"""
+        <html><body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f3f4f6;padding:20px;">
+          <div style="max-width:620px;margin:0 auto;background:white;border-radius:12px;overflow:hidden;box-shadow:0 4px 6px rgba(0,0,0,0.1);">
+            <div style="background:linear-gradient(135deg,#22c55e,#15803d);padding:20px 28px;">
+              <h1 style="color:white;margin:0;font-size:18px;">✅ Transfer Request Approved</h1>
+              <p style="color:rgba(255,255,255,0.85);margin:4px 0 0;font-size:13px;">Transfer #{transfer_id}</p>
+            </div>
+            <div style="padding:20px 28px;">
+              <table style="width:100%;font-size:14px;border-collapse:collapse;">
+                <tr><td style="padding:8px 0;color:#6b7280;width:140px;">From Lab</td><td style="padding:8px 0;color:#111;">{from_lab_name}</td></tr>
+                <tr><td style="padding:8px 0;color:#6b7280;">To Lab</td><td style="padding:8px 0;color:#111;">{to_lab_name}</td></tr>
+                <tr><td style="padding:8px 0;color:#6b7280;">Devices Moved</td><td style="padding:8px 0;color:#111;">{len(device_ids)}</td></tr>
+                <tr><td style="padding:8px 0;color:#6b7280;">Approved By</td><td style="padding:8px 0;color:#111;">{user_email}</td></tr>
+              </table>
+            </div>
+          </div>
+        </body></html>
+        """
+        send_notification_to_user(
+            subject=f"✅ Transfer Approved: Request #{transfer_id}",
+            html_body=approval_html,
+            user_email=requested_by_email
+        )
+
         return jsonify({
             'success': True,
             'message': f'Transfer approved and {len(device_ids)} devices moved successfully'
         })
-        
+
     except Exception as e:
         print(f"Error approving transfer: {str(e)}")
         traceback.print_exc()
@@ -6687,8 +6780,8 @@ Be concise. Use device codes and lab names when referencing items."""
 @app.route("/get_alert_recipients", methods=["GET"])
 def get_alert_recipients():
     """
-    Return all users with role HOD or Lab Incharge (name + email)
-    so the frontend can display who will receive maintenance alerts.
+    Return lab incharge users (name + email + assigned_lab)
+    so the frontend can display who will receive lab-scoped maintenance alerts.
     """
     try:
         conn = db.get_connection()
@@ -6698,8 +6791,10 @@ def get_alert_recipients():
         cursor.execute("""
             SELECT id, first_name, last_name, email, role, assigned_lab
             FROM users
-            WHERE role IN ('HOD', 'Lab Incharge')
-            ORDER BY role, first_name
+                        WHERE role = 'Lab Incharge'
+                            AND assigned_lab IS NOT NULL
+                            AND assigned_lab != ''
+                        ORDER BY assigned_lab, first_name
         """)
         recipients = cursor.fetchall()
         cursor.close()
@@ -6727,7 +6822,7 @@ def get_alert_recipients():
 @app.route("/send_maintenance_alerts", methods=["POST"])
 def send_maintenance_alerts():
     """
-    Automatically send proactive maintenance alert emails to all HOD and Lab Incharge users.
+    Automatically send proactive maintenance alerts to incharge(s) of each lab.
     Expects: { alerts: [{asset_code, type_name, lab_name, risk_level, health_score, issue_summary}] }
     """
     try:
@@ -6741,24 +6836,57 @@ def send_maintenance_alerts():
         if not alerts:
             return jsonify({"error": "No alerts to send"}), 400
 
-        # Auto-fetch recipients: all HOD and Lab Incharge users
+        # Auto-fetch recipients: only lab incharges with assigned labs
         conn = db.get_connection()
         if not conn:
             return jsonify({"error": "Database connection failed"}), 500
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT email, first_name, last_name, role
+            SELECT email, first_name, last_name, role, assigned_lab
             FROM users
-            WHERE role IN ('HOD', 'Lab Incharge')
+            WHERE role = 'Lab Incharge'
+              AND assigned_lab IS NOT NULL
+              AND assigned_lab != ''
         """)
         recipients = cursor.fetchall()
+
+        cursor.execute("""
+            SELECT lab_id, lab_name
+            FROM labs
+        """)
+        labs = cursor.fetchall() or []
         cursor.close()
         conn.close()
 
         if not recipients:
-            return jsonify({"success": False, "error": "No HOD or Lab Incharge users found in the system"}), 404
+            return jsonify({"success": False, "error": "No lab incharge users found in the system"}), 404
 
-        recipient_emails = [r["email"] for r in recipients]
+        incharges_by_lab = {}
+        for r in recipients:
+            lab_id = str(r.get("assigned_lab") or "").strip()
+            if not lab_id:
+                continue
+            incharges_by_lab.setdefault(lab_id, []).append(r)
+
+        lab_id_by_name = {
+            (l.get("lab_name") or "").strip().lower(): str(l.get("lab_id") or "").strip()
+            for l in labs
+            if (l.get("lab_name") or "").strip() and (l.get("lab_id") or "").strip()
+        }
+
+        alerts_by_lab = {}
+        unresolved_alerts = []
+        for a in alerts:
+            lab_id = str(a.get("lab_id") or a.get("labId") or "").strip()
+            if not lab_id:
+                lab_name_key = str(a.get("lab_name") or a.get("labName") or "").strip().lower()
+                lab_id = lab_id_by_name.get(lab_name_key, "")
+
+            if not lab_id:
+                unresolved_alerts.append({"asset_code": a.get("asset_code"), "reason": "lab not resolved"})
+                continue
+
+            alerts_by_lab.setdefault(lab_id, []).append(a)
 
         # Build HTML email
         risk_colors = {
@@ -6768,73 +6896,7 @@ def send_maintenance_alerts():
             'healthy': '#22c55e',
         }
 
-        rows_html = ""
-        for a in alerts:
-            color = risk_colors.get(a.get('risk_level', 'medium'), '#6b7280')
-            rows_html += f"""
-            <tr style="border-bottom: 1px solid #e5e7eb;">
-                <td style="padding: 12px; font-weight: 600;">{a.get('asset_code', 'N/A')}</td>
-                <td style="padding: 12px;">{a.get('type_name', '')}</td>
-                <td style="padding: 12px;">{a.get('lab_name', '')}</td>
-                <td style="padding: 12px; text-align: center;">
-                    <span style="background: {color}; color: white; padding: 4px 12px; border-radius: 12px; font-size: 12px; font-weight: 600;">
-                        {a.get('risk_level', 'unknown').upper()}
-                    </span>
-                </td>
-                <td style="padding: 12px; text-align: center; font-weight: 700;">{a.get('health_score', 'N/A')}</td>
-                <td style="padding: 12px; font-size: 13px; color: #6b7280;">{a.get('issue_summary', '')}</td>
-            </tr>"""
-
-        recipient_names = ", ".join([f"{r['first_name']} {r['last_name']}" for r in recipients])
-
-        html_body = f"""
-        <html>
-        <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f3f4f6; padding: 20px;">
-            <div style="max-width: 800px; margin: 0 auto; background: white; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
-                <div style="background: linear-gradient(135deg, #f59e0b, #d97706); padding: 24px 32px;">
-                    <h1 style="color: white; margin: 0; font-size: 22px;">⚠️ AssetIQ — Proactive Maintenance Alert</h1>
-                    <p style="color: rgba(255,255,255,0.85); margin: 8px 0 0 0; font-size: 14px;">
-                        {len(alerts)} asset(s) require your attention
-                    </p>
-                </div>
-                <div style="padding: 24px 32px;">
-                    <p style="color: #374151; font-size: 14px; line-height: 1.6;">
-                        The following assets have been flagged for proactive maintenance based on their health scores,
-                        issue history, and warranty status. Please review and schedule maintenance as appropriate.
-                    </p>
-                    <table style="width: 100%; border-collapse: collapse; margin-top: 16px; font-size: 14px;">
-                        <thead>
-                            <tr style="background: #f9fafb; border-bottom: 2px solid #e5e7eb;">
-                                <th style="padding: 12px; text-align: left; color: #6b7280; font-size: 12px; text-transform: uppercase;">Asset</th>
-                                <th style="padding: 12px; text-align: left; color: #6b7280; font-size: 12px; text-transform: uppercase;">Type</th>
-                                <th style="padding: 12px; text-align: left; color: #6b7280; font-size: 12px; text-transform: uppercase;">Lab</th>
-                                <th style="padding: 12px; text-align: center; color: #6b7280; font-size: 12px; text-transform: uppercase;">Risk</th>
-                                <th style="padding: 12px; text-align: center; color: #6b7280; font-size: 12px; text-transform: uppercase;">Health</th>
-                                <th style="padding: 12px; text-align: left; color: #6b7280; font-size: 12px; text-transform: uppercase;">Details</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {rows_html}
-                        </tbody>
-                    </table>
-                    <div style="margin-top: 24px; padding: 16px; background: #fffbeb; border: 1px solid #fde68a; border-radius: 8px;">
-                        <p style="color: #92400e; font-size: 13px; margin: 0;">
-                            <strong>💡 Recommendation:</strong> Prioritize assets with Critical and High risk levels first.
-                            Schedule preventive maintenance to avoid unexpected downtime.
-                        </p>
-                    </div>
-                </div>
-                <div style="background: #f9fafb; padding: 16px 32px; text-align: center;">
-                    <p style="color: #9ca3af; font-size: 12px; margin: 0;">
-                        Generated by AssetIQ Proactive Maintenance System • {datetime.now().strftime('%B %d, %Y at %I:%M %p')}
-                    </p>
-                </div>
-            </div>
-        </body>
-        </html>
-        """
-
-        # Send via SMTP to all recipients
+        # Send via SMTP to incharge recipients grouped by lab
         mail_server = os.getenv("MAIL_SERVER", "smtp.gmail.com")
         mail_port = int(os.getenv("MAIL_PORT", 587))
         mail_username = os.getenv("MAIL_USERNAME", "")
@@ -6852,25 +6914,97 @@ def send_maintenance_alerts():
 
         sent_to = []
         failed = []
-        for recipient_email in recipient_emails:
-            try:
-                msg = MIMEMultipart("alternative")
-                msg["Subject"] = f"⚠️ Proactive Maintenance Alert — {len(alerts)} Asset(s) Need Attention"
-                msg["From"] = mail_username
-                msg["To"] = recipient_email
-                msg.attach(MIMEText(html_body, "html"))
-                server.sendmail(mail_username, recipient_email, msg.as_string())
-                sent_to.append(recipient_email)
-            except Exception as send_err:
-                failed.append({"email": recipient_email, "error": str(send_err)})
+        labs_notified = 0
+        for lab_id, lab_alerts in alerts_by_lab.items():
+            lab_recipients = incharges_by_lab.get(lab_id, [])
+            if not lab_recipients:
+                failed.append({"lab_id": lab_id, "error": "No assigned lab incharge found"})
+                continue
+
+            rows_html = ""
+            for a in lab_alerts:
+                color = risk_colors.get(a.get('risk_level', 'medium'), '#6b7280')
+                rows_html += f"""
+                <tr style="border-bottom: 1px solid #e5e7eb;">
+                    <td style="padding: 12px; font-weight: 600;">{a.get('asset_code', 'N/A')}</td>
+                    <td style="padding: 12px;">{a.get('type_name', '')}</td>
+                    <td style="padding: 12px;">{a.get('lab_name') or a.get('labName') or lab_id}</td>
+                    <td style="padding: 12px; text-align: center;">
+                        <span style="background: {color}; color: white; padding: 4px 12px; border-radius: 12px; font-size: 12px; font-weight: 600;">
+                            {a.get('risk_level', 'unknown').upper()}
+                        </span>
+                    </td>
+                    <td style="padding: 12px; text-align: center; font-weight: 700;">{a.get('health_score', 'N/A')}</td>
+                    <td style="padding: 12px; font-size: 13px; color: #6b7280;">{a.get('issue_summary', '')}</td>
+                </tr>"""
+
+            lab_name = lab_alerts[0].get('lab_name') or lab_alerts[0].get('labName') or lab_id
+            html_body = f"""
+            <html>
+            <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f3f4f6; padding: 20px;">
+                <div style="max-width: 800px; margin: 0 auto; background: white; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+                    <div style="background: linear-gradient(135deg, #f59e0b, #d97706); padding: 24px 32px;">
+                        <h1 style="color: white; margin: 0; font-size: 22px;">⚠️ AssetIQ — Proactive Maintenance Alert</h1>
+                        <p style="color: rgba(255,255,255,0.85); margin: 8px 0 0 0; font-size: 14px;">
+                            Lab: {lab_name} • {len(lab_alerts)} asset(s) require your attention
+                        </p>
+                    </div>
+                    <div style="padding: 24px 32px;">
+                        <p style="color: #374151; font-size: 14px; line-height: 1.6;">
+                            You are receiving this notification because you are assigned as lab incharge for {lab_name}.
+                        </p>
+                        <table style="width: 100%; border-collapse: collapse; margin-top: 16px; font-size: 14px;">
+                            <thead>
+                                <tr style="background: #f9fafb; border-bottom: 2px solid #e5e7eb;">
+                                    <th style="padding: 12px; text-align: left; color: #6b7280; font-size: 12px; text-transform: uppercase;">Asset</th>
+                                    <th style="padding: 12px; text-align: left; color: #6b7280; font-size: 12px; text-transform: uppercase;">Type</th>
+                                    <th style="padding: 12px; text-align: left; color: #6b7280; font-size: 12px; text-transform: uppercase;">Lab</th>
+                                    <th style="padding: 12px; text-align: center; color: #6b7280; font-size: 12px; text-transform: uppercase;">Risk</th>
+                                    <th style="padding: 12px; text-align: center; color: #6b7280; font-size: 12px; text-transform: uppercase;">Health</th>
+                                    <th style="padding: 12px; text-align: left; color: #6b7280; font-size: 12px; text-transform: uppercase;">Details</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {rows_html}
+                            </tbody>
+                        </table>
+                    </div>
+                    <div style="background: #f9fafb; padding: 16px 32px; text-align: center;">
+                        <p style="color: #9ca3af; font-size: 12px; margin: 0;">
+                            Generated by AssetIQ Proactive Maintenance System • {datetime.now().strftime('%B %d, %Y at %I:%M %p')}
+                        </p>
+                    </div>
+                </div>
+            </body>
+            </html>
+            """
+
+            subject = f"⚠️ Proactive Maintenance Alert — {lab_name} ({len(lab_alerts)} Asset(s))"
+            for r in lab_recipients:
+                recipient_email = (r.get("email") or "").strip()
+                if not recipient_email:
+                    continue
+                try:
+                    msg = MIMEMultipart("alternative")
+                    msg["Subject"] = subject
+                    msg["From"] = mail_username
+                    msg["To"] = recipient_email
+                    msg.attach(MIMEText(html_body, "html"))
+                    server.sendmail(mail_username, recipient_email, msg.as_string())
+                    sent_to.append(recipient_email)
+                except Exception as send_err:
+                    failed.append({"email": recipient_email, "error": str(send_err), "lab_id": lab_id})
+
+            labs_notified += 1
 
         server.quit()
 
         return jsonify({
             "success": True,
-            "message": f"Alerts sent to {len(sent_to)} recipient(s) with {len(alerts)} asset alerts",
-            "sent_to": sent_to,
+            "message": f"Alerts sent to {len(set(sent_to))} recipient(s) across {labs_notified} lab(s)",
+            "sent_to": sorted(set(sent_to)),
             "failed": failed,
+            "unresolved_alerts": unresolved_alerts,
         })
 
     except smtplib.SMTPAuthenticationError:
@@ -6902,62 +7036,138 @@ def _build_smtp_connection():
     return server, mail_username
 
 
-def send_notification_email(subject: str, html_body: str, role_filter: list):
+def _send_email_async(subject: str, html_body: str, recipient_emails: List[str]) -> bool:
+    """Send HTML email in a background thread to explicit recipients.
+    Returns True when at least one valid recipient exists and dispatch starts.
     """
-    Background helper — queries users by role and sends HTML email to all of them.
-    Runs in a daemon thread so it never blocks the HTTP response.
-    """
-    import smtplib
     from email.mime.text import MIMEText
     from email.mime.multipart import MIMEMultipart
 
+    normalized = []
+    seen = set()
+    for e in recipient_emails or []:
+        email = (e or "").strip()
+        if not email or "@" not in email:
+            continue
+        lower = email.lower()
+        if lower in seen:
+            continue
+        seen.add(lower)
+        normalized.append(email)
+
+    if not normalized:
+        return False
+
     def _send():
         try:
-            conn = db.get_connection()
-            if not conn:
-                print("[Notifier] DB connection failed — skipping email")
-                return
-            cursor = conn.cursor()
-            placeholders = ",".join(["%s"] * len(role_filter))
-            cursor.execute(
-                f"SELECT email, first_name, last_name, role FROM users WHERE role IN ({placeholders})",
-                role_filter
-            )
-            recipients = cursor.fetchall()
-            cursor.close()
-            conn.close()
-
-            if not recipients:
-                print(f"[Notifier] No users found for roles {role_filter}")
-                return
-
             server, mail_username = _build_smtp_connection()
             if not server:
                 print("[Notifier] SMTP not configured — skipping email")
                 return
 
             sent = 0
-            for r in recipients:
+            for recipient_email in normalized:
                 try:
                     msg = MIMEMultipart("alternative")
                     msg["Subject"] = subject
                     msg["From"] = mail_username
-                    msg["To"] = r["email"]
+                    msg["To"] = recipient_email
                     msg.attach(MIMEText(html_body, "html"))
-                    server.sendmail(mail_username, r["email"], msg.as_string())
+                    server.sendmail(mail_username, recipient_email, msg.as_string())
                     sent += 1
                 except Exception as exc:
-                    print(f"[Notifier] Failed to send to {r['email']}: {exc}")
+                    print(f"[Notifier] Failed to send to {recipient_email}: {exc}")
 
             server.quit()
-            print(f"[Notifier] Sent '{subject}' to {sent}/{len(recipients)} recipients")
-
+            print(f"[Notifier] Sent '{subject}' to {sent}/{len(normalized)} recipients")
         except Exception as e:
             print(f"[Notifier] Unexpected error: {e}")
             traceback.print_exc()
 
     t = threading.Thread(target=_send, daemon=True)
     t.start()
+    return True
+
+
+def _get_lab_incharge_emails(lab_id: Optional[str]) -> List[str]:
+    """Return email list for Lab Incharge users assigned to the given lab."""
+    if not lab_id:
+        return []
+
+    conn = None
+    cursor = None
+    try:
+        conn = db.get_connection()
+        if not conn:
+            return []
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT email
+            FROM users
+            WHERE role = 'Lab Incharge'
+              AND assigned_lab = %s
+              AND email IS NOT NULL
+              AND email != ''
+            """,
+            (str(lab_id),)
+        )
+        rows = cursor.fetchall() or []
+        return [r["email"] for r in rows if r.get("email")]
+    except Exception as e:
+        print(f"[Notifier] Failed to resolve incharge emails for lab {lab_id}: {e}")
+        return []
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+
+def send_notification_to_lab_incharge(subject: str, html_body: str, lab_id: Optional[str]) -> bool:
+    """Send email only to incharge(s) assigned to the provided lab."""
+    emails = _get_lab_incharge_emails(lab_id)
+    if not emails:
+        print(f"[Notifier] No lab incharge recipients found for lab {lab_id}")
+        return False
+    return _send_email_async(subject, html_body, emails)
+
+
+def send_notification_to_user(subject: str, html_body: str, user_email: Optional[str]) -> bool:
+    """Send email to a single user (used for requester approval notifications)."""
+    email = (user_email or "").strip()
+    if not email or "@" not in email:
+        print("[Notifier] Requester email missing/invalid — skipping notification")
+        return False
+    return _send_email_async(subject, html_body, [email])
+
+
+def send_notification_email(subject: str, html_body: str, role_filter: list):
+    """Backward-compatible role-based notifier."""
+    conn = None
+    cursor = None
+    try:
+        conn = db.get_connection()
+        if not conn:
+            print("[Notifier] DB connection failed — skipping email")
+            return
+        cursor = conn.cursor()
+        placeholders = ",".join(["%s"] * len(role_filter))
+        cursor.execute(
+            f"SELECT email FROM users WHERE role IN ({placeholders})",
+            role_filter
+        )
+        rows = cursor.fetchall() or []
+        emails = [r["email"] for r in rows if r.get("email")]
+        _send_email_async(subject, html_body, emails)
+    except Exception as e:
+        print(f"[Notifier] Unexpected role-based email error: {e}")
+        traceback.print_exc()
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
 
 
 _WARRANTY_NOTIFIED_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "warranty_notified_ids.json")
@@ -6995,9 +7205,11 @@ def _warranty_expiry_job():
         if not conn:
             print("[Scheduler] DB connection failed")
             return
+
         cursor = conn.cursor()
-        cursor.execute("""
-            SELECT d.device_id, d.asset_code, d.assigned_code, d.brand, d.model,
+        cursor.execute(
+            """
+            SELECT d.device_id, d.lab_id, d.asset_code, d.assigned_code, d.brand, d.model,
                    COALESCE(et.name, 'Unknown') AS type_name,
                    COALESCE(l.lab_name, 'Unassigned') AS lab_name,
                    b.vendor_name, b.invoice_number,
@@ -7014,35 +7226,25 @@ def _warranty_expiry_job():
               AND (d.purchase_date + (d.warranty_years * INTERVAL '1 year'))::date
                   BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '90 days'
             ORDER BY days_left ASC
-        """)
+            """
+        )
         devices = cursor.fetchall()
         cursor.close()
         conn.close()
 
-        # Load which devices were already notified
         notified = _load_notified_ids()
         today_str = datetime.now().strftime("%Y-%m-%d")
 
-        # Remove devices whose warranty has now expired from the tracking set
-        # (so they are eligible for an 'expired' alert in future if logic expands)
-        expired_device_ids = [
-            str(d["device_id"]) for d in devices
-            if int(d["days_left"]) <= 0
-        ]
+        expired_device_ids = [str(d["device_id"]) for d in devices if int(d["days_left"]) <= 0]
         for dev_id in expired_device_ids:
             notified.pop(dev_id, None)
 
-        # Find devices NOT yet notified
-        new_devices = [
-            d for d in devices
-            if str(d["device_id"]) not in notified
-        ]
-
+        new_devices = [d for d in devices if str(d["device_id"]) not in notified]
         if not new_devices:
             print(f"[Scheduler] All {len(devices)} expiring device(s) already notified — skipping email")
             return
 
-        print(f"[Scheduler] {len(new_devices)} new device(s) entering expiry window — sending alert")
+        print(f"[Scheduler] {len(new_devices)} new device(s) entering expiry window — sending lab-scoped alerts")
 
         def urgency(days):
             if days <= 30:
@@ -7051,68 +7253,84 @@ def _warranty_expiry_job():
                 return "#f97316", "Warning"
             return "#eab308", "Notice"
 
-        rows_html = ""
+        devices_by_lab = {}
         for d in new_devices:
-            days_left = int(d["days_left"])
-            color, label = urgency(days_left)
-            rows_html += f"""
-            <tr style="border-bottom:1px solid #e5e7eb;">
-                <td style="padding:10px 12px;font-weight:600;">{d.get('asset_code') or d.get('assigned_code') or f"#{d['device_id']}"}</td>
-                <td style="padding:10px 12px;">{d['type_name']} — {d['brand']} {d['model']}</td>
-                <td style="padding:10px 12px;">{d['lab_name']}</td>
-                <td style="padding:10px 12px;">{d.get('vendor_name') or '—'}</td>
-                <td style="padding:10px 12px;text-align:center;">{d['warranty_expiry']}</td>
-                <td style="padding:10px 12px;text-align:center;font-weight:700;color:{color};">{days_left}d</td>
-                <td style="padding:10px 12px;text-align:center;">
-                    <span style="background:{color};color:white;padding:3px 10px;border-radius:10px;font-size:12px;font-weight:600;">{label}</span>
-                </td>
-            </tr>"""
+            lab_key = str(d.get("lab_id") or "")
+            if not lab_key:
+                print(f"[Scheduler] Skipping device {d.get('device_id')} (no lab_id)")
+                continue
+            devices_by_lab.setdefault(lab_key, []).append(d)
 
-        html_body = f"""
-        <html>
-        <body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f3f4f6;padding:20px;">
-          <div style="max-width:860px;margin:0 auto;background:white;border-radius:12px;overflow:hidden;box-shadow:0 4px 6px rgba(0,0,0,0.1);">
-            <div style="background:linear-gradient(135deg,#f59e0b,#d97706);padding:22px 32px;">
-              <h1 style="color:white;margin:0;font-size:20px;">📅 AssetIQ — Warranty Expiry Alert</h1>
-              <p style="color:rgba(255,255,255,0.85);margin:6px 0 0;font-size:13px;">
-                {len(new_devices)} new device(s) entering the 90-day warranty expiry window &nbsp;•&nbsp; {datetime.now().strftime('%B %d, %Y')}
-              </p>
-            </div>
-            <div style="padding:24px 32px;">
-              <p style="color:#374151;font-size:13px;margin:0 0 16px;">
-                You will only receive this alert once per device. You will not be notified again unless a new device enters the expiry window.
-              </p>
-              <table style="width:100%;border-collapse:collapse;font-size:13px;">
-                <thead>
-                  <tr style="background:#f9fafb;border-bottom:2px solid #e5e7eb;">
-                    <th style="padding:10px 12px;text-align:left;color:#6b7280;font-size:11px;text-transform:uppercase;">Asset</th>
-                    <th style="padding:10px 12px;text-align:left;color:#6b7280;font-size:11px;text-transform:uppercase;">Device</th>
-                    <th style="padding:10px 12px;text-align:left;color:#6b7280;font-size:11px;text-transform:uppercase;">Lab</th>
-                    <th style="padding:10px 12px;text-align:left;color:#6b7280;font-size:11px;text-transform:uppercase;">Vendor</th>
-                    <th style="padding:10px 12px;text-align:center;color:#6b7280;font-size:11px;text-transform:uppercase;">Expiry</th>
-                    <th style="padding:10px 12px;text-align:center;color:#6b7280;font-size:11px;text-transform:uppercase;">Days Left</th>
-                    <th style="padding:10px 12px;text-align:center;color:#6b7280;font-size:11px;text-transform:uppercase;">Status</th>
-                  </tr>
-                </thead>
-                <tbody>{rows_html}</tbody>
-              </table>
-            </div>
-            <div style="background:#f9fafb;padding:14px 32px;text-align:center;">
-              <p style="color:#9ca3af;font-size:11px;margin:0;">
-                AssetIQ Automatic Warranty Monitor • One-time alert per device
-              </p>
-            </div>
-          </div>
-        </body></html>"""
+        dispatched_device_ids = []
+        for lab_id, lab_devices in devices_by_lab.items():
+            lab_name = lab_devices[0].get("lab_name") or lab_id
 
-        subject = f"📅 Warranty Expiry Alert — {len(new_devices)} new device(s) expiring within 90 days"
-        send_notification_email(subject, html_body, ["HOD", "Lab Incharge"])
+            rows_html = ""
+            for d in lab_devices:
+                days_left = int(d["days_left"])
+                color, label = urgency(days_left)
+                rows_html += f"""
+                <tr style="border-bottom:1px solid #e5e7eb;">
+                    <td style="padding:10px 12px;font-weight:600;">{d.get('asset_code') or d.get('assigned_code') or f"#{d['device_id']}"}</td>
+                    <td style="padding:10px 12px;">{d['type_name']} — {d['brand']} {d['model']}</td>
+                    <td style="padding:10px 12px;">{d['lab_name']}</td>
+                    <td style="padding:10px 12px;">{d.get('vendor_name') or '—'}</td>
+                    <td style="padding:10px 12px;text-align:center;">{d['warranty_expiry']}</td>
+                    <td style="padding:10px 12px;text-align:center;font-weight:700;color:{color};">{days_left}d</td>
+                    <td style="padding:10px 12px;text-align:center;">
+                        <span style="background:{color};color:white;padding:3px 10px;border-radius:10px;font-size:12px;font-weight:600;">{label}</span>
+                    </td>
+                </tr>"""
 
-        # Mark these devices as notified
-        for d in new_devices:
-            notified[str(d["device_id"])] = today_str
-        _save_notified_ids(notified)
-        print(f"[Scheduler] Warranty email dispatched for {len(new_devices)} new devices")
+            html_body = f"""
+            <html>
+            <body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f3f4f6;padding:20px;">
+              <div style="max-width:860px;margin:0 auto;background:white;border-radius:12px;overflow:hidden;box-shadow:0 4px 6px rgba(0,0,0,0.1);">
+                <div style="background:linear-gradient(135deg,#f59e0b,#d97706);padding:22px 32px;">
+                  <h1 style="color:white;margin:0;font-size:20px;">📅 AssetIQ — Warranty Expiry Alert</h1>
+                  <p style="color:rgba(255,255,255,0.85);margin:6px 0 0;font-size:13px;">
+                    Lab: {lab_name} &nbsp;•&nbsp; {len(lab_devices)} device(s) in the 90-day expiry window &nbsp;•&nbsp; {datetime.now().strftime('%B %d, %Y')}
+                  </p>
+                </div>
+                <div style="padding:24px 32px;">
+                  <p style="color:#374151;font-size:13px;margin:0 0 16px;">
+                    You are receiving this alert because you are assigned as the lab incharge for {lab_name}.
+                  </p>
+                  <table style="width:100%;border-collapse:collapse;font-size:13px;">
+                    <thead>
+                      <tr style="background:#f9fafb;border-bottom:2px solid #e5e7eb;">
+                        <th style="padding:10px 12px;text-align:left;color:#6b7280;font-size:11px;text-transform:uppercase;">Asset</th>
+                        <th style="padding:10px 12px;text-align:left;color:#6b7280;font-size:11px;text-transform:uppercase;">Device</th>
+                        <th style="padding:10px 12px;text-align:left;color:#6b7280;font-size:11px;text-transform:uppercase;">Lab</th>
+                        <th style="padding:10px 12px;text-align:left;color:#6b7280;font-size:11px;text-transform:uppercase;">Vendor</th>
+                        <th style="padding:10px 12px;text-align:center;color:#6b7280;font-size:11px;text-transform:uppercase;">Expiry</th>
+                        <th style="padding:10px 12px;text-align:center;color:#6b7280;font-size:11px;text-transform:uppercase;">Days Left</th>
+                        <th style="padding:10px 12px;text-align:center;color:#6b7280;font-size:11px;text-transform:uppercase;">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>{rows_html}</tbody>
+                  </table>
+                </div>
+                <div style="background:#f9fafb;padding:14px 32px;text-align:center;">
+                  <p style="color:#9ca3af;font-size:11px;margin:0;">
+                    AssetIQ Automatic Warranty Monitor • One-time alert per device
+                  </p>
+                </div>
+              </div>
+            </body></html>"""
+
+            subject = f"📅 Warranty Expiry Alert — {lab_name} ({len(lab_devices)} device(s))"
+            if send_notification_to_lab_incharge(subject, html_body, lab_id):
+                dispatched_device_ids.extend(str(d["device_id"]) for d in lab_devices)
+
+        for device_id in dispatched_device_ids:
+            notified[device_id] = today_str
+
+        if dispatched_device_ids:
+            _save_notified_ids(notified)
+            print(f"[Scheduler] Warranty email dispatched for {len(dispatched_device_ids)} device(s)")
+        else:
+            print("[Scheduler] No lab-scoped warranty emails were dispatched")
 
     except Exception as e:
         print(f"[Scheduler] Error in warranty job: {e}")
@@ -7512,9 +7730,11 @@ def approve_scrap_request(req_id):
 
         cursor.execute(
             """
-            SELECT device_ids, remark
-            FROM scrap_requests
-            WHERE scrap_request_id = %s AND status = 'pending'
+            SELECT sr.device_ids, sr.remark, sr.requested_by, sr.lab_id,
+                   COALESCE(l.lab_name, sr.lab_id::text) AS lab_name
+            FROM scrap_requests sr
+            LEFT JOIN labs l ON sr.lab_id = l.lab_id
+            WHERE sr.scrap_request_id = %s AND sr.status = 'pending'
             """,
             (req_id,),
         )
@@ -7524,6 +7744,8 @@ def approve_scrap_request(req_id):
 
         device_ids = json.loads(row["device_ids"]) if isinstance(row["device_ids"], str) else row["device_ids"]
         remark = (row.get("remark") or "").strip()
+        requested_by_email = row.get("requested_by")
+        lab_name = row.get("lab_name") or row.get("lab_id") or "Unknown"
 
         inserted = _scrap_devices_by_ids(cursor, conn, device_ids, user, remark or None)
 
@@ -7540,6 +7762,29 @@ def approve_scrap_request(req_id):
         conn.commit()
         cursor.close()
         conn.close()
+
+        scrap_html = f"""
+                <html><body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f3f4f6;padding:20px;">
+                    <div style="max-width:620px;margin:0 auto;background:white;border-radius:12px;overflow:hidden;box-shadow:0 4px 6px rgba(0,0,0,0.1);">
+                        <div style="background:linear-gradient(135deg,#22c55e,#15803d);padding:20px 28px;">
+                            <h1 style="color:white;margin:0;font-size:18px;">✅ Scrap Request Approved</h1>
+                            <p style="color:rgba(255,255,255,0.85);margin:4px 0 0;font-size:13px;">Request #{req_id}</p>
+                        </div>
+                        <div style="padding:20px 28px;">
+                            <table style="width:100%;font-size:14px;border-collapse:collapse;">
+                                <tr><td style="padding:8px 0;color:#6b7280;width:140px;">Lab</td><td style="padding:8px 0;color:#111;">{lab_name}</td></tr>
+                                <tr><td style="padding:8px 0;color:#6b7280;">Devices Scrapped</td><td style="padding:8px 0;color:#111;">{inserted}</td></tr>
+                                <tr><td style="padding:8px 0;color:#6b7280;">Approved By</td><td style="padding:8px 0;color:#111;">{approver}</td></tr>
+                            </table>
+                        </div>
+                    </div>
+                </body></html>
+        """
+        send_notification_to_user(
+            subject=f"✅ Scrap Approved: Request #{req_id}",
+            html_body=scrap_html,
+            user_email=requested_by_email
+        )
 
         return jsonify({"success": True, "message": f"Scrap request approved ({inserted} device(s) scrapped)"})
 

@@ -47,6 +47,7 @@ interface LabListItem {
   lab_name: string;
   rows: number;
   columns: number;
+  incharge_name?: string;
 }
 
 export default function Labplan() {
@@ -61,6 +62,8 @@ export default function Labplan() {
   const [stationList, setStationList] = useState<any[]>([]);
   const [loadingStationList, setLoadingStationList] = useState(false);
   const [showPrintQR, setShowPrintQR] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [highlightQuery, setHighlightQuery] = useState("");
   const [stationQrModal, setStationQrModal] = useState<{
     stationCode: string;
     qrValue: string;
@@ -71,6 +74,27 @@ export default function Labplan() {
   // Fetch all labs on component mount
   useEffect(() => {
     fetchLabs();
+  }, []);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const labParam = params.get("lab");
+    const searchParam = params.get("search");
+    const stationParam = params.get("station");
+    const deviceParam = params.get("device");
+    if (searchParam) {
+      setSearchQuery(searchParam);
+    }
+    if (stationParam) {
+      setHighlightQuery(stationParam);
+    } else if (deviceParam) {
+      setHighlightQuery(deviceParam);
+    } else if (searchParam) {
+      setHighlightQuery(searchParam);
+    }
+    if (labParam) {
+      fetchLabDetails(labParam);
+    }
   }, []);
 
   const fetchLabs = async () => {
@@ -168,8 +192,49 @@ export default function Labplan() {
     return stationList.filter((s: any) => s.devices && s.devices.length > 0);
   }, [stationList]);
 
+  const normalizedQuery = useMemo(() => searchQuery.trim().toLowerCase(), [searchQuery]);
+  const normalizedHighlight = useMemo(() => highlightQuery.trim().toLowerCase(), [highlightQuery]);
+  const filteredLabs = useMemo(() => {
+    if (!normalizedQuery) return labs;
+    return labs.filter((lab) => {
+      const haystack = [lab.lab_name, lab.lab_id, lab.incharge_name]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+      return haystack.includes(normalizedQuery);
+    });
+  }, [labs, normalizedQuery]);
+  const filteredStationList = useMemo(() => {
+    if (!normalizedQuery) return activeStationList;
+    return activeStationList.filter((station: any) => {
+      const stationOs = Array.isArray(station.os) ? station.os.join(" ") : station.os;
+      const stationTokens = [
+        station.assignedCode,
+        station.row,
+        station.column,
+        station.stationQrValue,
+        stationOs,
+      ];
+      const deviceTokens = (station.devices || []).flatMap((device: any) => [
+        device.type,
+        device.brand,
+        device.model,
+        device.specification,
+        device.assignedCode,
+        device.prefixCode,
+        device.assetCode,
+        device.invoiceNumber,
+      ]);
+      const haystack = [...stationTokens, ...deviceTokens]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+      return haystack.includes(normalizedQuery);
+    });
+  }, [activeStationList, normalizedQuery]);
+
   const exportToExcel = () => {
-    if (!activeStationList || activeStationList.length === 0) {
+    if (!filteredStationList || filteredStationList.length === 0) {
       alert("No station data to export");
       return;
     }
@@ -177,7 +242,7 @@ export default function Labplan() {
     // Create CSV content with prefix code column
     let csv = "Station Code,Position,Operating System,Device Type,Brand,Model,Specification,Prefix Code,Asset Code,Unit Price,Warranty (Years),Purchase Date,Invoice Number,Status\n";
     
-    activeStationList.forEach((station: any) => {
+    filteredStationList.forEach((station: any) => {
       station.devices.forEach((device: any, idx: number) => {
         const status = device.isActive ? 'Active' : (device.issues?.length > 0 ? 'Has Issues' : 'Inactive');
         if (idx === 0) {
@@ -231,11 +296,10 @@ export default function Labplan() {
   // search bar demo
   const placeholders = ["Search labs...", "Find equipment...", "Search by batch..."];
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    console.log("Search:", e.target.value);
+    setSearchQuery(e.target.value);
   };
   const onSubmit = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    console.log("Search submitted");
   };
 
   const labCost = useMemo(() => {
@@ -249,11 +313,11 @@ export default function Labplan() {
 
   // Prepare QR codes for printing — includes both station QR and individual device QRs
   const qrCodesToPrint = useMemo(() => {
-    if (!activeStationList || activeStationList.length === 0) return [];
+    if (!filteredStationList || filteredStationList.length === 0) return [];
     
     const qrList: any[] = [];
     
-    activeStationList.forEach((station: any) => {
+    filteredStationList.forEach((station: any) => {
       // 1) Station-level QR (shows all devices in station)
       const stationQr = station.stationQrValue || '';
       if (stationQr) {
@@ -284,19 +348,30 @@ export default function Labplan() {
     });
     
     return qrList;
-  }, [activeStationList]);
+  }, [filteredStationList]);
 
   const handlePrintQRCodes = () => {
     setShowPrintQR(true);
   };
 
+  const handleClearHighlight = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!highlightQuery) return;
+    const target = e.target as HTMLElement;
+    if (target.closest('[data-highlight-match="true"]')) return;
+    setHighlightQuery("");
+  };
+
   return (
-    <div className="min-h-screen bg-neutral-950 text-white" style={{
+    <div
+      className="min-h-screen bg-neutral-950 text-white"
+      style={{
       backgroundImage: 'url(/bg.jpg)',
       backgroundSize: 'cover',
       backgroundPosition: 'center',
       backgroundRepeat: 'no-repeat'
-    }}>
+      }}
+      onClick={handleClearHighlight}
+    >
       <AppNavbar
         rightContent={
           <div className="w-full max-w-sm">
@@ -339,7 +414,7 @@ export default function Labplan() {
         {/* ✅ Comet Cards List */}
         {!loading && !error && (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 mt-8 gap-6">
-            {labs.map((lab) => (
+            {filteredLabs.map((lab) => (
               <div key={lab.lab_id} onClick={() => handleLabClick(lab)} className="cursor-pointer">
                 <CometCard>
                   <div className="p-6 text-white bg-neutral-800/95 rounded-2xl backdrop-blur-sm h-full flex flex-col justify-between">
@@ -347,6 +422,9 @@ export default function Labplan() {
                       <h2 className="text-2xl font-semibold mb-2">{lab.lab_name}</h2>
                       <p className="text-gray-300 text-xs">
                         Lab ID: {lab.lab_id}
+                      </p>
+                      <p className="text-gray-400 text-[14px] mt-1">
+                        Incharge: {lab.incharge_name ? lab.incharge_name : "Unassigned"}
                       </p>
                     </div>
                     <button className="mt-4 px-4 py-2 bg-blue-600 rounded-lg text-white font-semibold hover:bg-blue-700 transition-colors">
@@ -359,9 +437,11 @@ export default function Labplan() {
           </div>
         )}
 
-        {!loading && !error && labs.length === 0 && (
+        {!loading && !error && filteredLabs.length === 0 && (
           <div className="text-center py-12">
-            <p className="text-gray-400">No labs found. Create a lab in Lab Configuration first.</p>
+            <p className="text-gray-400">
+              {normalizedQuery ? "No labs match your search." : "No labs found. Create a lab in Lab Configuration first."}
+            </p>
           </div>
         )}
 
@@ -475,6 +555,46 @@ export default function Labplan() {
                           const deviceCount = cell.deviceGroup?.devices?.length || 0;
                           const hasIssues = cell.deviceGroup?.devices?.some((d: any) => d.issues && d.issues.length > 0);
                           const isStationType = cell.equipmentType !== "Empty";
+                          const stationTokens = [
+                            cell.deviceGroup?.assignedCode,
+                            cell.id,
+                            ...(cell.os || []),
+                          ];
+                          const deviceTokens = (cell.deviceGroup?.devices || []).flatMap((d: any) => [
+                            d.type,
+                            d.brand,
+                            d.model,
+                            d.specification,
+                            d.assignedCode,
+                            d.prefixCode,
+                            d.assetCode,
+                            d.invoiceNumber,
+                          ]);
+                          const stationHaystack = [...stationTokens, ...deviceTokens]
+                            .filter(Boolean)
+                            .join(" ")
+                            .toLowerCase();
+                          const isSearchFilteredOut = normalizedQuery && !stationHaystack.includes(normalizedQuery);
+                          const hasActiveHighlight = Boolean(normalizedHighlight);
+                          const isHighlightMatch = normalizedHighlight
+                            ? (
+                              (cell.deviceGroup?.assignedCode || cell.id || "")
+                                .toLowerCase()
+                                .includes(normalizedHighlight)
+                              || (cell.deviceGroup?.devices || []).some((d: any) => {
+                                const deviceHaystack = [
+                                  d.assignedCode,
+                                  d.prefixCode,
+                                  d.assetCode,
+                                  d.invoiceNumber,
+                                ]
+                                  .filter(Boolean)
+                                  .join(" ")
+                                  .toLowerCase();
+                                return deviceHaystack.includes(normalizedHighlight);
+                              })
+                            )
+                            : false;
                           
                           // Determine emoji based on device type or station/equipment type
                           let emoji = "🔧";
@@ -527,13 +647,17 @@ export default function Labplan() {
                           return (
                             <div
                               key={colIdx}
+                              data-highlight-match={isHighlightMatch ? "true" : "false"}
                               className={`
                                 w-28 rounded-lg border-2 flex flex-col items-center justify-center transition p-1
                                 ${hasDevices ? "cursor-pointer" : ""}
                                 ${cellBg}
+                                ${isSearchFilteredOut ? "opacity-30" : ""}
+                                ${hasActiveHighlight && !isHighlightMatch ? "opacity-30" : ""}
+                                ${isHighlightMatch ? "ring-2 ring-cyan-400 shadow-[0_0_12px_rgba(34,211,238,0.6)]" : ""}
                               `}
                               style={{ minHeight: hasDevices ? `${Math.max(96, 60 + deviceCount * 14)}px` : '96px' }}
-                              onClick={() => hasDevices && setSelectedDevice(cell)}
+                              onClick={() => hasDevices && !isSearchFilteredOut && (!hasActiveHighlight || isHighlightMatch) && setSelectedDevice(cell)}
                               title={hasDevices ? cell.deviceGroup!.devices.map((d: any) => `${d.type}: ${d.assignedCode || d.type}`).join('\n') : cell.equipmentType}
                             >
                               {hasDevices ? (
@@ -640,7 +764,7 @@ export default function Labplan() {
                     <div>
                       <h3 className="text-xl font-bold">Station Details</h3>
                       <p className="text-gray-400 text-xs mt-1">
-                        Showing {activeStationList.length} stations with devices (out of {stationList.length} total)
+                        Showing {filteredStationList.length} stations with devices{normalizedQuery ? " (filtered)" : ""} (out of {stationList.length} total)
                       </p>
                     </div>
                     <div className="flex gap-3">
@@ -688,7 +812,7 @@ export default function Labplan() {
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-neutral-700">
-                          {activeStationList.map((station, idx) => (
+                          {filteredStationList.map((station, idx) => (
                             <tr key={idx} className="hover:bg-neutral-800/70 transition-colors">
                               <td className="px-4 py-3">
                                 <span className="font-bold text-white text-base">

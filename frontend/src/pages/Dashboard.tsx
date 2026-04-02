@@ -1,5 +1,5 @@
 "use client";
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import { PlaceholdersAndVanishInput } from "@/components/ui/placeholders-and-vanish-input";
 import { WobbleCard } from "@/components/ui/wobble-card";
 import AppNavbar from "@/components/AppNavbar";
@@ -40,6 +40,9 @@ export default function Dashboard() {
   });
   const [loading, setLoading] = useState(true);
   const [recentActivities, setRecentActivities] = useState<RecentActivity[]>([]);
+  const [devices, setDevices] = useState<any[]>([]);
+  const [labs, setLabs] = useState<any[]>([]);
+  const [searchQuery, setSearchQuery] = useState("");
 
   const placeholders = [
     "Search assets by ID...",
@@ -47,12 +50,41 @@ export default function Dashboard() {
     "Search labs or locations...",
   ];
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    console.log("Search query:", e.target.value);
+    setSearchQuery(e.target.value);
   };
   const onSubmit = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    console.log("Search submitted");
   };
+
+  const normalizedQuery = useMemo(() => searchQuery.trim().toLowerCase(), [searchQuery]);
+  const matchingLabs = useMemo(() => {
+    if (!normalizedQuery) return [];
+    return labs.filter((lab: any) => {
+      const haystack = [lab.lab_name, lab.lab_id, lab.incharge_name]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+      return haystack.includes(normalizedQuery);
+    });
+  }, [labs, normalizedQuery]);
+  const matchingDevices = useMemo(() => {
+    if (!normalizedQuery) return [];
+    return devices.filter((device: any) => {
+      const haystack = [
+        device.asset_id,
+        device.assigned_code,
+        device.device_id,
+        device.type_name,
+        device.brand,
+        device.model,
+        device.invoice_number,
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+      return haystack.includes(normalizedQuery);
+    });
+  }, [devices, normalizedQuery]);
 
   useEffect(() => {
     fetchDashboardData();
@@ -65,10 +97,16 @@ export default function Dashboard() {
       // Fetch all devices for stats
       const devicesResponse = await fetch("http://localhost:5000/get_all_devices");
       const devicesData = await devicesResponse.json();
+      if (devicesData.success) {
+        setDevices(devicesData.devices || []);
+      }
       
       // Fetch labs count
       const labsResponse = await fetch("http://localhost:5000/get_labs");
       const labsData = await labsResponse.json();
+      if (labsData.success) {
+        setLabs(labsData.labs || []);
+      }
 
       if (devicesData.success) {
         const devices = devicesData.devices || [];
@@ -208,6 +246,73 @@ export default function Dashboard() {
         )}
 
         <h3 className="text-xl font-semibold mb-6 text-white">Asset Overview</h3>
+        {normalizedQuery && (
+          <div className="mb-8 bg-neutral-900/80 backdrop-blur-sm rounded-2xl p-6 border border-neutral-800">
+            <div className="flex items-center justify-between mb-4">
+              <h4 className="text-lg font-semibold text-white">Search Results</h4>
+              <span className="text-xs text-gray-400">
+                {matchingLabs.length + matchingDevices.length} match(es)
+              </span>
+            </div>
+            {matchingLabs.length === 0 && matchingDevices.length === 0 ? (
+              <p className="text-gray-400 text-xs">No matches found. Try a different keyword.</p>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="bg-neutral-800/60 rounded-lg p-4 border border-neutral-700">
+                  <p className="text-xs text-gray-400 mb-3">Labs</p>
+                  {matchingLabs.length === 0 ? (
+                    <p className="text-xs text-gray-500">No lab matches.</p>
+                  ) : (
+                    <ul className="space-y-2">
+                      {matchingLabs.slice(0, 5).map((lab: any) => (
+                        <li key={lab.lab_id} className="text-xs">
+                          <a
+                            href={`/lab-plan?lab=${encodeURIComponent(lab.lab_id || "")}`}
+                            className="text-gray-200 hover:text-white transition-colors"
+                          >
+                            <span className="font-semibold">{lab.lab_name}</span> (ID: {lab.lab_id})
+                          </a>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+                <div className="bg-neutral-800/60 rounded-lg p-4 border border-neutral-700">
+                  <p className="text-xs text-gray-400 mb-3">Assets</p>
+                  {matchingDevices.length === 0 ? (
+                    <p className="text-xs text-gray-500">No asset matches.</p>
+                  ) : (
+                    <ul className="space-y-2">
+                      {matchingDevices.slice(0, 5).map((device: any, idx: number) => (
+                        <li key={device.device_id || device.asset_id || idx} className="text-xs text-gray-200">
+                          <p className="font-semibold">
+                            {device.type_name || device.type || "Device"}
+                            {device.asset_id ? ` - ${device.asset_id}` : ""}
+                            {device.assigned_code ? ` (${device.assigned_code})` : ""}
+                          </p>
+                          <div className="mt-1 flex items-center gap-3 text-xs">
+                            <a
+                              href={`/lab-plan?lab=${encodeURIComponent(device.lab_id || "")}&station=${encodeURIComponent(device.assigned_code || "")}&device=${encodeURIComponent(device.asset_id || device.assigned_code || device.device_id || "")}`}
+                              className="text-cyan-300 hover:text-cyan-200 transition-colors"
+                            >
+                              Open in Labplan
+                            </a>
+                            <a
+                              href={`/dashboard/issues?lab=${encodeURIComponent(device.lab_id || "")}&station=${encodeURIComponent(device.assigned_code || "")}&device=${encodeURIComponent(device.asset_id || device.assigned_code || device.device_id || "")}`}
+                              className="text-orange-300 hover:text-orange-200 transition-colors"
+                            >
+                              Open in Issues
+                            </a>
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
         {loading ? (
           <div className="flex items-center justify-center py-12">
             <p className="text-gray-400">Loading dashboard data...</p>
