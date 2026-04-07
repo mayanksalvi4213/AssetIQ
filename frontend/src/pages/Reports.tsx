@@ -1,5 +1,5 @@
 "use client";
-import React, { useState } from "react";
+import React from "react";
 import { CometCard } from "@/components/ui/comet-card";
 import AppNavbar from "@/components/AppNavbar";
 
@@ -82,14 +82,17 @@ const Reports: React.FC = () => {
           </div>
         </CometCard>
 
-        {/* Asset Transfer/Scrap */}
+        {/* Student Complaint Approvals */}
         <CometCard>
           <div className="p-7 text-white bg-neutral-800/95 rounded-2xl backdrop-blur-sm">
-            <h2 className="text-xl font-semibold mb-2">Asset Transfer / Scrap</h2>
+            <h2 className="text-xl font-semibold mb-2">Student Complaint Approvals</h2>
             <p className="text-gray-300 text-xs mb-4">
-              Track asset transfers and scrapped devices.
+              Review and approve or reject student-submitted device complaints.
             </p>
-            <button className="px-4 py-2 bg-purple-600 rounded-lg text-white font-semibold hover:bg-purple-700 transition-colors">
+            <button
+              onClick={() => (window.location.href = "/reports/student-complaints")}
+              className="px-4 py-2 bg-purple-600 rounded-lg text-white font-semibold hover:bg-purple-700 transition-colors"
+            >
               View Report
             </button>
           </div>

@@ -24,6 +24,8 @@ import Scrap from "./pages/Scrap.tsx";
 import { ScrapHoverButton } from "./components/ui/ScrapHoverButton.tsx";
 import ProactiveMaintenance from "./pages/ProactiveMaintenance.tsx";
 import AssignLabIncharge from "./pages/AssignLabIncharge.tsx";
+import StudentLabComplaint from "./pages/StudentLabComplaint";
+import StudentComplaintsApproval from "./pages/StudentComplaintsApproval";
 
 
 const App: React.FC = () => {
@@ -36,6 +38,7 @@ const App: React.FC = () => {
           <Route path="/login" element={<LoginForm />} />
           <Route path="/forgot" element={<ForgotPassword />} />
           <Route path="/signup" element={<Signup />} />
+          <Route path="/student/lab/:labToken" element={<StudentLabComplaint />} />
           
           {/* Protected routes */}
           <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
@@ -80,6 +83,11 @@ const App: React.FC = () => {
           <Route path="/reports/warranty" element={<ProtectedRoute><WarrantyExpiry /></ProtectedRoute>} />
           <Route path="/reports/issue-trends" element={<ProtectedRoute><IssueTrends /></ProtectedRoute>} />
           <Route path="/reports/proactive-maintenance" element={<ProtectedRoute><ProactiveMaintenance /></ProtectedRoute>} />
+          <Route path="/reports/student-complaints" element={
+            <ProtectedRoute allowedRoles={['HOD', 'Lab Assistant', 'Lab Incharge']}>
+              <StudentComplaintsApproval />
+            </ProtectedRoute>
+          } />
         </Routes>
         <ScrapHoverButton />
       </AuthProvider>

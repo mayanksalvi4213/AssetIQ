@@ -70,6 +70,7 @@ export default function Labplan() {
     devices: { type: string; prefixCode: string; brand: string; model: string }[];
   } | null>(null);
   const [pendingOutgoingDeviceIds, setPendingOutgoingDeviceIds] = useState<Set<number>>(new Set());
+  const [labPublicQr, setLabPublicQr] = useState<{ publicUrl: string; token: string } | null>(null);
 
   // Fetch all labs on component mount
   useEffect(() => {
@@ -123,6 +124,7 @@ export default function Labplan() {
       
       if (data.success) {
         setSelectedLab(data.lab);
+        fetchLabPublicQr(labId);
         // Fetch station list as well
         fetchStationList(labId);
         // Fetch pending transfer info
@@ -133,6 +135,23 @@ export default function Labplan() {
     } catch (err) {
       console.error("Error fetching lab details:", err);
       setError("Error fetching lab details from server");
+    }
+  };
+
+  const fetchLabPublicQr = async (labId: string) => {
+    try {
+      const response = await fetch(`http://localhost:5000/get_or_create_lab_public_qr/${labId}`);
+      const data = await response.json();
+      if (response.ok && data.success) {
+        setLabPublicQr({
+          publicUrl: data.publicUrl,
+          token: data.labPublicToken,
+        });
+      } else {
+        setLabPublicQr(null);
+      }
+    } catch {
+      setLabPublicQr(null);
     }
   };
 
@@ -478,6 +497,37 @@ export default function Labplan() {
                   Close
                 </button>
               </div>
+
+              {labPublicQr && (
+                <div className="mb-6 bg-slate-900/70 border border-cyan-800 rounded-xl p-4 flex flex-col md:flex-row gap-4 md:items-center md:justify-between">
+                  <div>
+                    <p className="text-sm font-semibold text-cyan-200">Student Complaint QR for this Lab</p>
+                    <p className="text-xs text-slate-300 break-all">{labPublicQr.publicUrl}</p>
+                    <div className="mt-2 flex gap-2">
+                      <button
+                        className="px-3 py-1.5 text-xs rounded bg-cyan-700 hover:bg-cyan-600"
+                        onClick={async () => {
+                          await navigator.clipboard.writeText(labPublicQr.publicUrl);
+                          alert("Lab public URL copied");
+                        }}
+                      >
+                        Copy URL
+                      </button>
+                      <a
+                        className="px-3 py-1.5 text-xs rounded bg-blue-700 hover:bg-blue-600"
+                        href={labPublicQr.publicUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        Open Student Page
+                      </a>
+                    </div>
+                  </div>
+                  <div className="bg-white p-2 rounded-lg inline-flex">
+                    <QRCodeSVG value={labPublicQr.publicUrl} size={112} />
+                  </div>
+                </div>
+              )}
 
               {/* Lab Stats Summary */}
               {labStats && (

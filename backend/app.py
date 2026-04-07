@@ -599,6 +599,10 @@ def register():
     if not all(field in data for field in required_fields):
         return jsonify({"error": "Missing required fields"}), 400
 
+    email = (data.get("email") or "").strip().lower()
+    if not email.endswith("@apsit.edu.in"):
+        return jsonify({"error": "Only @apsit.edu.in email addresses are allowed for registration"}), 400
+
     assigned_lab = None
     if data["role"] == "Lab Incharge":
         assigned_lab = data.get("accessScope", {}).get("lab")
@@ -606,7 +610,7 @@ def register():
     user = User.create_user(
         first_name=data["firstName"],
         last_name=data["lastName"],
-        email=data["email"],
+        email=email,
         password=data["password"],
         role=data["role"],
         assigned_lab=assigned_lab
@@ -2537,6 +2541,474 @@ def raise_issue():
 
     except Exception as e:
         print(f"Error raising issue: {str(e)}")
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+# -----------------------------
+# Get or Create Lab Public QR
+# -----------------------------
+@app.route("/get_or_create_lab_public_qr/<lab_id>", methods=["GET"])
+def get_or_create_lab_public_qr(lab_id):
+    """
+    Ensure each lab has a stable public token used in student-facing QR URLs.
+    """
+    try:
+        conn = db.get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            SELECT lab_id, lab_name, lab_public_token
+            FROM labs
+            WHERE lab_id = %s
+            """,
+            (lab_id,)
+        )
+        lab_row = cursor.fetchone()
+        if not lab_row:
+            cursor.close()
+            conn.close()
+            return jsonify({"success": False, "error": "Lab not found"}), 404
+
+        token = (lab_row.get("lab_public_token") or "").strip()
+        if not token:
+            token = uuid.uuid4().hex
+            cursor.execute(
+                "UPDATE labs SET lab_public_token = %s WHERE lab_id = %s",
+                (token, lab_id)
+            )
+            conn.commit()
+
+        cursor.close()
+        conn.close()
+
+        public_url = f"http://localhost:5173/student/lab/{token}"
+        return jsonify({
+            "success": True,
+            "labId": lab_row["lab_id"],
+            "labName": lab_row["lab_name"],
+            "labPublicToken": token,
+            "publicUrl": public_url,
+            "qrValue": public_url,
+        })
+    except Exception as e:
+        print(f"Error generating lab public QR: {str(e)}")
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+# -----------------------------
+# Public: Get Lab Station Data by Token
+# -----------------------------
+@app.route("/public/lab/<lab_token>", methods=["GET"])
+def get_public_lab_by_token(lab_token):
+    """
+    Public endpoint for students scanning a lab QR.
+    Returns lab station/device details needed to raise complaints.
+    """
+    try:
+        conn = db.get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            SELECT lab_id, lab_name
+            FROM labs
+            WHERE lab_public_token = %s
+            """,
+            (lab_token,)
+        )
+        lab = cursor.fetchone()
+        if not lab:
+            cursor.close()
+            conn.close()
+            return jsonify({"success": False, "error": "Invalid or expired lab QR"}), 404
+
+        cursor.execute(
+            """
+            SELECT
+                ls.station_id,
+                ls.assigned_code,
+                lgc.row_number,
+                lgc.column_number,
+                COALESCE(lgc.equipment_type, '') AS station_type_label,
+                lsd.device_id,
+                lsd.device_type,
+                lsd.brand,
+                lsd.model,
+                lsd.specification,
+                d.asset_code,
+                d.assigned_code AS device_assigned_code,
+                d.is_active
+            FROM lab_stations ls
+            LEFT JOIN lab_grid_cells lgc ON ls.station_id = lgc.station_id
+            LEFT JOIN lab_station_devices lsd ON ls.station_id = lsd.station_id
+            LEFT JOIN devices d ON lsd.device_id = d.device_id
+            WHERE ls.lab_id = %s
+            ORDER BY ls.assigned_code, lsd.device_type
+            """,
+            (lab["lab_id"],)
+        )
+        rows = cursor.fetchall()
+
+        stations_map = {}
+        for row in rows:
+            sid = row["station_id"]
+            if sid not in stations_map:
+                stations_map[sid] = {
+                    "stationId": sid,
+                    "assignedCode": row["assigned_code"],
+                    "row": row.get("row_number"),
+                    "column": row.get("column_number"),
+                    "stationTypeLabel": row.get("station_type_label"),
+                    "devices": []
+                }
+
+            if row.get("device_id"):
+                stations_map[sid]["devices"].append({
+                    "deviceId": row["device_id"],
+                    "type": row.get("device_type"),
+                    "brand": row.get("brand"),
+                    "model": row.get("model"),
+                    "specification": row.get("specification"),
+                    "assetCode": row.get("asset_code"),
+                    "prefixCode": row.get("device_assigned_code"),
+                    "isActive": bool(row.get("is_active")),
+                })
+
+        cursor.close()
+        conn.close()
+
+        return jsonify({
+            "success": True,
+            "lab": {
+                "labId": lab["lab_id"],
+                "labName": lab["lab_name"],
+            },
+            "stations": list(stations_map.values()),
+        })
+    except Exception as e:
+        print(f"Error in public lab endpoint: {str(e)}")
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+# -----------------------------
+# Public: Student Complaint Submission
+# -----------------------------
+@app.route("/public/student_complaint", methods=["POST"])
+def public_student_complaint():
+    """
+    Students submit complaints that remain pending until approved.
+    """
+    try:
+        data = request.get_json(force=True)
+        lab_token = (data.get("labToken") or "").strip()
+        station_id = data.get("stationId")
+        device_id = data.get("deviceId")
+        student_name = (data.get("studentName") or "").strip()
+        student_email = (data.get("studentEmail") or "").strip().lower()
+        title = (data.get("title") or "").strip()
+        description = (data.get("description") or "").strip()
+        severity = (data.get("severity") or "medium").strip().lower()
+
+        if not all([lab_token, station_id, device_id, student_name, student_email, title]):
+            return jsonify({"success": False, "error": "Missing required fields"}), 400
+        if severity not in ["low", "medium", "high", "critical"]:
+            return jsonify({"success": False, "error": "Invalid severity"}), 400
+        if "@" not in student_email:
+            return jsonify({"success": False, "error": "Invalid email address"}), 400
+
+        conn = db.get_connection()
+        cursor = conn.cursor()
+
+        # Validate lab token and device ownership
+        cursor.execute(
+            """
+            SELECT l.lab_id
+            FROM labs l
+            WHERE l.lab_public_token = %s
+            """,
+            (lab_token,)
+        )
+        lab_row = cursor.fetchone()
+        if not lab_row:
+            cursor.close()
+            conn.close()
+            return jsonify({"success": False, "error": "Invalid lab token"}), 404
+
+        cursor.execute(
+            """
+            SELECT 1
+            FROM lab_stations ls
+            JOIN lab_station_devices lsd ON lsd.station_id = ls.station_id
+            WHERE ls.lab_id = %s AND ls.station_id = %s AND lsd.device_id = %s
+            """,
+            (lab_row["lab_id"], station_id, device_id)
+        )
+        mapping_ok = cursor.fetchone()
+        if not mapping_ok:
+            cursor.close()
+            conn.close()
+            return jsonify({"success": False, "error": "Device does not belong to this lab station"}), 400
+
+        cursor.execute(
+            """
+            INSERT INTO student_issue_requests
+            (lab_id, station_id, device_id, student_name, student_email, issue_title, issue_description, severity, status)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'pending')
+            RETURNING request_id, created_at
+            """,
+            (lab_row["lab_id"], station_id, device_id, student_name, student_email, title, description, severity)
+        )
+        created = cursor.fetchone()
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return jsonify({
+            "success": True,
+            "requestId": created["request_id"],
+            "status": "pending",
+            "createdAt": created["created_at"].isoformat() if created.get("created_at") else None,
+            "message": "Complaint submitted for lab assistant approval",
+        })
+    except Exception as e:
+        print(f"Error creating student complaint: {str(e)}")
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+# -----------------------------
+# Get Pending Student Complaints
+# -----------------------------
+@app.route("/get_pending_student_complaints", methods=["GET"])
+def get_pending_student_complaints():
+    """
+    Returns complaints waiting for approval.
+    Lab assistants can optionally pass labId to view only one lab.
+    """
+    try:
+        lab_id = request.args.get("labId")
+
+        conn = db.get_connection()
+        cursor = conn.cursor()
+
+        if lab_id:
+            cursor.execute(
+                """
+                SELECT r.request_id, r.lab_id, l.lab_name, r.station_id, ls.assigned_code AS station_code,
+                       r.device_id, d.asset_code, d.assigned_code AS device_assigned_code,
+                       r.student_name, r.student_email, r.issue_title, r.issue_description,
+                       r.severity, r.status, r.created_at
+                FROM student_issue_requests r
+                LEFT JOIN labs l ON l.lab_id = r.lab_id
+                LEFT JOIN lab_stations ls ON ls.station_id = r.station_id
+                LEFT JOIN devices d ON d.device_id = r.device_id
+                WHERE r.status = 'pending' AND r.lab_id = %s
+                ORDER BY r.created_at DESC
+                """,
+                (lab_id,)
+            )
+        else:
+            cursor.execute(
+                """
+                SELECT r.request_id, r.lab_id, l.lab_name, r.station_id, ls.assigned_code AS station_code,
+                       r.device_id, d.asset_code, d.assigned_code AS device_assigned_code,
+                       r.student_name, r.student_email, r.issue_title, r.issue_description,
+                       r.severity, r.status, r.created_at
+                FROM student_issue_requests r
+                LEFT JOIN labs l ON l.lab_id = r.lab_id
+                LEFT JOIN lab_stations ls ON ls.station_id = r.station_id
+                LEFT JOIN devices d ON d.device_id = r.device_id
+                WHERE r.status = 'pending'
+                ORDER BY r.created_at DESC
+                """
+            )
+
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+
+        complaints = []
+        for row in rows:
+            complaints.append({
+                "requestId": row["request_id"],
+                "labId": row["lab_id"],
+                "labName": row["lab_name"],
+                "stationId": row["station_id"],
+                "stationCode": row["station_code"],
+                "deviceId": row["device_id"],
+                "assetCode": row["asset_code"],
+                "deviceAssignedCode": row["device_assigned_code"],
+                "studentName": row["student_name"],
+                "studentEmail": row["student_email"],
+                "title": row["issue_title"],
+                "description": row["issue_description"],
+                "severity": row["severity"],
+                "status": row["status"],
+                "createdAt": row["created_at"].isoformat() if row.get("created_at") else None,
+            })
+
+        return jsonify({"success": True, "complaints": complaints})
+    except Exception as e:
+        print(f"Error fetching pending student complaints: {str(e)}")
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+# -----------------------------
+# Approve Student Complaint
+# -----------------------------
+@app.route("/approve_student_complaint", methods=["POST"])
+def approve_student_complaint():
+    """
+    Approves a student complaint and creates a real device issue.
+    """
+    try:
+        data = request.get_json(force=True)
+        request_id = data.get("requestId")
+        approver_name = (data.get("approverName") or "Lab Assistant").strip()
+        deactivate = data.get("deactivate")
+
+        if not request_id:
+            return jsonify({"success": False, "error": "requestId is required"}), 400
+
+        conn = db.get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            SELECT request_id, device_id, issue_title, issue_description, severity,
+                   student_name, student_email, status
+            FROM student_issue_requests
+            WHERE request_id = %s
+            """,
+            (request_id,)
+        )
+        req_row = cursor.fetchone()
+        if not req_row:
+            cursor.close()
+            conn.close()
+            return jsonify({"success": False, "error": "Complaint request not found"}), 404
+        if (req_row.get("status") or "").lower() != "pending":
+            cursor.close()
+            conn.close()
+            return jsonify({"success": False, "error": "Complaint is not pending"}), 400
+
+        severity = (req_row.get("severity") or "medium").lower()
+        if deactivate is None:
+            deactivate = severity in ["high", "critical"]
+
+        reported_by = f"Student: {req_row.get('student_name')} <{req_row.get('student_email')}>"
+
+        cursor.execute(
+            """
+            INSERT INTO device_issues (device_id, issue_title, description, status, severity, reported_by)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            RETURNING issue_id, reported_at
+            """,
+            (
+                req_row["device_id"],
+                req_row["issue_title"],
+                req_row.get("issue_description") or "",
+                "open",
+                severity,
+                reported_by,
+            )
+        )
+        issue_row = cursor.fetchone()
+
+        cursor.execute(
+            """
+            INSERT INTO device_issue_history (issue_id, action, old_status, new_status, note, changed_by)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            """,
+            (
+                issue_row["issue_id"],
+                "created",
+                None,
+                "open",
+                f"Approved student complaint request #{request_id}",
+                approver_name,
+            )
+        )
+
+        if deactivate:
+            cursor.execute("UPDATE devices SET is_active = FALSE WHERE device_id = %s", (req_row["device_id"],))
+
+        cursor.execute(
+            """
+            UPDATE student_issue_requests
+            SET status = 'approved', approved_by = %s, approved_at = NOW(), approved_issue_id = %s
+            WHERE request_id = %s
+            """,
+            (approver_name, issue_row["issue_id"], request_id)
+        )
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return jsonify({
+            "success": True,
+            "issue": {
+                "id": issue_row["issue_id"],
+                "deviceId": req_row["device_id"],
+                "title": req_row["issue_title"],
+                "status": "open",
+                "severity": severity,
+                "reportedBy": reported_by,
+                "reportedDate": issue_row["reported_at"].isoformat() if issue_row.get("reported_at") else None,
+            },
+        })
+    except Exception as e:
+        print(f"Error approving student complaint: {str(e)}")
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+# -----------------------------
+# Reject Student Complaint
+# -----------------------------
+@app.route("/reject_student_complaint", methods=["POST"])
+def reject_student_complaint():
+    try:
+        data = request.get_json(force=True)
+        request_id = data.get("requestId")
+        approver_name = (data.get("approverName") or "Lab Assistant").strip()
+        note = (data.get("note") or "Rejected by lab assistant").strip()
+
+        if not request_id:
+            return jsonify({"success": False, "error": "requestId is required"}), 400
+
+        conn = db.get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            UPDATE student_issue_requests
+            SET status = 'rejected', approved_by = %s, approved_at = NOW(), rejection_note = %s
+            WHERE request_id = %s AND status = 'pending'
+            RETURNING request_id
+            """,
+            (approver_name, note, request_id)
+        )
+        row = cursor.fetchone()
+        if not row:
+            cursor.close()
+            conn.close()
+            return jsonify({"success": False, "error": "Pending complaint not found"}), 404
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return jsonify({"success": True, "message": "Complaint rejected"})
+    except Exception as e:
+        print(f"Error rejecting student complaint: {str(e)}")
         traceback.print_exc()
         return jsonify({"success": False, "error": str(e)}), 500
 

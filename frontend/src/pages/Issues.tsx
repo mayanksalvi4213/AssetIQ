@@ -4,7 +4,6 @@ import { motion } from "motion/react";
 import AppNavbar from "@/components/AppNavbar";
 import { PlaceholdersAndVanishInput } from "@/components/ui/placeholders-and-vanish-input";
 import { CometCard } from "@/components/ui/comet-card";
-import { BackgroundGradient } from "@/components/ui/background-gradient";
 import { HoverBorderGradient } from "@/components/ui/hover-border-gradient";
 import { useAuth } from "@/contexts/AuthContext";
 
@@ -78,7 +77,7 @@ export default function Issues() {
   const [selectedDevice, setSelectedDevice] = useState<Device | null>(null); // Specific device for ticket
   const [showRaiseTicket, setShowRaiseTicket] = useState(false);
   const [loadingLabs, setLoadingLabs] = useState(false);
-  const [loadingLabDetail, setLoadingLabDetail] = useState(false);
+  const [, setLoadingLabDetail] = useState(false);
   const [labError, setLabError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [highlightQuery, setHighlightQuery] = useState("");
