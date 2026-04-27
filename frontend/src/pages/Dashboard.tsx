@@ -95,14 +95,14 @@ export default function Dashboard() {
       setLoading(true);
       
       // Fetch all devices for stats
-      const devicesResponse = await fetch("http://localhost:5000/get_all_devices");
+      const devicesResponse = await fetch("/api/get_all_devices");
       const devicesData = await devicesResponse.json();
       if (devicesData.success) {
         setDevices(devicesData.devices || []);
       }
       
       // Fetch labs count
-      const labsResponse = await fetch("http://localhost:5000/get_labs");
+      const labsResponse = await fetch("/api/get_labs");
       const labsData = await labsResponse.json();
       if (labsData.success) {
         setLabs(labsData.labs || []);
@@ -153,7 +153,7 @@ export default function Dashboard() {
 
       // Fetch open issues count for both maintenanceAssets and openIssues
       try {
-        const issuesResponse = await fetch("http://localhost:5000/get_open_issues_count");
+        const issuesResponse = await fetch("/api/get_open_issues_count");
         const issuesData = await issuesResponse.json();
         if (issuesData.success) {
           const openIssuesCount = issuesData.count;
@@ -169,7 +169,7 @@ export default function Dashboard() {
 
       // Fetch inactive devices count (excluding devices with only resolved issues)
       try {
-        const inactiveResponse = await fetch("http://localhost:5000/get_inactive_devices_count");
+        const inactiveResponse = await fetch("/api/get_inactive_devices_count");
         const inactiveData = await inactiveResponse.json();
         if (inactiveData.success) {
           setStats(prev => ({ ...prev, offlineAssets: inactiveData.count }));
@@ -180,7 +180,7 @@ export default function Dashboard() {
 
       // Fetch pending transfers count
       try {
-        const transfersResponse = await fetch("http://localhost:5000/get_pending_transfers");
+        const transfersResponse = await fetch("/api/get_pending_transfers");
         const transfersData = await transfersResponse.json();
         if (transfersData.success) {
           const pendingTransfers = transfersData.transfers.length;
@@ -484,4 +484,5 @@ export default function Dashboard() {
     </div>
   );
 }
+
 

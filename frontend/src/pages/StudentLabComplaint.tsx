@@ -183,7 +183,7 @@ export default function StudentLabComplaint() {
 
       try {
         setLoading(true);
-        const publicRes = await fetch(`http://localhost:5000/public/lab/${labToken}`);
+        const publicRes = await fetch(`/api/public/lab/${labToken}`);
         const publicData = await publicRes.json();
         if (!publicRes.ok || !publicData.success) {
           throw new Error(publicData.error || "Unable to load lab data");
@@ -198,7 +198,7 @@ export default function StudentLabComplaint() {
           }
         });
 
-        const layoutRes = await fetch(`http://localhost:5000/get_lab/${publicData.lab.labId}`);
+        const layoutRes = await fetch(`/api/get_lab/${publicData.lab.labId}`);
         const layoutData = await layoutRes.json();
         if (!layoutRes.ok || !layoutData.success || !layoutData.lab?.seatingArrangement?.grid) {
           setStations(publicData.stations || []);
@@ -307,7 +307,7 @@ export default function StudentLabComplaint() {
       const failures: string[] = [];
 
       for (const deviceId of selectedDeviceIds) {
-        const res = await fetch("http://localhost:5000/public/student_complaint", {
+        const res = await fetch("/api/public/student_complaint", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -544,3 +544,4 @@ export default function StudentLabComplaint() {
     </div>
   );
 }
+

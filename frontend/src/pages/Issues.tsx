@@ -249,7 +249,7 @@ export default function Issues() {
   const fetchLabs = async () => {
     try {
       setLoadingLabs(true);
-      const response = await fetch("http://localhost:5000/get_labs");
+      const response = await fetch("/api/get_labs");
       const data = await response.json();
       if (data.success) {
         setLabs(data.labs || []);
@@ -265,7 +265,7 @@ export default function Issues() {
     try {
       setLoadingLabDetail(true);
       setLabError(null);
-      const response = await fetch(`http://localhost:5000/get_lab/${labId}`);
+      const response = await fetch(`/api/get_lab/${labId}`);
       const data = await response.json();
       if (data.success && data.lab) {
         setSelectedLab(data.lab);
@@ -461,7 +461,7 @@ export default function Issues() {
     const shouldDeactivate = ["high", "critical"].includes(finalSeverity);
 
     try {
-      const response = await fetch("http://localhost:5000/raise_issue", {
+      const response = await fetch("/api/raise_issue", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -500,7 +500,7 @@ export default function Issues() {
     if (!selectedDevice) return;
 
     try {
-      const response = await fetch("http://localhost:5000/update_issue_status", {
+      const response = await fetch("/api/update_issue_status", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -516,7 +516,7 @@ export default function Issues() {
 
       // If issue is resolved, reactivate the device
       if (newStatus === "resolved") {
-        await fetch("http://localhost:5000/reactivate_device", {
+        await fetch("/api/reactivate_device", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -1255,4 +1255,5 @@ export default function Issues() {
     </div>
   );
 }
+
 

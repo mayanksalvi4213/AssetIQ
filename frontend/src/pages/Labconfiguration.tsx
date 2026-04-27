@@ -153,7 +153,7 @@ export default function LabConfiguration() {
   useEffect(() => {
     (async () => {
       try {
-        const res = await fetch("http://127.0.0.1:5000/get_labs_for_layout", { headers: authHeaders() });
+        const res = await fetch("/api/get_labs_for_layout", { headers: authHeaders() });
         const data = await res.json();
         if (data.success) setLabs(data.labs);
       } catch (err) {
@@ -174,7 +174,7 @@ export default function LabConfiguration() {
 
     // Fetch layout blueprint
     try {
-      const res = await fetch(`http://127.0.0.1:5000/get_lab_layout/${labId}`, { headers: authHeaders() });
+      const res = await fetch(`/api/get_lab_layout/${labId}`, { headers: authHeaders() });
       const data = await res.json();
       if (data.success && data.layout) {
         const l = data.layout;
@@ -189,7 +189,7 @@ export default function LabConfiguration() {
 
     // Fetch existing equipment pool + reconstruct linked groups + prefixes
     try {
-      const res = await fetch(`http://127.0.0.1:5000/get_lab/${labId}`, { headers: authHeaders() });
+      const res = await fetch(`/api/get_lab/${labId}`, { headers: authHeaders() });
       const data = await res.json();
       if (data.success && data.lab) {
         const labData = data.lab;
@@ -321,7 +321,7 @@ export default function LabConfiguration() {
       return;
     setIsResetting(true);
     try {
-      const res = await fetch(`http://127.0.0.1:5000/reset_lab_assignments/${selectedLabId}`, {
+      const res = await fetch(`/api/reset_lab_assignments/${selectedLabId}`, {
         method: "POST",
         headers: authHeaders(),
       });
@@ -346,7 +346,7 @@ export default function LabConfiguration() {
       return;
     setIsResettingCounters(true);
     try {
-      const res = await fetch(`http://127.0.0.1:5000/reset_device_counters/${selectedLabId}`, {
+      const res = await fetch(`/api/reset_device_counters/${selectedLabId}`, {
         method: "POST",
         headers: authHeaders(),
       });
@@ -376,7 +376,7 @@ export default function LabConfiguration() {
     }
     setIsSaving(true);
     try {
-      const res = await fetch("http://127.0.0.1:5000/save_lab_config", {
+      const res = await fetch("/api/save_lab_config", {
         method: "POST",
         headers: authHeaders(),
         body: JSON.stringify({
@@ -403,7 +403,7 @@ export default function LabConfiguration() {
   // ── Refresh helpers (don't reset dropdown/search state) ──────────
   const refreshLabData = async (labId: string) => {
     try {
-      const res = await fetch(`http://127.0.0.1:5000/get_lab/${labId}`, { headers: authHeaders() });
+      const res = await fetch(`/api/get_lab/${labId}`, { headers: authHeaders() });
       const data = await res.json();
       if (data.success && data.lab) {
         setEquipment(data.lab.equipment || []);
@@ -424,7 +424,7 @@ export default function LabConfiguration() {
   const refreshSearch = async () => {
     if (!equipmentDropdown) return;
     try {
-      const res = await fetch(`http://127.0.0.1:5000/search_devices?type_id=${equipmentDropdown}`, { headers: authHeaders() });
+      const res = await fetch(`/api/search_devices?type_id=${equipmentDropdown}`, { headers: authHeaders() });
       const data = await res.json();
       setRawSearchResults(data.devices || []);
     } catch (err) {
@@ -445,7 +445,7 @@ export default function LabConfiguration() {
       return;
     }
     try {
-      const res = await fetch("http://127.0.0.1:5000/reserve_devices_for_lab", {
+      const res = await fetch("/api/reserve_devices_for_lab", {
         method: "POST",
         headers: authHeaders(),
         body: JSON.stringify({
@@ -515,7 +515,7 @@ export default function LabConfiguration() {
 
     setIsAssigning(true);
     try {
-      const res = await fetch("http://127.0.0.1:5000/auto_assign_devices", {
+      const res = await fetch("/api/auto_assign_devices", {
         method: "POST",
         headers: authHeaders(),
         body: JSON.stringify({
@@ -798,7 +798,7 @@ export default function LabConfiguration() {
                           setEquipmentDropdown(e.target.value);
                           if (e.target.value) {
                             setIsSearching(true);
-                            fetch(`http://127.0.0.1:5000/search_devices?type_id=${e.target.value}`, {
+                            fetch(`/api/search_devices?type_id=${e.target.value}`, {
                               headers: authHeaders(),
                             })
                               .then((r) => r.json())
@@ -969,7 +969,7 @@ export default function LabConfiguration() {
                                   }
                                   const qty = Math.min(releaseQuantities[idx] ?? 1, unassigned);
                                   try {
-                                    const res = await fetch("http://127.0.0.1:5000/release_devices_from_lab", {
+                                    const res = await fetch("/api/release_devices_from_lab", {
                                       method: "POST",
                                       headers: authHeaders(),
                                       body: JSON.stringify({
@@ -1269,4 +1269,5 @@ export default function LabConfiguration() {
     </div>
   );
 }
+
 

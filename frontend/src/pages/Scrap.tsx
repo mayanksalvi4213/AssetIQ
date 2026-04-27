@@ -145,7 +145,7 @@ const Scrap: React.FC = () => {
     const fetchLabs = async () => {
       try {
         setLoading(true);
-        const res = await fetch("http://localhost:5000/get_labs");
+        const res = await fetch("/api/get_labs");
         const data = await res.json();
         if (data.success) setLabs(data.labs);
         else setError("Failed to fetch labs");
@@ -178,7 +178,7 @@ const Scrap: React.FC = () => {
     try {
       // 1. Fetch layout blueprint (icons, colours, station types)
       const layoutRes = await fetch(
-        `http://127.0.0.1:5000/get_lab_layout/${lab.lab_id}`,
+        `/api/get_lab_layout/${lab.lab_id}`,
         { headers: authHeaders() }
       );
       const layoutData = await layoutRes.json();
@@ -189,7 +189,7 @@ const Scrap: React.FC = () => {
 
       // 2. Fetch seating arrangement (device codes per cell)
       const labRes = await fetch(
-        `http://127.0.0.1:5000/get_lab/${lab.lab_id}`,
+        `/api/get_lab/${lab.lab_id}`,
         { headers: authHeaders() }
       );
       const labData = await labRes.json();
@@ -199,7 +199,7 @@ const Scrap: React.FC = () => {
 
       // 3. Fetch flat station list (for component-type grouping)
       const stationRes = await fetch(
-        `http://localhost:5000/get_lab_station_list/${lab.lab_id}`,
+        `/api/get_lab_station_list/${lab.lab_id}`,
         { headers: authHeaders() }
       );
       const stationData = await stationRes.json();
@@ -282,7 +282,7 @@ const Scrap: React.FC = () => {
       if (year) params.set("year", year);
       if (type) params.set("device_type", type);
 
-      const url = `http://localhost:5000/get_scrapped_devices${params.toString() ? `?${params.toString()}` : ""}`;
+      const url = `/api/get_scrapped_devices${params.toString() ? `?${params.toString()}` : ""}`;
       const res = await fetch(url, { headers: authHeaders() });
       const data = await res.json();
       if (data.success) {
@@ -301,7 +301,7 @@ const Scrap: React.FC = () => {
   const fetchPendingScrapRequests = async () => {
     try {
       setLoadingScrapRequests(true);
-      const res = await fetch("http://localhost:5000/get_pending_scrap_requests", {
+      const res = await fetch("/api/get_pending_scrap_requests", {
         headers: authHeaders(),
       });
       const data = await res.json();
@@ -317,7 +317,7 @@ const Scrap: React.FC = () => {
 
   const fetchScrapRequestHistory = async () => {
     try {
-      const res = await fetch("http://localhost:5000/get_scrap_request_history", {
+      const res = await fetch("/api/get_scrap_request_history", {
         headers: authHeaders(),
       });
       const data = await res.json();
@@ -344,7 +344,7 @@ const Scrap: React.FC = () => {
 
     try {
       setScrapping(true);
-      const res = await fetch("http://localhost:5000/create_scrap_request", {
+      const res = await fetch("/api/create_scrap_request", {
         method: "POST",
         headers: authHeaders(),
         body: JSON.stringify({ deviceIds, remark: scrapRemark }),
@@ -435,7 +435,7 @@ const Scrap: React.FC = () => {
   const handleApproveScrapRequest = async (requestId: number) => {
     if (!window.confirm("Approve and scrap all devices in this request?")) return;
     try {
-      const res = await fetch(`http://localhost:5000/approve_scrap_request/${requestId}`, {
+      const res = await fetch(`/api/approve_scrap_request/${requestId}`, {
         method: "POST",
         headers: authHeaders(),
       });
@@ -459,7 +459,7 @@ const Scrap: React.FC = () => {
   const handleRejectScrapRequest = async (requestId: number) => {
     if (!window.confirm("Reject this scrap request?")) return;
     try {
-      const res = await fetch(`http://localhost:5000/reject_scrap_request/${requestId}`, {
+      const res = await fetch(`/api/reject_scrap_request/${requestId}`, {
         method: "POST",
         headers: authHeaders(),
       });
@@ -1667,3 +1667,4 @@ const Scrap: React.FC = () => {
 };
 
 export default Scrap;
+

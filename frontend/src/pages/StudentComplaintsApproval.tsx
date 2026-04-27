@@ -32,7 +32,7 @@ export default function StudentComplaintsApproval() {
       if (user?.role === "Lab Incharge" && user?.assignedLab) {
         params.set("labId", user.assignedLab);
       }
-      const response = await fetch(`http://localhost:5000/get_pending_student_complaints${params.toString() ? `?${params.toString()}` : ""}`);
+      const response = await fetch(`/api/get_pending_student_complaints${params.toString() ? `?${params.toString()}` : ""}`);
       const data = await response.json();
       if (response.ok && data.success) {
         setComplaints(data.complaints || []);
@@ -52,7 +52,7 @@ export default function StudentComplaintsApproval() {
 
   const handleApprove = async (requestId: number) => {
     try {
-      const response = await fetch("http://localhost:5000/approve_student_complaint", {
+      const response = await fetch("/api/approve_student_complaint", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -74,7 +74,7 @@ export default function StudentComplaintsApproval() {
   const handleReject = async (requestId: number) => {
     const note = prompt("Reason for rejection (optional)", "Rejected by lab assistant") || "Rejected by lab assistant";
     try {
-      const response = await fetch("http://localhost:5000/reject_student_complaint", {
+      const response = await fetch("/api/reject_student_complaint", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -166,3 +166,4 @@ export default function StudentComplaintsApproval() {
     </div>
   );
 }
+

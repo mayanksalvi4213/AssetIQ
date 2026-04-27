@@ -241,7 +241,7 @@ const OcrPage: React.FC = () => {
     formData.append("invoiceNumber", invoiceNumber);
     formData.append("vendorName", vendorName);
 
-    const response = await fetch("http://127.0.0.1:5000/upload_bill_file", {
+    const response = await fetch("/api/upload_bill_file", {
       method: "POST",
       headers,
       body: formData,
@@ -267,7 +267,7 @@ const OcrPage: React.FC = () => {
       headers["Authorization"] = `Bearer ${token}`;
     }
 
-    await fetch("http://127.0.0.1:5000/delete_bill_file", {
+    await fetch("/api/delete_bill_file", {
       method: "POST",
       headers,
       body: JSON.stringify({ path }),
@@ -291,7 +291,7 @@ const OcrPage: React.FC = () => {
         headers['Authorization'] = `Bearer ${token}`;
       }
 
-      const response = await fetch("http://127.0.0.1:5000/scan", {
+      const response = await fetch("/api/scan", {
         method: "POST",
         headers,
         body: formData,
@@ -387,7 +387,7 @@ const OcrPage: React.FC = () => {
         overwrite: overwrite
       };
 
-      const billResponse = await fetch("http://127.0.0.1:5000/save_bill", {
+      const billResponse = await fetch("/api/save_bill", {
         method: "POST",
         headers,
         body: JSON.stringify(billPayload),
@@ -429,7 +429,7 @@ const OcrPage: React.FC = () => {
 
       console.log("Sending devices payload:", JSON.stringify(devicesPayload, null, 2));
 
-      const devicesResponse = await fetch("http://127.0.0.1:5000/save_devices", {
+      const devicesResponse = await fetch("/api/save_devices", {
         method: "POST",
         headers,
         body: JSON.stringify(devicesPayload),
@@ -524,7 +524,7 @@ const OcrPage: React.FC = () => {
 
       console.log("Saving OCR bill:", billPayload);
 
-      const billResponse = await fetch("http://127.0.0.1:5000/save_bill", {
+      const billResponse = await fetch("/api/save_bill", {
         method: "POST",
         headers,
         body: JSON.stringify(billPayload),
@@ -586,7 +586,7 @@ const OcrPage: React.FC = () => {
 
       console.log("Sending OCR devices payload:", JSON.stringify(devicesPayload, null, 2));
 
-      const devicesResponse = await fetch("http://127.0.0.1:5000/save_devices", {
+      const devicesResponse = await fetch("/api/save_devices", {
         method: "POST",
         headers,
         body: JSON.stringify(devicesPayload),
@@ -703,7 +703,7 @@ const OcrPage: React.FC = () => {
         headers["Authorization"] = `Bearer ${token}`;
       }
 
-      const response = await fetch("http://127.0.0.1:5000/manual_entry", {
+      const response = await fetch("/api/manual_entry", {
         method: "POST",
         headers,
         body: JSON.stringify(payload),
@@ -753,7 +753,7 @@ const OcrPage: React.FC = () => {
         fields[`Item ${idx + 1}`] = `${asset.name}, Model: ${asset.model || 'N/A'}, Qty: ${asset.quantity}, Price: ${asset.unit_price}, Total: ${asset.total_price}`;
       });
 
-      const response = await fetch("http://127.0.0.1:5000/normalize_invoice", {
+      const response = await fetch("/api/normalize_invoice", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -1873,7 +1873,7 @@ const OcrPage: React.FC = () => {
                                 const headers: HeadersInit = { "Content-Type": "application/json" };
                                 if (token) headers["Authorization"] = `Bearer ${token}`;
 
-                                const resp = await fetch("http://127.0.0.1:5000/generate_qr", {
+                                const resp = await fetch("/api/generate_qr", {
                                   method: "POST",
                                   headers,
                                   body: JSON.stringify({ items: qrItems }),
@@ -2436,4 +2436,5 @@ const OcrPage: React.FC = () => {
 };
 
 export default OcrPage;
+
 

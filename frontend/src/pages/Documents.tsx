@@ -81,7 +81,7 @@ const Documents: React.FC = () => {
         headers["Authorization"] = `Bearer ${token}`;
       }
 
-      const response = await fetch(`http://localhost:5000/${bill.path}`, {
+      const response = await fetch(`/api/${bill.path}`, {
         method: "GET",
         headers,
       });
@@ -329,7 +329,7 @@ const Documents: React.FC = () => {
     const fetchBills = async () => {
       try {
         console.log("Fetching bills...");
-        const response = await fetch("http://localhost:5000/get_all_bills");
+        const response = await fetch("/api/get_all_bills");
         console.log("Bills response status:", response.status);
         const data = await response.json();
         console.log("Bills data received:", data);
@@ -349,7 +349,7 @@ const Documents: React.FC = () => {
     const fetchDeadStock = async () => {
       try {
         console.log("Fetching deadstock...");
-        const response = await fetch("http://localhost:5000/get_deadstock_register");
+        const response = await fetch("/api/get_deadstock_register");
         console.log("Deadstock response status:", response.status);
         const data = await response.json();
         console.log("Deadstock data received:", data);
@@ -426,7 +426,7 @@ const Documents: React.FC = () => {
           <div className="mb-4 p-4 bg-red-600/20 border border-red-600 rounded-lg text-red-200">
             <p className="font-semibold">Error:</p>
             <p className="text-xs">{error}</p>
-            <p className="text-xs mt-2">Make sure the backend server is running on http://localhost:5000</p>
+            <p className="text-xs mt-2">Make sure the backend server is running on /api</p>
           </div>
         )}
         
@@ -708,4 +708,5 @@ const Documents: React.FC = () => {
 };
 
 export default Documents;
+
 

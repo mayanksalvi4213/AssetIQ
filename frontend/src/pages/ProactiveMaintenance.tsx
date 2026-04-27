@@ -220,7 +220,7 @@ export default function ProactiveMaintenance() {
     (async () => {
       try {
         setLoading(true);
-        const res = await fetch("http://localhost:5000/get_proactive_maintenance");
+        const res = await fetch("/api/get_proactive_maintenance");
         const json = await res.json();
         if (json.success) setData(json as MaintenanceData);
         else setError(json.error || "Failed to load data");
@@ -238,7 +238,7 @@ export default function ProactiveMaintenance() {
       (async () => {
         setRecipientsLoading(true);
         try {
-          const res = await fetch("http://localhost:5000/get_alert_recipients");
+          const res = await fetch("/api/get_alert_recipients");
           const json = await res.json();
           if (json.success) setRecipients(json.recipients);
         } catch { /* ignore */ }
@@ -253,7 +253,7 @@ export default function ProactiveMaintenance() {
     setAiLoading(true);
     setAiError(null);
     try {
-      const res = await fetch("http://localhost:5000/get_maintenance_insights", {
+      const res = await fetch("/api/get_maintenance_insights", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -297,7 +297,7 @@ export default function ProactiveMaintenance() {
         issue_summary: `${a.issue_count} issues (${a.open_issues} open, ${a.severe_issues} severe)`,
       }));
 
-      const res = await fetch("http://localhost:5000/send_maintenance_alerts", {
+      const res = await fetch("/api/send_maintenance_alerts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ alerts: alertsPayload }),
@@ -695,4 +695,5 @@ export default function ProactiveMaintenance() {
     </div>
   );
 }
+
 

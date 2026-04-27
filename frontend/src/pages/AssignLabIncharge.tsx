@@ -44,8 +44,8 @@ export default function AssignLabIncharge() {
       setError(null);
       try {
         const [labsRes, inchargesRes] = await Promise.all([
-          fetch("http://127.0.0.1:5000/get_labs", { headers: authHeaders() }),
-          fetch("http://127.0.0.1:5000/get_lab_incharges", { headers: authHeaders() }),
+          fetch("/api/get_labs", { headers: authHeaders() }),
+          fetch("/api/get_lab_incharges", { headers: authHeaders() }),
         ]);
 
         const labsData = await labsRes.json();
@@ -87,7 +87,7 @@ export default function AssignLabIncharge() {
 
     setIsSaving((prev) => ({ ...prev, [userId]: true }));
     try {
-      const res = await fetch("http://127.0.0.1:5000/assign_lab_incharge", {
+      const res = await fetch("/api/assign_lab_incharge", {
         method: "POST",
         headers: authHeaders(),
         body: JSON.stringify({ userId, labId }),
@@ -215,4 +215,5 @@ export default function AssignLabIncharge() {
     </div>
   );
 }
+
 

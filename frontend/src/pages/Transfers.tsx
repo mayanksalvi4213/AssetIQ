@@ -193,7 +193,7 @@ const Transfers: React.FC = () => {
       try {
         const results = await Promise.all(
           missing.map(async (labId) => {
-            const response = await fetch(`http://127.0.0.1:5000/get_dest_lab_layout/${labId}`, {
+            const response = await fetch(`/api/get_dest_lab_layout/${labId}`, {
               headers: token ? { Authorization: `Bearer ${token}` } : {},
             });
             const data = await response.json();
@@ -236,7 +236,7 @@ const Transfers: React.FC = () => {
       try {
         const results = await Promise.all(
           missing.map(async (labId) => {
-            const response = await fetch(`http://127.0.0.1:5000/get_dest_lab_layout/${labId}`, {
+            const response = await fetch(`/api/get_dest_lab_layout/${labId}`, {
               headers: token ? { Authorization: `Bearer ${token}` } : {},
             });
             const data = await response.json();
@@ -290,7 +290,7 @@ const Transfers: React.FC = () => {
   const fetchLabs = async () => {
     try {
       const token = localStorage.getItem("token");
-      const response = await fetch("http://127.0.0.1:5000/get_labs", {
+      const response = await fetch("/api/get_labs", {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
       const data = await response.json();
@@ -329,7 +329,7 @@ const Transfers: React.FC = () => {
     try {
       setLoading(true);
       const token = localStorage.getItem("token");
-      const response = await fetch(`http://127.0.0.1:5000/get_lab_station_list/${labId}`, {
+      const response = await fetch(`/api/get_lab_station_list/${labId}`, {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
       const data = await response.json();
@@ -350,7 +350,7 @@ const Transfers: React.FC = () => {
   const fetchDestLayout = async (labId: string) => {
     try {
       const token = localStorage.getItem("token");
-      const response = await fetch(`http://127.0.0.1:5000/get_dest_lab_layout/${labId}`, {
+      const response = await fetch(`/api/get_dest_lab_layout/${labId}`, {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
       const data = await response.json();
@@ -368,7 +368,7 @@ const Transfers: React.FC = () => {
   const fetchPendingTransferInfo = async (labId: string, mode: 'source' | 'dest') => {
     try {
       const token = localStorage.getItem("token");
-      const response = await fetch(`http://127.0.0.1:5000/get_lab_pending_transfer_info/${labId}`, {
+      const response = await fetch(`/api/get_lab_pending_transfer_info/${labId}`, {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
       const data = await response.json();
@@ -387,7 +387,7 @@ const Transfers: React.FC = () => {
   const fetchPendingTransfers = async () => {
     try {
       const token = localStorage.getItem("token");
-      const response = await fetch("http://127.0.0.1:5000/get_pending_transfers", {
+      const response = await fetch("/api/get_pending_transfers", {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
       const data = await response.json();
@@ -403,7 +403,7 @@ const Transfers: React.FC = () => {
     try {
       setLoadingHistory(true);
       const token = localStorage.getItem("token");
-      const response = await fetch("http://127.0.0.1:5000/get_transfer_history", {
+      const response = await fetch("/api/get_transfer_history", {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
       const data = await response.json();
@@ -520,7 +520,7 @@ const Transfers: React.FC = () => {
       const token = localStorage.getItem("token");
       const isFullStation = allSelectedStationIds.length > 0;
 
-      const response = await fetch("http://127.0.0.1:5000/create_transfer_request", {
+      const response = await fetch("/api/create_transfer_request", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -565,7 +565,7 @@ const Transfers: React.FC = () => {
   const handleApproveTransfer = async (transferId: number) => {
     try {
       const token = localStorage.getItem("token");
-      const response = await fetch(`http://127.0.0.1:5000/approve_transfer/${transferId}`, {
+      const response = await fetch(`/api/approve_transfer/${transferId}`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -589,7 +589,7 @@ const Transfers: React.FC = () => {
   const handleRejectTransfer = async (transferId: number) => {
     try {
       const token = localStorage.getItem("token");
-      const response = await fetch(`http://127.0.0.1:5000/reject_transfer/${transferId}`, {
+      const response = await fetch(`/api/reject_transfer/${transferId}`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -611,11 +611,11 @@ const Transfers: React.FC = () => {
   };
 
   const handleExportHistoryExcel = () => {
-    window.open("http://127.0.0.1:5000/export_transfer_history_excel", "_blank");
+    window.open("/api/export_transfer_history_excel", "_blank");
   };
 
   const handleExportHistoryPdf = () => {
-    window.open("http://127.0.0.1:5000/export_transfer_history_pdf", "_blank");
+    window.open("/api/export_transfer_history_pdf", "_blank");
   };
 
   // Build grid from station list - Labplan.tsx style
@@ -1787,4 +1787,5 @@ const Transfers: React.FC = () => {
 };
 
 export default Transfers;
+
 

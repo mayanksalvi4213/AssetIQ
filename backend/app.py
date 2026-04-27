@@ -34,6 +34,7 @@ load_dotenv()
 JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY")
 JWT_EXPIRATION_HOURS = int(os.getenv("JWT_EXPIRATION_HOURS", 24))
 LLM_WHISPERER_API_KEY = os.getenv("LLM_WHISPERER_API_KEY")
+FRONTEND_PUBLIC_BASE_URL = os.getenv("FRONTEND_PUBLIC_BASE_URL", "http://localhost:5173").rstrip("/")
 
 # Import models and services
 from models.user import User
@@ -55,7 +56,9 @@ CORS(app)
 UPLOAD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "uploads")
 ALLOWED_BILL_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png"}
 
-pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+tesseract_cmd = os.getenv("TESSERACT_CMD")
+if tesseract_cmd:
+    pytesseract.pytesseract.tesseract_cmd = tesseract_cmd
 
 # Initialize OCR regex extractor (uses classifier + regex templates)
 extractor = OcrRegexExtractor()
@@ -2583,7 +2586,7 @@ def get_or_create_lab_public_qr(lab_id):
         cursor.close()
         conn.close()
 
-        public_url = f"http://localhost:5173/student/lab/{token}"
+        public_url = f"{FRONTEND_PUBLIC_BASE_URL}/student/lab/{token}"
         return jsonify({
             "success": True,
             "labId": lab_row["lab_id"],
@@ -8495,4 +8498,8 @@ def get_scrapped_devices():
 # Run App
 # -----------------------------
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(
+        host=os.getenv("FLASK_HOST", "0.0.0.0"),
+        port=int(os.getenv("PORT", "5000")),
+        debug=os.getenv("FLASK_DEBUG", "false").lower() == "true"
+    )

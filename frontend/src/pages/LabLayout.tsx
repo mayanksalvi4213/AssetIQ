@@ -92,7 +92,7 @@ export default function LabLayout() {
   // ── Fetch station types ──────────────────────────────────────────
   const fetchStationTypes = useCallback(async () => {
     try {
-      const res = await fetch("http://127.0.0.1:5000/get_station_types", { headers: authHeaders() });
+      const res = await fetch("/api/get_station_types", { headers: authHeaders() });
       const data = await res.json();
       if (data.success) setStationTypes(data.stationTypes);
     } catch (err) {
@@ -103,7 +103,7 @@ export default function LabLayout() {
   // ── Fetch existing labs ──────────────────────────────────────────
   const fetchLabs = useCallback(async () => {
     try {
-      const res = await fetch("http://127.0.0.1:5000/get_labs_for_layout", { headers: authHeaders() });
+      const res = await fetch("/api/get_labs_for_layout", { headers: authHeaders() });
       const data = await res.json();
       if (data.success) setLabs(data.labs);
     } catch (err) {
@@ -119,7 +119,7 @@ export default function LabLayout() {
   // ── Load lab layout ──────────────────────────────────────────────
   const loadLabLayout = async (labId: string) => {
     try {
-      const res = await fetch(`http://127.0.0.1:5000/get_lab_layout/${labId}`, { headers: authHeaders() });
+      const res = await fetch(`/api/get_lab_layout/${labId}`, { headers: authHeaders() });
       const data = await res.json();
       if (data.success && data.layout) {
         const l = data.layout;
@@ -142,7 +142,7 @@ export default function LabLayout() {
     if (!labName.trim()) { alert("Please enter a lab name"); return; }
     setIsSaving(true);
     try {
-      const res = await fetch("http://127.0.0.1:5000/save_lab_layout", {
+      const res = await fetch("/api/save_lab_layout", {
         method: "POST",
         headers: authHeaders(),
         body: JSON.stringify({ labNumber, labName, rows, columns, grid }),
@@ -167,7 +167,7 @@ export default function LabLayout() {
   const deleteLabLayout = async (labId: string) => {
     if (!confirm("Clear the layout for this lab? (The lab itself will not be deleted)")) return;
     try {
-      const res = await fetch(`http://127.0.0.1:5000/delete_lab_layout/${labId}`, {
+      const res = await fetch(`/api/delete_lab_layout/${labId}`, {
         method: "DELETE",
         headers: authHeaders(),
       });
@@ -573,4 +573,5 @@ export default function LabLayout() {
     </div>
   );
 }
+
 

@@ -101,7 +101,7 @@ export default function Labplan() {
   const fetchLabs = async () => {
     try {
       setLoading(true);
-      const response = await fetch("http://localhost:5000/get_labs");
+      const response = await fetch("/api/get_labs");
       const data = await response.json();
       
       if (data.success) {
@@ -119,7 +119,7 @@ export default function Labplan() {
 
   const fetchLabDetails = async (labId: string) => {
     try {
-      const response = await fetch(`http://localhost:5000/get_lab/${labId}`);
+      const response = await fetch(`/api/get_lab/${labId}`);
       const data = await response.json();
       
       if (data.success) {
@@ -140,7 +140,7 @@ export default function Labplan() {
 
   const fetchLabPublicQr = async (labId: string) => {
     try {
-      const response = await fetch(`http://localhost:5000/get_or_create_lab_public_qr/${labId}`);
+      const response = await fetch(`/api/get_or_create_lab_public_qr/${labId}`);
       const data = await response.json();
       if (response.ok && data.success) {
         setLabPublicQr({
@@ -158,7 +158,7 @@ export default function Labplan() {
   const fetchStationList = async (labId: string) => {
     try {
       setLoadingStationList(true);
-      const response = await fetch(`http://localhost:5000/get_lab_station_list/${labId}`);
+      const response = await fetch(`/api/get_lab_station_list/${labId}`);
       const data = await response.json();
       
       if (data.success) {
@@ -179,7 +179,7 @@ export default function Labplan() {
 
   const fetchPendingTransferInfo = async (labId: string) => {
     try {
-      const response = await fetch(`http://localhost:5000/get_lab_pending_transfer_info/${labId}`);
+      const response = await fetch(`/api/get_lab_pending_transfer_info/${labId}`);
       const data = await response.json();
       if (data.success) {
         setPendingOutgoingDeviceIds(new Set((data.outgoing_device_ids || []).map(Number)));
@@ -288,7 +288,7 @@ export default function Labplan() {
     try {
       setLoadingBill(true);
       console.log("Fetching bill details for bill ID:", billId);
-      const response = await fetch(`http://localhost:5000/get_bill/${billId}`);
+      const response = await fetch(`/api/get_bill/${billId}`);
       console.log("Response status:", response.status);
       const data = await response.json();
       console.log("Bill data received:", data);
@@ -833,7 +833,7 @@ export default function Labplan() {
                       <button
                         onClick={() => {
                           if (!selectedLab) return;
-                          window.open(`http://localhost:5000/export_lab_station_pdf/${selectedLab.labNumber}`, '_blank');
+                          window.open(`/api/export_lab_station_pdf/${selectedLab.labNumber}`, '_blank');
                         }}
                         className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition flex items-center gap-2"
                       >
@@ -1503,4 +1503,5 @@ export default function Labplan() {
     </div>
   );
 }
+
 

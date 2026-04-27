@@ -1,6 +1,9 @@
 .env
 .env.*
 frontend/.env
+*.bak
+__pycache__/
+*.pyc
 backend/venv/
 backend/__pycache__/
 backend/uploads/

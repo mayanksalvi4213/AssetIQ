@@ -39,7 +39,7 @@ export default function WarrantyExpiry() {
   const fetchDevices = async () => {
     try {
       setLoading(true);
-      const res = await fetch("http://localhost:5000/get_all_devices");
+      const res = await fetch("/api/get_all_devices");
       const data = await res.json();
       if (data && data.success) {
         setDevices(data.devices || []);
@@ -534,3 +534,4 @@ export default function WarrantyExpiry() {
     </div>
   );
 }
+

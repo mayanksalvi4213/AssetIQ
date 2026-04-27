@@ -90,7 +90,7 @@ export default function AllAssets() {
         headers["Authorization"] = `Bearer ${token}`;
       }
 
-      const response = await fetch("http://127.0.0.1:5000/get_all_devices", {
+      const response = await fetch("/api/get_all_devices", {
         method: "GET",
         headers,
       });
@@ -194,7 +194,7 @@ export default function AllAssets() {
   const fetchBillDetails = async (billId: number, groupIdx: number) => {
     try {
       setLoadingBills(prev => new Set(prev).add(groupIdx));
-      const response = await fetch(`http://localhost:5000/get_bill/${billId}`);
+      const response = await fetch(`/api/get_bill/${billId}`);
       const data = await response.json();
       
       setGroupBills(prev => new Map(prev).set(groupIdx, data));
@@ -223,7 +223,7 @@ export default function AllAssets() {
       // Update all devices in the batch
       const results = await Promise.all(
         ids.map(id =>
-          fetch("http://127.0.0.1:5000/update_device_type", {
+          fetch("/api/update_device_type", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ deviceId: id, newTypeId }),
@@ -530,3 +530,4 @@ export default function AllAssets() {
     </div>
   );
 }
+

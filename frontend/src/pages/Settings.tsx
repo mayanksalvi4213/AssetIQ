@@ -66,7 +66,7 @@ export default function Settings() {
         payload.newPassword = newPassword;
       }
 
-      const response = await fetch("http://localhost:5000/user/update", {
+      const response = await fetch("/api/user/update", {
         method: "PUT",
         headers: {
           "Content-Type": "application/json",
@@ -243,4 +243,5 @@ export default function Settings() {
 const LabelInputContainer = ({ children, className }: { children: React.ReactNode; className?: string }) => (
   <div className={cn("flex w-full flex-col space-y-2", className)}>{children}</div>
 );
+
 

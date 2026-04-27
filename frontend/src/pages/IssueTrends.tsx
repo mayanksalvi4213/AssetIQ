@@ -239,7 +239,7 @@ export default function IssueTrends() {
     (async () => {
       try {
         setLoading(true);
-        const res = await fetch("http://localhost:5000/get_issue_trends");
+        const res = await fetch("/api/get_issue_trends");
         const json = await res.json();
         if (json.success) setData(json as TrendsData);
         else setError(json.error || "Failed to load data");
@@ -257,7 +257,7 @@ export default function IssueTrends() {
     setAiLoading(true);
     setAiError(null);
     try {
-      const res = await fetch("http://localhost:5000/get_issue_insights", {
+      const res = await fetch("/api/get_issue_insights", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -825,4 +825,5 @@ export default function IssueTrends() {
     </div>
   );
 }
+
 
