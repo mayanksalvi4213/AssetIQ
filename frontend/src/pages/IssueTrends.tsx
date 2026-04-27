@@ -1,9 +1,7 @@
 "use client";
 import React, { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { Menu, MenuItem, HoveredLink } from "@/components/ui/navbar-menu";
-import { LogoButton } from "@/components/ui/logo-button";
-import { useAuth } from "@/contexts/AuthContext";
+import AppNavbar from "@/components/AppNavbar";
 import { WobbleCard } from "@/components/ui/wobble-card";
 import {
   BarChart, Bar, LineChart, Line, PieChart, Pie, Cell,
@@ -188,14 +186,14 @@ const renderInsights = (text: string) => {
               key === "RECOMMENDATIONS" ? "md:col-span-2" : ""
             }`}
           >
-            <h3 className="text-sm font-semibold text-gray-200 mb-3 flex items-center gap-2">
+            <h3 className="text-xs font-semibold text-gray-200 mb-3 flex items-center gap-2">
               <span className="text-base">{icon}</span> {sec.heading}
             </h3>
             <ul className="space-y-2">
               {sec.lines.map((line, li) => {
                 const text = line.replace(/^[\d]+\.\s*/, "").replace(/^-\s*/, "");
                 return (
-                  <li key={li} className="flex gap-2 text-sm text-gray-400 leading-relaxed">
+                  <li key={li} className="flex gap-2 text-xs text-gray-400 leading-relaxed">
                     <span className="text-gray-600 mt-0.5 shrink-0">•</span>
                     <span>{bold(text)}</span>
                   </li>
@@ -226,9 +224,6 @@ const Section: React.FC<{ title: string; children: React.ReactNode; className?: 
 
 // ─── Main component ──────────────────────────────────────────
 export default function IssueTrends() {
-  const [active, setActive] = useState<string | null>(null);
-  const { logout } = useAuth();
-
   const [data, setData] = useState<TrendsData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -244,7 +239,7 @@ export default function IssueTrends() {
     (async () => {
       try {
         setLoading(true);
-        const res = await fetch("http://localhost:5000/get_issue_trends");
+        const res = await fetch("/api/get_issue_trends");
         const json = await res.json();
         if (json.success) setData(json as TrendsData);
         else setError(json.error || "Failed to load data");
@@ -262,7 +257,7 @@ export default function IssueTrends() {
     setAiLoading(true);
     setAiError(null);
     try {
-      const res = await fetch("http://localhost:5000/get_issue_insights", {
+      const res = await fetch("/api/get_issue_insights", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -301,54 +296,22 @@ export default function IssueTrends() {
         backgroundRepeat: "no-repeat",
       }}
     >
-      {/* ── Navbar ── */}
-      <div className="fixed top-3 right-6 z-50">
-        <Menu setActive={setActive}>
-          <MenuItem setActive={setActive} active={active} item="Asset Management">
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/assets">All Assets</HoveredLink>
-              <HoveredLink href="/ocr">Add Assets</HoveredLink>
-            </div>
-          </MenuItem>
-          <MenuItem setActive={setActive} active={active} item="Lab Management">
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/lab-plan">Lab Floor Plans</HoveredLink>
-              <HoveredLink href="/lab-layout">Lab Layout Designer</HoveredLink>
-              <HoveredLink href="/lab-configuration">Lab Configuration</HoveredLink>
-            </div>
-          </MenuItem>
-          <MenuItem setActive={setActive} active={active} item="Operations">
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/transfers">Transfers</HoveredLink>
-              <HoveredLink href="/dashboard/issues">Issues</HoveredLink>
-              <HoveredLink href="/documents">Documents</HoveredLink>
-            </div>
-          </MenuItem>
-          <MenuItem setActive={setActive} active={active} item="Analytics">
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/reports">Reports</HoveredLink>
-              <HoveredLink href="/warranty-expiry">Warranty Expiry</HoveredLink>
-            </div>
-          </MenuItem>
-          <MenuItem setActive={setActive} active={active} item="Account">
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/settings">Settings</HoveredLink>
-              <button
-                onClick={logout}
-                className="text-left text-neutral-600 hover:text-neutral-800 transition-colors"
-              >
-                Logout
-              </button>
-            </div>
-          </MenuItem>
-        </Menu>
+      <AppNavbar />
+
+      <div className="inline-block mt-16 mb-6">
+        <h1
+          className="text-3xl font-bold px-5 py-2 rounded-xl"
+          style={{
+            background:
+              "linear-gradient(135deg, rgba(10, 14, 25, 0.75) 0%,rgba(15, 23, 42, 0.80) 25%,rgba(8, 10, 15, 0.88) 50%,rgba(15, 23, 42, 0.80) 75%, rgba(20, 18, 16, 0.75) 100%",
+            color: "white",
+            boxShadow:
+              "0 4px 15px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.1)",
+          }}
+        >
+          📊 Issue Trends & Analytics
+        </h1>
       </div>
-
-      <LogoButton />
-
-      <h1 className="text-3xl font-bold mb-6 mt-16 text-gray-200">
-        📊 Issue Trends & Analytics
-      </h1>
 
       {/* ── Loading / Error ── */}
       {loading && (
@@ -380,7 +343,7 @@ export default function IssueTrends() {
               <WobbleCard key={card.label} containerClassName={card.color} className="p-4">
                 <div className="text-center">
                   <p className="text-3xl font-bold text-white">{card.value}</p>
-                  <p className="text-sm text-white/80 mt-1">{card.label}</p>
+                  <p className="text-xs text-white/80 mt-1">{card.label}</p>
                 </div>
               </WobbleCard>
             ))}
@@ -399,7 +362,7 @@ export default function IssueTrends() {
               <button
                 key={t.key}
                 onClick={() => setTab(t.key)}
-                className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+                className={`px-4 py-2 rounded-lg text-xs font-medium transition-all ${
                   tab === t.key
                     ? "bg-blue-600 text-white shadow-lg shadow-blue-600/30"
                     : "bg-neutral-800 text-gray-400 hover:bg-neutral-700 hover:text-gray-200"
@@ -423,7 +386,7 @@ export default function IssueTrends() {
                 {/* Timeline chart */}
                 <Section title="Issue Timeline (Last 12 Months)">
                   {data.timeline.length === 0 ? (
-                    <p className="text-gray-500 text-sm">No issue data in the last 12 months.</p>
+                    <p className="text-gray-500 text-xs">No issue data in the last 12 months.</p>
                   ) : (
                     <ResponsiveContainer width="100%" height={320}>
                       <LineChart data={data.timeline.map((t) => ({ ...t, month: formatMonth(t.month) }))}>
@@ -490,7 +453,7 @@ export default function IssueTrends() {
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                   <Section title="Issues by Lab">
                     {data.issues_by_lab.length === 0 ? (
-                      <p className="text-gray-500 text-sm">No lab data.</p>
+                      <p className="text-gray-500 text-xs">No lab data.</p>
                     ) : (
                       <ResponsiveContainer width="100%" height={300}>
                         <BarChart data={data.issues_by_lab} layout="vertical">
@@ -511,7 +474,7 @@ export default function IssueTrends() {
 
                   <Section title="Issues by Device Type">
                     {data.issues_by_type.length === 0 ? (
-                      <p className="text-gray-500 text-sm">No data.</p>
+                      <p className="text-gray-500 text-xs">No data.</p>
                     ) : (
                       <ResponsiveContainer width="100%" height={300}>
                         <BarChart data={data.issues_by_type}>
@@ -534,7 +497,7 @@ export default function IssueTrends() {
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                   <Section title="Most Common Issue Types">
                     {data.common_issues.length === 0 ? (
-                      <p className="text-gray-500 text-sm">No issue data.</p>
+                      <p className="text-gray-500 text-xs">No issue data.</p>
                     ) : (
                       <div className="space-y-2">
                         {data.common_issues.map((ci, i) => {
@@ -546,7 +509,7 @@ export default function IssueTrends() {
                             ci.avg_severity_score >= 1.5 ? "medium" : "low";
                           return (
                             <div key={i} className="space-y-1">
-                              <div className="flex justify-between items-center text-sm">
+                              <div className="flex justify-between items-center text-xs">
                                 <span className="text-gray-300 truncate max-w-[60%]">{ci.issue_title}</span>
                                 <div className="flex items-center gap-2">
                                   {severityBadge(sevLabel)}
@@ -571,7 +534,7 @@ export default function IssueTrends() {
 
                   <Section title="Avg Resolution Time by Device Type">
                     {data.avg_resolution.length === 0 ? (
-                      <p className="text-gray-500 text-sm">No resolved issues with history yet.</p>
+                      <p className="text-gray-500 text-xs">No resolved issues with history yet.</p>
                     ) : (
                       <ResponsiveContainer width="100%" height={280}>
                         <BarChart data={data.avg_resolution}>
@@ -601,12 +564,12 @@ export default function IssueTrends() {
                 className="space-y-6"
               >
                 <Section title="Problematic Purchase Batches" className="overflow-x-auto">
-                  <p className="text-gray-400 text-sm mb-4">
+                  <p className="text-gray-400 text-xs mb-4">
                     Bills whose devices have raised the most issues. A high issue-to-device ratio
                     signals the entire batch may need attention or the vendor may have quality problems.
                   </p>
                   {data.problematic_batches.length === 0 ? (
-                    <p className="text-gray-500 text-sm">No batch data found.</p>
+                    <p className="text-gray-500 text-xs">No batch data found.</p>
                   ) : (
                     <>
                       {/* Visual bar chart */}
@@ -634,7 +597,7 @@ export default function IssueTrends() {
 
                       {/* Table */}
                       <div className="mt-6 overflow-x-auto">
-                        <table className="w-full text-sm text-left">
+                        <table className="w-full text-xs text-left">
                           <thead>
                             <tr className="text-gray-400 border-b border-neutral-700">
                               <th className="py-2 px-3">Invoice</th>
@@ -704,12 +667,12 @@ export default function IssueTrends() {
                 className="space-y-6"
               >
                 <Section title="Repeat Offender Devices">
-                  <p className="text-gray-400 text-sm mb-4">
+                  <p className="text-gray-400 text-xs mb-4">
                     Devices that keep having recurring issues. These may need replacement, deep maintenance,
                     or investigation into root cause.
                   </p>
                   {data.repeat_offenders.length === 0 ? (
-                    <p className="text-gray-500 text-sm">No devices with 2+ issues found.</p>
+                    <p className="text-gray-500 text-xs">No devices with 2+ issues found.</p>
                   ) : (
                     <div className="space-y-3">
                       {data.repeat_offenders.map((dev) => {
@@ -751,15 +714,15 @@ export default function IssueTrends() {
                               <div className="flex gap-4 text-center">
                                 <div>
                                   <p className="text-xl font-bold text-white">{dev.issue_count}</p>
-                                  <p className="text-[10px] text-gray-500 uppercase">Total</p>
+                                  <p className="text-[12px] text-gray-500 uppercase">Total</p>
                                 </div>
                                 <div>
                                   <p className="text-xl font-bold text-red-400">{dev.open_issues}</p>
-                                  <p className="text-[10px] text-gray-500 uppercase">Open</p>
+                                  <p className="text-[12px] text-gray-500 uppercase">Open</p>
                                 </div>
                                 <div>
                                   <p className="text-xl font-bold text-orange-400">{dev.severe_issues}</p>
-                                  <p className="text-[10px] text-gray-500 uppercase">Severe</p>
+                                  <p className="text-[12px] text-gray-500 uppercase">Severe</p>
                                 </div>
                               </div>
                             </div>
@@ -805,7 +768,7 @@ export default function IssueTrends() {
                 className="space-y-6"
               >
                 <Section title="AI-Powered Issue Analysis">
-                  <p className="text-gray-400 text-sm mb-4">
+                  <p className="text-gray-400 text-xs mb-4">
                     Get actionable insights from the local AI model by analyzing your issue data
                     for patterns, risks, and recommendations.
                   </p>
@@ -830,7 +793,7 @@ export default function IssueTrends() {
                   )}
 
                   {aiError && (
-                    <div className="bg-red-900/40 border border-red-700 rounded-lg p-4 text-red-300 text-sm">
+                    <div className="bg-red-900/40 border border-red-700 rounded-lg p-4 text-red-300 text-xs">
                       <p className="font-semibold mb-1">Could not load AI insights</p>
                       <p>{aiError}</p>
                       <button
@@ -862,3 +825,5 @@ export default function IssueTrends() {
     </div>
   );
 }
+
+

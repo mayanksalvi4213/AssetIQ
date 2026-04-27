@@ -1,11 +1,9 @@
 "use client";
 import React, { useEffect, useMemo, useState } from "react";
 import { motion } from "motion/react";
-import { Menu, MenuItem, HoveredLink } from "@/components/ui/navbar-menu";
+import AppNavbar from "@/components/AppNavbar";
 import { PlaceholdersAndVanishInput } from "@/components/ui/placeholders-and-vanish-input";
-import { WobbleCard } from "@/components/ui/wobble-card";
-import { BackgroundGradient } from "@/components/ui/background-gradient";
-import { LogoButton } from "@/components/ui/logo-button";
+import { CometCard } from "@/components/ui/comet-card";
 import { HoverBorderGradient } from "@/components/ui/hover-border-gradient";
 import { useAuth } from "@/contexts/AuthContext";
 
@@ -61,6 +59,7 @@ interface LabListItem {
   lab_name: string;
   rows: number;
   columns: number;
+  incharge_name?: string;
 }
 
 interface TicketForm {
@@ -71,16 +70,17 @@ interface TicketForm {
 }
 
 export default function Issues() {
-  const [active, setActive] = useState<string | null>(null);
-  const { logout, user } = useAuth();
+  const { user } = useAuth();
   const [labs, setLabs] = useState<LabListItem[]>([]);
   const [selectedLab, setSelectedLab] = useState<Lab | null>(null);
   const [selectedStation, setSelectedStation] = useState<Device[] | null>(null); // All devices at station
   const [selectedDevice, setSelectedDevice] = useState<Device | null>(null); // Specific device for ticket
   const [showRaiseTicket, setShowRaiseTicket] = useState(false);
   const [loadingLabs, setLoadingLabs] = useState(false);
-  const [loadingLabDetail, setLoadingLabDetail] = useState(false);
+  const [, setLoadingLabDetail] = useState(false);
   const [labError, setLabError] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [highlightQuery, setHighlightQuery] = useState("");
   const [ticketForm, setTicketForm] = useState<TicketForm>({
     title: "",
     description: "",
@@ -95,12 +95,14 @@ export default function Issues() {
     "Search by issue...",
   ];
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    console.log("Search:", e.target.value);
+    setSearchQuery(e.target.value);
   };
   const onSubmit = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    console.log("Search submitted");
   };
+
+  const normalizedQuery = useMemo(() => searchQuery.trim().toLowerCase(), [searchQuery]);
+  const normalizedHighlight = useMemo(() => highlightQuery.trim().toLowerCase(), [highlightQuery]);
 
   // Device-specific issue options
   const getIssueOptionsForDevice = (deviceType: string) => {
@@ -247,7 +249,7 @@ export default function Issues() {
   const fetchLabs = async () => {
     try {
       setLoadingLabs(true);
-      const response = await fetch("http://localhost:5000/get_labs");
+      const response = await fetch("/api/get_labs");
       const data = await response.json();
       if (data.success) {
         setLabs(data.labs || []);
@@ -263,7 +265,7 @@ export default function Issues() {
     try {
       setLoadingLabDetail(true);
       setLabError(null);
-      const response = await fetch(`http://localhost:5000/get_lab/${labId}`);
+      const response = await fetch(`/api/get_lab/${labId}`);
       const data = await response.json();
       if (data.success && data.lab) {
         setSelectedLab(data.lab);
@@ -280,7 +282,91 @@ export default function Issues() {
 
   useEffect(() => {
     fetchLabs();
+    const params = new URLSearchParams(window.location.search);
+    const labParam = params.get("lab");
+    const searchParam = params.get("search");
+    const stationParam = params.get("station");
+    const deviceParam = params.get("device");
+    if (searchParam) {
+      setSearchQuery(searchParam);
+    }
+    if (stationParam) {
+      setHighlightQuery(stationParam);
+    } else if (deviceParam) {
+      setHighlightQuery(deviceParam);
+    } else if (searchParam) {
+      setHighlightQuery(searchParam);
+    }
+    if (labParam) {
+      fetchLabDetails(labParam);
+    }
   }, []);
+
+  const handlePageClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!highlightQuery) return;
+    const target = e.target as HTMLElement;
+    if (target.closest('[data-highlight-match="true"]')) return;
+    setHighlightQuery("");
+  };
+
+  const filteredLabs = useMemo(() => {
+    if (!normalizedQuery) return labs;
+    return labs.filter((lab) => {
+      const haystack = [lab.lab_name, lab.lab_id, lab.incharge_name]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+      return haystack.includes(normalizedQuery);
+    });
+  }, [labs, normalizedQuery]);
+
+  const matchesIssueSearch = (issue: Issue) => {
+    if (!normalizedQuery) return true;
+    const haystack = [
+      issue.id,
+      issue.title,
+      issue.description,
+      issue.status,
+      issue.severity,
+      issue.reportedBy,
+      issue.reportedDate,
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
+    return haystack.includes(normalizedQuery);
+  };
+
+  const matchesDeviceSearch = (device: Device) => {
+    if (!normalizedQuery) return true;
+    const baseTokens = [
+      device.deviceId,
+      device.id,
+      device.assignedCode,
+      device.type,
+      device.brand,
+      device.model,
+      device.invoiceNumber,
+      device.billId,
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
+    const issueMatch = (device.issues || []).some(matchesIssueSearch);
+    return baseTokens.includes(normalizedQuery) || issueMatch;
+  };
+
+  const filteredStationDevices = useMemo(() => {
+    if (!selectedStation) return null;
+    if (!normalizedQuery) return selectedStation;
+    return selectedStation.filter(matchesDeviceSearch);
+  }, [selectedStation, normalizedQuery]);
+
+  const filteredIssues = useMemo(() => {
+    if (!selectedDevice) return [] as Issue[];
+    if (!normalizedQuery) return selectedDevice.issues || [];
+    return (selectedDevice.issues || []).filter(matchesIssueSearch);
+  }, [selectedDevice, normalizedQuery]);
 
   const gridWithDevices = useMemo(() => {
     if (!selectedLab?.seatingArrangement) return null;
@@ -375,7 +461,7 @@ export default function Issues() {
     const shouldDeactivate = ["high", "critical"].includes(finalSeverity);
 
     try {
-      const response = await fetch("http://localhost:5000/raise_issue", {
+      const response = await fetch("/api/raise_issue", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -414,7 +500,7 @@ export default function Issues() {
     if (!selectedDevice) return;
 
     try {
-      const response = await fetch("http://localhost:5000/update_issue_status", {
+      const response = await fetch("/api/update_issue_status", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -430,7 +516,7 @@ export default function Issues() {
 
       // If issue is resolved, reactivate the device
       if (newStatus === "resolved") {
-        await fetch("http://localhost:5000/reactivate_device", {
+        await fetch("/api/reactivate_device", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -462,72 +548,30 @@ export default function Issues() {
         backgroundPosition: "center",
         backgroundRepeat: "no-repeat",
       }}
+      onClick={handlePageClick}
     >
-      <LogoButton />
-      {/* Top Navbar with Search */}
-      <div className="fixed top-4 inset-x-0 max-w-7xl mx-auto z-50 flex items-center justify-between px-6">
-        <Menu setActive={setActive}>
-          <MenuItem
-            setActive={setActive}
-            active={active}
-            item="Asset Management"
-          >
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/assets">All Assets</HoveredLink>
-              <HoveredLink href="/ocr">Add Assets</HoveredLink>
-            </div>
-          </MenuItem>
-
-          <MenuItem setActive={setActive} active={active} item="Lab Management">
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/lab-plan">Lab Floor Plans</HoveredLink>
-              <HoveredLink href="/lab-layout">Lab Layout Designer</HoveredLink>
-              <HoveredLink href="/lab-configuration">
-                Lab Configuration
-              </HoveredLink>
-            </div>
-          </MenuItem>
-
-          <MenuItem setActive={setActive} active={active} item="Operations">
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/transfers">Transfers</HoveredLink>
-              <HoveredLink href="/dashboard/issues">Issues</HoveredLink>
-              <HoveredLink href="/dashboard/documents">Documents</HoveredLink>
-            </div>
-          </MenuItem>
-
-          <MenuItem setActive={setActive} active={active} item="Analytics">
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/reports">Reports</HoveredLink>
-              <HoveredLink href="/warranty-expiry">Warranty Expiry</HoveredLink>
-            </div>
-          </MenuItem>
-
-          <MenuItem setActive={setActive} active={active} item="Account">
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/settings">Settings</HoveredLink>
-              <button 
-                onClick={logout}
-                className="text-left text-neutral-600 hover:text-neutral-800 transition-colors"
-              >
-                Logout
-              </button>
-            </div>
-          </MenuItem>
-        </Menu>
-
-        <div className="w-full max-w-sm">
+      <AppNavbar
+        rightContent={
           <PlaceholdersAndVanishInput
             placeholders={placeholders}
             onChange={handleChange}
             onSubmit={onSubmit}
           />
-        </div>
-      </div>
+        }
+      />
 
       {/* Page Content */}
       <div className="pt-32 px-6 max-w-7xl mx-auto">
-        <h1 className="text-3xl font-bold mb-8">Lab Issues & Support Tickets</h1>
+        <h1 
+          className="text-3xl font-bold mb-8 px-5 py-2 rounded-xl inline-block"
+          style={{
+            background: "linear-gradient(135deg, rgba(10, 14, 25, 0.75) 0%,rgba(15, 23, 42, 0.80) 25%,rgba(8, 10, 15, 0.88) 50%,rgba(15, 23, 42, 0.80) 75%, rgba(20, 18, 16, 0.75) 100%)",
+            color: "white",
+            boxShadow: "0 4px 15px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.1)"
+          }}
+        >
+          Lab Issues & Support Tickets
+        </h1>
 
         {loadingLabs && (
           <div className="text-center py-12">
@@ -544,28 +588,36 @@ export default function Issues() {
         {/* Lab Cards List */}
         {!loadingLabs && !labError && (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-            {labs.map((lab) => (
+            {filteredLabs.map((lab) => (
             <div
               key={lab.lab_id}
               onClick={() => fetchLabDetails(lab.lab_id)}
               className="cursor-pointer"
             >
-              <WobbleCard containerClassName="bg-neutral-800 p-6 rounded-xl h-40">
-                <h2 className="text-2xl font-semibold mb-2">{lab.lab_name}</h2>
-                <p className="text-gray-400 mb-1">Lab ID: {lab.lab_id}</p>
-                <p className="text-gray-400">Grid: {lab.rows} × {lab.columns}</p>
-                <p className="text-xs text-blue-400 mt-2">
-                  {loadingLabDetail ? "Loading..." : "Click to view devices and raise tickets"}
-                </p>
-              </WobbleCard>
+              <CometCard>
+                <div className="p-6 text-white bg-neutral-800/95 rounded-2xl backdrop-blur-sm h-full flex flex-col justify-between">
+                  <div>
+                    <h2 className="text-2xl font-semibold mb-2">{lab.lab_name}</h2>
+                    <p className="text-gray-400 text-xs">Lab ID: {lab.lab_id}</p>
+                    <p className="text-gray-400 text-[14px] mt-1">
+                      Incharge: {lab.incharge_name ? lab.incharge_name : "Unassigned"}
+                    </p>
+                  </div>
+                  <button className="mt-4 px-4 py-2 bg-blue-600 rounded-lg text-white font-semibold hover:bg-blue-700 transition-colors">
+                    View Issues
+                  </button>
+                </div>
+              </CometCard>
             </div>
             ))}
           </div>
         )}
 
-        {!loadingLabs && !labError && labs.length === 0 && (
+        {!loadingLabs && !labError && filteredLabs.length === 0 && (
           <div className="text-center py-12">
-            <p className="text-gray-400">No labs found. Create a lab in Lab Configuration first.</p>
+            <p className="text-gray-400">
+              {normalizedQuery ? "No labs match your search." : "No labs found. Create a lab in Lab Configuration first."}
+            </p>
           </div>
         )}
 
@@ -577,13 +629,21 @@ export default function Issues() {
             transition={{ duration: 0.4 }}
             className="mt-12"
           >
-            <BackgroundGradient className="p-8 rounded-xl shadow-xl">
+            <div 
+              className="p-8 rounded-xl shadow-xl"
+              style={{
+                backgroundColor: "rgba(0, 0, 0, 0.5)",
+                backdropFilter: "blur(10px)",
+                border: "1px solid rgba(255, 255, 255, 0.2)",
+                boxShadow: "0 8px 32px 0 rgba(0, 0, 0, 0.3), inset 0 1px 1px rgba(255, 255, 255, 0.1), 0 8px 32px rgba(0, 0, 0, 0.2)"
+              }}
+            >
               <div className="flex items-center justify-between mb-6">
                 <div>
                   <h2 className="text-2xl font-bold">
                     {selectedLab.labName || selectedLab.labNumber} - Device Issues
                   </h2>
-                  <p className="text-gray-400 text-sm">
+                  <p className="text-gray-400 text-xs">
                     Lab ID: {selectedLab.labNumber} | Grid: {selectedLab.seatingArrangement?.rows ?? 0}×{selectedLab.seatingArrangement?.columns ?? 0}
                   </p>
                 </div>
@@ -607,6 +667,32 @@ export default function Issues() {
                           const primaryDevice = devices.find((d) => d.type?.toLowerCase() === "pc") || devices[0];
                           const stationId = deviceGroup?.assignedCode || cell.id || primaryDevice?.assignedCode;
                           const hasDevices = devices.length > 0;
+                          const stationTokens = [stationId, cell.id, deviceGroup?.assignedCode]
+                            .filter(Boolean)
+                            .join(" ")
+                            .toLowerCase();
+                          const stationMatchesSearch = !normalizedQuery
+                            || stationTokens.includes(normalizedQuery)
+                            || devices.some(matchesDeviceSearch);
+                          const isSearchFilteredOut = normalizedQuery && !stationMatchesSearch;
+                          const hasActiveHighlight = Boolean(normalizedHighlight);
+                          const isHighlightMatch = normalizedHighlight
+                            ? (
+                              (stationId || "").toLowerCase().includes(normalizedHighlight)
+                              || devices.some((d) => {
+                                const deviceHaystack = [
+                                  d.assignedCode,
+                                  d.id,
+                                  d.deviceId,
+                                  d.invoiceNumber,
+                                ]
+                                  .filter(Boolean)
+                                  .join(" ")
+                                  .toLowerCase();
+                                return deviceHaystack.includes(normalizedHighlight);
+                              })
+                            )
+                            : false;
                           
                           // Check if ANY device at this station has issues or is inactive
                           const allIssues = devices.flatMap(d => d.issues || []);
@@ -637,8 +723,9 @@ export default function Issues() {
                           return (
                             <div
                               key={colIdx}
+                              data-highlight-match={isHighlightMatch ? "true" : "false"}
                               onClick={() => {
-                                if (hasDevices && devices.length > 0) {
+                                if (hasDevices && devices.length > 0 && !isSearchFilteredOut && (!hasActiveHighlight || isHighlightMatch)) {
                                   // Show all devices at this station
                                   const allDevices = devices.map((d) => ({
                                     ...d,
@@ -655,6 +742,9 @@ export default function Issues() {
                                 w-28 rounded-lg border-2 flex flex-col items-center justify-center transition relative p-1
                                 ${hasDevices ? "cursor-pointer" : ""}
                                 ${background}
+                                ${isSearchFilteredOut ? "opacity-30" : ""}
+                                ${hasActiveHighlight && !isHighlightMatch ? "opacity-30" : ""}
+                                ${isHighlightMatch ? "ring-2 ring-cyan-400 shadow-[0_0_12px_rgba(34,211,238,0.6)]" : ""}
                               `}
                               style={{ minHeight: hasDevices ? `${Math.max(96, 60 + deviceCount * 14)}px` : "96px" }}
                             >
@@ -665,7 +755,7 @@ export default function Issues() {
                                       {openIssuesCount}
                                     </div>
                                   )}
-                                  <div className="text-white font-bold text-[10px] truncate w-full text-center">
+                                  <div className="text-white font-bold text-[12px] truncate w-full text-center">
                                     {stationId || "—"}
                                   </div>
                                   <div className="text-white text-lg leading-none">{emoji}</div>
@@ -673,7 +763,7 @@ export default function Issues() {
                                     {devices.map((d, di) => (
                                       <div
                                         key={di}
-                                        className="text-green-300 text-[9px] font-mono leading-tight truncate"
+                                        className="text-green-300 text-[12px] font-mono leading-tight truncate"
                                         title={d.assignedCode || ""}
                                       >
                                         {d.assignedCode || d.type}
@@ -682,10 +772,10 @@ export default function Issues() {
                                   </div>
                                   <div className="flex gap-1 mt-0.5 flex-wrap justify-center">
                                     {cell.os.includes("Windows") && (
-                                      <div className="text-[8px] px-1 bg-blue-800 text-white rounded">Win</div>
+                                      <div className="text-[12px] px-1 bg-blue-800 text-white rounded">Win</div>
                                     )}
                                     {cell.os.includes("Linux") && (
-                                      <div className="text-[8px] px-1 bg-orange-600 text-white rounded">Linux</div>
+                                      <div className="text-[12px] px-1 bg-orange-600 text-white rounded">Linux</div>
                                     )}
                                   </div>
                                 </>
@@ -703,15 +793,15 @@ export default function Issues() {
                   <div className="mt-6 flex gap-6 items-center">
                     <div className="flex items-center gap-2">
                       <div className="w-4 h-4 bg-green-600 rounded"></div>
-                      <span className="text-sm text-gray-300">No Issues</span>
+                      <span className="text-xs text-gray-300">No Issues</span>
                     </div>
                     <div className="flex items-center gap-2">
                       <div className="w-4 h-4 bg-red-600 rounded"></div>
-                      <span className="text-sm text-gray-300">Has Issues</span>
+                      <span className="text-xs text-gray-300">Has Issues</span>
                     </div>
                     <div className="flex items-center gap-2">
                       <div className="w-4 h-4 bg-neutral-800 border border-gray-600 rounded"></div>
-                      <span className="text-sm text-gray-300">Empty</span>
+                      <span className="text-xs text-gray-300">Empty</span>
                     </div>
                   </div>
                 </div>
@@ -745,7 +835,7 @@ export default function Issues() {
                     })}
                 </div>
               )}
-            </BackgroundGradient>
+            </div>
           </motion.div>
         )}
 
@@ -768,8 +858,8 @@ export default function Issues() {
                   <h3 className="text-xl font-bold">
                     Station: {selectedStation[0]?.assignedCode || selectedStation[0]?.id}
                   </h3>
-                  <p className="text-gray-400 text-sm">
-                    {selectedStation.length} device(s) at this station
+                  <p className="text-gray-400 text-xs">
+                    {(filteredStationDevices || []).length} device(s) at this station
                   </p>
                 </div>
                 <button
@@ -781,7 +871,10 @@ export default function Issues() {
               </div>
 
               <div className="space-y-3">
-                {selectedStation.map((device) => {
+                {(filteredStationDevices || []).length === 0 ? (
+                  <div className="text-xs text-gray-400">No devices match your search.</div>
+                ) : (
+                  (filteredStationDevices || []).map((device) => {
                   const totalIssues = device.issues?.length || 0;
                   const openIssues = device.issues?.filter(i => i.status !== "resolved").length || 0;
                   
@@ -807,7 +900,7 @@ export default function Issues() {
                               </div>
                             )}
                           </div>
-                          <div className="text-sm text-gray-400 mt-1">
+                          <div className="text-xs text-gray-400 mt-1">
                             Device ID: {device.deviceId}
                             {device.invoiceNumber && ` • Invoice: ${device.invoiceNumber}`}
                           </div>
@@ -830,10 +923,11 @@ export default function Issues() {
                       )}
                     </div>
                   );
-                })}
+                })
+                )}
               </div>
 
-              <div className="mt-6 text-center text-sm text-gray-400">
+              <div className="mt-6 text-center text-xs text-gray-400">
                 Click on a device to view details and raise tickets
               </div>
             </motion.div>
@@ -867,7 +961,7 @@ export default function Issues() {
                   <h3 className="text-xl font-bold">
                     {selectedDevice.type} - {selectedDevice.assignedCode || selectedDevice.id}
                   </h3>
-                  <p className="text-gray-400 text-sm">
+                  <p className="text-gray-400 text-xs">
                     {selectedDevice.brand || ""} {selectedDevice.model || ""}
                   </p>
                 </div>
@@ -891,7 +985,7 @@ export default function Issues() {
                 <h4 className="font-semibold mb-2 text-gray-300">
                   Device Details
                 </h4>
-                <div className="grid grid-cols-2 gap-3 text-sm text-gray-400">
+                <div className="grid grid-cols-2 gap-3 text-xs text-gray-400">
                   <div>
                     <span className="font-semibold">Assigned Code:</span>{" "}
                     {selectedDevice.assignedCode || selectedDevice.id || "N/A"}
@@ -923,9 +1017,9 @@ export default function Issues() {
 
               {/* Issues List */}
               <div className="mb-6">
-                {selectedDevice.issues.length > 0 ? (
+                {filteredIssues.length > 0 ? (
                   <div className="space-y-3">
-                    {selectedDevice.issues.map((issue) => (
+                    {filteredIssues.map((issue) => (
                       <div
                         key={issue.id}
                         className="bg-neutral-800 p-4 rounded-lg border-l-4 border-l-red-500"
@@ -944,7 +1038,7 @@ export default function Issues() {
                                 {issue.severity.toUpperCase()}
                               </span>
                             </div>
-                            <p className="text-gray-400 text-sm mb-2">
+                            <p className="text-gray-400 text-xs mb-2">
                               {issue.description}
                             </p>
                           </div>
@@ -968,14 +1062,14 @@ export default function Issues() {
                             {issue.status === "open" && (
                               <button
                                 onClick={() => handleUpdateIssueStatus(issue.id, "in-progress")}
-                                className="px-3 py-1.5 bg-yellow-600 hover:bg-yellow-700 text-white text-sm rounded-lg transition"
+                                className="px-3 py-1.5 bg-yellow-600 hover:bg-yellow-700 text-white text-xs rounded-lg transition"
                               >
                                 ⚙️ Mark In Progress
                               </button>
                             )}
                             <button
                               onClick={() => handleUpdateIssueStatus(issue.id, "resolved")}
-                              className="px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white text-sm rounded-lg transition"
+                              className="px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white text-xs rounded-lg transition"
                             >
                               ✓ Mark Resolved
                             </button>
@@ -987,7 +1081,7 @@ export default function Issues() {
                 ) : (
                   <div className="bg-green-900/20 border border-green-600 p-4 rounded-lg text-center">
                     <p className="text-green-400">
-                      ✓ No issues reported for this device
+                      ✓ {normalizedQuery ? "No issues match your search" : "No issues reported for this device"}
                     </p>
                   </div>
                 )}
@@ -1045,10 +1139,10 @@ export default function Issues() {
               <h3 className="text-xl font-bold mb-4">
                 🎫 Raise Support Ticket
               </h3>
-              <p className="text-gray-400 text-sm mb-2">
+              <p className="text-gray-400 text-xs mb-2">
                 Station: <span className="text-white font-semibold">{selectedDevice.assignedCode || selectedDevice.id}</span>
               </p>
-              <p className="text-gray-400 text-sm mb-6">
+              <p className="text-gray-400 text-xs mb-6">
                 Device: <span className="text-white font-semibold">{selectedDevice.type} {selectedDevice.brand && `- ${selectedDevice.brand}`} {selectedDevice.model && `${selectedDevice.model}`}</span> (ID: {selectedDevice.deviceId})
               </p>
 
@@ -1128,7 +1222,7 @@ export default function Issues() {
                 )}
 
                 {ticketForm.issueKey !== "other" && (
-                  <div className="text-sm text-gray-300">
+                  <div className="text-xs text-gray-300">
                     <span className="font-semibold">Auto severity:</span>{" "}
                     <span className={`px-2 py-1 rounded text-white ${getSeverityColor(selectedIssueOption.severity)}`}>
                       {selectedIssueOption.severity.toUpperCase()} ({selectedIssueOption.active ? "Device remains active" : "Device marked inactive"})
@@ -1161,3 +1255,5 @@ export default function Issues() {
     </div>
   );
 }
+
+

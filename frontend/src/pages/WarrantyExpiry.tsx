@@ -1,9 +1,7 @@
 "use client";
 import React, { useEffect, useId, useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { Menu, MenuItem, HoveredLink } from "@/components/ui/navbar-menu";
-import { LogoButton } from "@/components/ui/logo-button";
-import { useAuth } from "@/contexts/AuthContext";
+import AppNavbar from "@/components/AppNavbar";
 import { WobbleCard } from "@/components/ui/wobble-card";
 import { PlaceholdersAndVanishInput } from "@/components/ui/placeholders-and-vanish-input";
 interface Device {
@@ -27,8 +25,6 @@ interface Device {
 }
 
 export default function WarrantyExpiry() {
-  const [active, setActive] = useState<string | null>(null);
-  const { logout } = useAuth();
   const [devices, setDevices] = useState<Device[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -43,7 +39,7 @@ export default function WarrantyExpiry() {
   const fetchDevices = async () => {
     try {
       setLoading(true);
-      const res = await fetch("http://localhost:5000/get_all_devices");
+      const res = await fetch("/api/get_all_devices");
       const data = await res.json();
       if (data && data.success) {
         setDevices(data.devices || []);
@@ -141,55 +137,22 @@ export default function WarrantyExpiry() {
       backgroundPosition: 'center',
       backgroundRepeat: 'no-repeat'
     }}>
-      <div className="fixed top-3 right-6 z-50">
-        <Menu setActive={setActive}>
-          <MenuItem setActive={setActive} active={active} item="Asset Management">
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/assets">All Assets</HoveredLink>
-              <HoveredLink href="/ocr">Add Assets</HoveredLink>
-            </div>
-          </MenuItem>
+      <AppNavbar />
 
-          <MenuItem setActive={setActive} active={active} item="Lab Management">
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/lab-plan">Lab Floor Plans</HoveredLink>
-              <HoveredLink href="/lab-layout">Lab Layout Designer</HoveredLink>
-              <HoveredLink href="/lab-configuration">Lab Configuration</HoveredLink>
-            </div>
-          </MenuItem>
-
-          <MenuItem setActive={setActive} active={active} item="Operations">
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/transfers">Transfers</HoveredLink>
-              <HoveredLink href="/dashboard/issues">Issues</HoveredLink>
-              <HoveredLink href="/documents">Documents</HoveredLink>
-            </div>
-          </MenuItem>
-
-          <MenuItem setActive={setActive} active={active} item="Analytics">
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/reports">Reports</HoveredLink>
-              <HoveredLink href="/warranty-expiry">Warranty Expiry</HoveredLink>
-            </div>
-          </MenuItem>
-
-          <MenuItem setActive={setActive} active={active} item="Account">
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/settings">Settings</HoveredLink>
-              <button 
-                onClick={logout}
-                className="text-left text-neutral-600 hover:text-neutral-800 transition-colors"
-              >
-                Logout
-              </button>
-            </div>
-          </MenuItem>
-        </Menu>
+      <div className="inline-block mt-16 mb-6">
+        <h1
+          className="text-3xl font-bold px-5 py-2 rounded-xl"
+          style={{
+            background:
+              "linear-gradient(135deg, rgba(10, 14, 25, 0.75) 0%,rgba(15, 23, 42, 0.80) 25%,rgba(8, 10, 15, 0.88) 50%,rgba(15, 23, 42, 0.80) 75%, rgba(20, 18, 16, 0.75) 100%",
+            color: "white",
+            boxShadow:
+              "0 4px 15px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.1)",
+          }}
+        >
+          📋 Warranty Management Dashboard
+        </h1>
       </div>
-
-      <LogoButton />
-
-      <h1 className="text-3xl font-bold mb-6 mt-16 text-gray-200">📋 Warranty Management Dashboard</h1>
 
       {/* Search Bar */}
       <div className="w-full max-w-7xl mb-4">
@@ -238,7 +201,7 @@ export default function WarrantyExpiry() {
               <div className="text-4xl mb-2">❌</div>
               <div className="text-xs text-gray-100 uppercase font-semibold">Expired</div>
               <div className="text-3xl font-bold text-red-300">{expired}</div>
-              <div className="text-[10px] text-gray-200 mt-1">Action Required</div>
+              <div className="text-[12px] text-gray-200 mt-1">Action Required</div>
             </div>
           </WobbleCard>
         </div>
@@ -256,7 +219,7 @@ export default function WarrantyExpiry() {
               <div className="text-4xl mb-2">🚨</div>
               <div className="text-xs text-gray-100 uppercase font-semibold">Urgent (≤30d)</div>
               <div className="text-3xl font-bold text-orange-300">{expiring30}</div>
-              <div className="text-[10px] text-gray-200 mt-1">Renew Soon</div>
+              <div className="text-[12px] text-gray-200 mt-1">Renew Soon</div>
             </div>
           </WobbleCard>
         </div>
@@ -274,7 +237,7 @@ export default function WarrantyExpiry() {
               <div className="text-4xl mb-2">⚠️</div>
               <div className="text-xs text-gray-100 uppercase font-semibold">Warning (≤90d)</div>
               <div className="text-3xl font-bold text-yellow-300">{expiring90}</div>
-              <div className="text-[10px] text-gray-200 mt-1">Plan Renewal</div>
+              <div className="text-[12px] text-gray-200 mt-1">Plan Renewal</div>
             </div>
           </WobbleCard>
         </div>
@@ -292,7 +255,7 @@ export default function WarrantyExpiry() {
               <div className="text-4xl mb-2">✅</div>
               <div className="text-xs text-gray-100 uppercase font-semibold">Good (&gt;90d)</div>
               <div className="text-3xl font-bold text-green-300">{good}</div>
-              <div className="text-[10px] text-gray-200 mt-1">No Action</div>
+              <div className="text-[12px] text-gray-200 mt-1">No Action</div>
             </div>
           </WobbleCard>
         </div>
@@ -313,7 +276,7 @@ export default function WarrantyExpiry() {
               <>
                 {/* Lab count info and controls */}
                 <div className="mb-4 flex items-center justify-between">
-                  <div className="text-sm text-gray-400">
+                  <div className="text-xs text-gray-400">
                     <span className="font-semibold text-white">{Object.keys(labGroups).length}</span> lab{Object.keys(labGroups).length !== 1 ? 's' : ''} · 
                     <span className="font-semibold text-white ml-1">{searchFilteredDevices.length}</span> device{searchFilteredDevices.length !== 1 ? 's' : ''}
                     {searchTerm && (
@@ -491,7 +454,7 @@ export default function WarrantyExpiry() {
                                 >
                                   {/* Status Badge */}
                                   <div className="absolute top-2 right-2">
-                                    <div className={`${config.badge} px-2 py-1 rounded-full text-[10px] font-bold flex items-center gap-1`}>
+                                    <div className={`${config.badge} px-2 py-1 rounded-full text-[12px] font-bold flex items-center gap-1`}>
                                       <span>{config.icon}</span>
                                       <span>{config.label}</span>
                                     </div>
@@ -501,11 +464,11 @@ export default function WarrantyExpiry() {
                                     {/* Device Info */}
                                     <div className="pr-20">
                                       <div className="font-bold text-white text-lg">{d.type_name || d.type_id}</div>
-                                      <div className="text-sm text-gray-300">{d.brand} {d.model}</div>
+                                      <div className="text-xs text-gray-300">{d.brand} {d.model}</div>
                                       <div className="text-xs text-gray-400 mt-1 flex items-center gap-2 flex-wrap">
                                         <span>🏷️ {d.asset_id || d.assigned_code || 'N/A'}</span>
                                         {d.invoice_number && (
-                                          <span className="text-[10px] bg-neutral-700/50 px-1.5 py-0.5 rounded">
+                                          <span className="text-[12px] bg-neutral-700/50 px-1.5 py-0.5 rounded">
                                             📄 {d.invoice_number}
                                           </span>
                                         )}
@@ -529,13 +492,13 @@ export default function WarrantyExpiry() {
                                     {/* Warranty Info */}
                                     <div className="flex items-center justify-between bg-black/20 rounded p-2">
                                       <div>
-                                        <div className="text-[10px] text-gray-400 uppercase">Expiry Date</div>
+                                        <div className="text-[12px] text-gray-400 uppercase">Expiry Date</div>
                                         <div className={`font-semibold ${config.textColor}`}>
                                           {expiry ? expiry.toLocaleDateString() : 'N/A'}
                                         </div>
                                       </div>
                                       <div className="text-right">
-                                        <div className="text-[10px] text-gray-400 uppercase">Time Left</div>
+                                        <div className="text-[12px] text-gray-400 uppercase">Time Left</div>
                                         <div className={`font-bold text-lg ${config.textColor}`}>
                                           {days === null ? 'N/A' : days < 0 ? `${Math.abs(days)}d ago` : `${days}d`}
                                         </div>
@@ -571,3 +534,4 @@ export default function WarrantyExpiry() {
     </div>
   );
 }
+

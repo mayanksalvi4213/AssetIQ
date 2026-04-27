@@ -19,7 +19,7 @@ export function LoginForm() {
     const password = (form.querySelector("#password") as HTMLInputElement).value;
 
     try {
-      const response = await fetch("http://127.0.0.1:5000/login", {
+      const response = await fetch("/api/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, password }),
@@ -60,7 +60,7 @@ export function LoginForm() {
       <BackgroundGradient containerClassName="w-full max-w-md" className="rounded-3xl">
         <div className="shadow-input w-full rounded-3xl bg-neutral-900/70 backdrop-blur-md border border-white/15 p-6 md:p-10">
           <h2 className="text-2xl font-bold">Welcome Back</h2>
-          <p className="mt-2 text-sm text-gray-300">Please log in to your account</p>
+          <p className="mt-2 text-xs text-gray-300">Please log in to your account</p>
 
           <form onSubmit={handleSubmit} className="mt-6">
             <LabelInputContainer className="mb-4">
@@ -86,7 +86,7 @@ export function LoginForm() {
             </LabelInputContainer>
 
             <div className="flex justify-end mb-6">
-              <Link to="/forgot" className="text-sm text-blue-400 hover:underline hover:text-blue-300">
+              <Link to="/forgot" className="text-xs text-blue-400 hover:underline hover:text-blue-300">
                 Forgot password?
               </Link>
             </div>
@@ -99,7 +99,7 @@ export function LoginForm() {
               <BottomGradient />
             </button>
 
-            <p className="mt-6 text-center text-sm text-gray-400">
+            <p className="mt-6 text-center text-xs text-gray-400">
               Don&apos;t have an account?{" "}
               <Link to="/signup" className="font-medium text-blue-400 hover:underline hover:text-blue-300">
                 Create one
@@ -122,3 +122,5 @@ const BottomGradient = () => (
 const LabelInputContainer = ({ children, className }: { children: React.ReactNode; className?: string }) => (
   <div className={cn("flex w-full flex-col space-y-2", className)}>{children}</div>
 );
+
+

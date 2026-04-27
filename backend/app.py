@@ -15,10 +15,14 @@ import os
 import uuid
 import requests
 import time
+import threading
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
 from dotenv import load_dotenv
-from io import BytesIO
+from io import BytesIO, StringIO
+import csv
 from reportlab.lib import colors
-from reportlab.lib.pagesizes import letter, A4
+from reportlab.lib.pagesizes import letter, A4, landscape
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image as RLImage
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
@@ -30,6 +34,7 @@ load_dotenv()
 JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY")
 JWT_EXPIRATION_HOURS = int(os.getenv("JWT_EXPIRATION_HOURS", 24))
 LLM_WHISPERER_API_KEY = os.getenv("LLM_WHISPERER_API_KEY")
+FRONTEND_PUBLIC_BASE_URL = os.getenv("FRONTEND_PUBLIC_BASE_URL", "http://localhost:5173").rstrip("/")
 
 # Import models and services
 from models.user import User
@@ -51,7 +56,9 @@ CORS(app)
 UPLOAD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "uploads")
 ALLOWED_BILL_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png"}
 
-pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+tesseract_cmd = os.getenv("TESSERACT_CMD")
+if tesseract_cmd:
+    pytesseract.pytesseract.tesseract_cmd = tesseract_cmd
 
 # Initialize OCR regex extractor (uses classifier + regex templates)
 extractor = OcrRegexExtractor()
@@ -595,6 +602,10 @@ def register():
     if not all(field in data for field in required_fields):
         return jsonify({"error": "Missing required fields"}), 400
 
+    email = (data.get("email") or "").strip().lower()
+    if not email.endswith("@apsit.edu.in"):
+        return jsonify({"error": "Only @apsit.edu.in email addresses are allowed for registration"}), 400
+
     assigned_lab = None
     if data["role"] == "Lab Incharge":
         assigned_lab = data.get("accessScope", {}).get("lab")
@@ -602,7 +613,7 @@ def register():
     user = User.create_user(
         first_name=data["firstName"],
         last_name=data["lastName"],
-        email=data["email"],
+        email=email,
         password=data["password"],
         role=data["role"],
         assigned_lab=assigned_lab
@@ -737,6 +748,96 @@ def verify_token():
             "assignedLab": user.assigned_lab
         }
     })
+
+
+# -----------------------------
+# HOD: Assign Lab Incharge
+# -----------------------------
+@app.route("/get_lab_incharges", methods=["GET"])
+def get_lab_incharges():
+    """Return all users with role Lab Incharge (HOD only)."""
+    current_user = get_current_user()
+    if not current_user or current_user.role != "HOD":
+        return jsonify({"error": "Unauthorized"}), 403
+
+    conn = db.get_connection()
+    if not conn:
+        return jsonify({"error": "Database connection failed"}), 500
+
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT id, first_name, last_name, email, role, assigned_lab
+            FROM users
+            WHERE role = %s
+            ORDER BY first_name, last_name
+            """,
+            ("Lab Incharge",)
+        )
+        users = cursor.fetchall()
+        return jsonify({"success": True, "users": users})
+    except Exception as e:
+        print(f"Error fetching lab incharges: {e}")
+        return jsonify({"error": "Failed to fetch lab incharges"}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.route("/assign_lab_incharge", methods=["POST"])
+def assign_lab_incharge():
+    """Assign a lab to a Lab Incharge user (HOD only)."""
+    current_user = get_current_user()
+    if not current_user or current_user.role != "HOD":
+        return jsonify({"error": "Unauthorized"}), 403
+
+    data = request.get_json() or {}
+    user_id = data.get("userId")
+    lab_id = data.get("labId")
+
+    if not user_id or not lab_id:
+        return jsonify({"error": "userId and labId are required"}), 400
+
+    conn = db.get_connection()
+    if not conn:
+        return jsonify({"error": "Database connection failed"}), 500
+
+    try:
+        cursor = conn.cursor()
+
+        cursor.execute("SELECT lab_id FROM labs WHERE lab_id = %s", (lab_id,))
+        if not cursor.fetchone():
+            return jsonify({"error": "Lab not found"}), 404
+
+        cursor.execute("SELECT id, role FROM users WHERE id = %s", (user_id,))
+        user_row = cursor.fetchone()
+        if not user_row:
+            return jsonify({"error": "User not found"}), 404
+        if user_row.get("role") != "Lab Incharge":
+            return jsonify({"error": "User is not a Lab Incharge"}), 400
+
+        access_scope = {"type": "single", "lab": lab_id}
+        cursor.execute(
+            """
+            UPDATE users
+            SET assigned_lab = %s, access_scope = %s
+            WHERE id = %s
+            RETURNING id, first_name, last_name, email, role, assigned_lab
+            """,
+            (lab_id, json.dumps(access_scope), user_id)
+        )
+        updated_user = cursor.fetchone()
+        conn.commit()
+
+        return jsonify({"success": True, "user": updated_user})
+    except Exception as e:
+        conn.rollback()
+        print(f"Error assigning lab incharge: {e}")
+        return jsonify({"error": "Failed to assign lab"}), 500
+    finally:
+        cursor.close()
+        conn.close()
 
 # -----------------------------
 # Generate QR Codes Endpoint
@@ -1072,32 +1173,7 @@ def save_devices():
         
         cursor = conn.cursor()
         
-        # IMPORTANT: Check and fix dept column type if needed
-        try:
-            cursor.execute("""
-                SELECT data_type, character_maximum_length 
-                FROM information_schema.columns 
-                WHERE table_name = 'devices' AND column_name = 'dept'
-            """)
-            column_info = cursor.fetchone()
-            if column_info:
-                data_type = column_info['data_type']
-                max_length = column_info['character_maximum_length']
-                print(f"dept column type: {data_type}, max_length: {max_length}")
-                
-                # If it's char with length 1 or too small, we need to alter it
-                if (data_type == 'character' and max_length == 1):
-                    print("⚠️  WARNING: dept column is 'char(1)' - this will truncate values!")
-                    print("🔧 Attempting to alter column to varchar(50)...")
-                    try:
-                        cursor.execute("ALTER TABLE devices ALTER COLUMN dept TYPE varchar(50)")
-                        conn.commit()
-                        print("✅ Successfully altered dept column to varchar(50)")
-                    except Exception as alter_error:
-                        print(f"❌ Failed to alter column: {alter_error}")
-                        conn.rollback()
-        except Exception as check_error:
-            print(f"Could not check column type: {check_error}")
+        # NOTE: Schema migrations removed from runtime (assumed already applied).
         
         # Fetch bill_id and bill_date from bills table
         cursor.execute(
@@ -1548,9 +1624,19 @@ def get_labs():
         cursor = conn.cursor()
         
         cursor.execute(
-            """SELECT lab_id, lab_name, rows, columns 
-               FROM labs 
-               ORDER BY lab_id"""
+            """
+            SELECT l.lab_id, l.lab_name, l.rows, l.columns,
+                   COALESCE(
+                       string_agg(TRIM(CONCAT_WS(' ', u.first_name, u.last_name)), ', '),
+                       ''
+                   ) AS incharge_name
+            FROM labs l
+            LEFT JOIN users u
+              ON u.assigned_lab = l.lab_id
+             AND u.role = 'Lab Incharge'
+            GROUP BY l.lab_id, l.lab_name, l.rows, l.columns
+            ORDER BY l.lab_id
+            """
         )
         labs = cursor.fetchall()
         
@@ -2209,6 +2295,18 @@ def export_lab_station_pdf(lab_id):
         doc = SimpleDocTemplate(pdf_buffer, pagesize=A4, topMargin=0.5*inch)
         elements = []
         styles = getSampleStyleSheet()
+        cell_style = ParagraphStyle(
+            'TransferCell',
+            parent=styles['Normal'],
+            fontSize=7,
+            leading=9
+        )
+        cell_style = ParagraphStyle(
+            'TransferCell',
+            parent=styles['Normal'],
+            fontSize=7,
+            leading=9
+        )
         
         # Add header image if exists
         header_path = os.path.join(os.path.dirname(__file__), 'header.png')
@@ -2322,7 +2420,13 @@ def raise_issue():
 
         # Validate device
         cursor.execute(
-            "SELECT device_id, is_active FROM devices WHERE device_id = %s",
+            """
+                 SELECT d.device_id, d.is_active, d.lab_id, d.assigned_code, d.asset_code,
+                   COALESCE(et.name, 'Unknown') AS type_name
+            FROM devices d
+            LEFT JOIN equipment_types et ON d.type_id = et.type_id
+            WHERE d.device_id = %s
+            """,
             (device_id,)
         )
         device_row = cursor.fetchone()
@@ -2330,6 +2434,17 @@ def raise_issue():
             cursor.close()
             conn.close()
             return jsonify({"success": False, "error": "Device not found"}), 404
+
+        # Ensure issue_id sequence is in sync (handles manual inserts / migrations)
+        cursor.execute(
+            """
+            SELECT setval(
+                pg_get_serial_sequence('device_issues', 'issue_id'),
+                COALESCE((SELECT MAX(issue_id) FROM device_issues), 0) + 1,
+                false
+            )
+            """
+        )
 
         # Insert issue with severity and reported_by
         cursor.execute(
@@ -2341,6 +2456,17 @@ def raise_issue():
         issue_row = cursor.fetchone()
         issue_id = issue_row['issue_id']
         reported_at = issue_row['reported_at']
+
+        # Ensure history_id sequence is in sync (handles manual inserts / migrations)
+        cursor.execute(
+            """
+            SELECT setval(
+                pg_get_serial_sequence('device_issue_history', 'history_id'),
+                COALESCE((SELECT MAX(history_id) FROM device_issue_history), 0) + 1,
+                false
+            )
+            """
+        )
 
         # History log
         cursor.execute(
@@ -2360,6 +2486,47 @@ def raise_issue():
         cursor.close()
         conn.close()
 
+        # ── Auto notification: fire in background, never blocks response ──
+        sev_color = {
+            "critical": "#ef4444", "high": "#f97316",
+            "medium": "#eab308", "low": "#22c55e"
+        }.get(severity, "#6b7280")
+        lab_number = device_row.get("lab_id") or "Unassigned"
+        assigned_code = device_row.get("assigned_code") or "—"
+        device_type = device_row.get("type_name") or "Unknown"
+        asset_code = device_row.get("asset_code") or f"#{device_id}"
+
+        _issue_html = f"""
+        <html><body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f3f4f6;padding:20px;">
+          <div style="max-width:620px;margin:0 auto;background:white;border-radius:12px;overflow:hidden;box-shadow:0 4px 6px rgba(0,0,0,0.1);">
+            <div style="background:linear-gradient(135deg,#ef4444,#b91c1c);padding:20px 28px;">
+              <h1 style="color:white;margin:0;font-size:18px;">🚨 New Issue Raised</h1>
+              <p style="color:rgba(255,255,255,0.85);margin:4px 0 0;font-size:13px;">AssetIQ — Immediate Attention Required</p>
+            </div>
+            <div style="padding:20px 28px;">
+              <table style="width:100%;font-size:14px;border-collapse:collapse;">
+                <tr><td style="padding:8px 0;color:#6b7280;width:130px;">Issue Title</td><td style="padding:8px 0;font-weight:600;color:#111;">{title}</td></tr>
+                <tr><td style="padding:8px 0;color:#6b7280;">Asset Code</td><td style="padding:8px 0;color:#374151;">{asset_code}</td></tr>
+                                <tr><td style="padding:8px 0;color:#6b7280;">Lab Number</td><td style="padding:8px 0;color:#374151;">{lab_number}</td></tr>
+                                <tr><td style="padding:8px 0;color:#6b7280;">Device Type</td><td style="padding:8px 0;color:#374151;">{device_type}</td></tr>
+                                <tr><td style="padding:8px 0;color:#6b7280;">Assigned Code</td><td style="padding:8px 0;color:#374151;">{assigned_code}</td></tr>
+                <tr><td style="padding:8px 0;color:#6b7280;">Severity</td>
+                    <td style="padding:8px 0;"><span style="background:{sev_color};color:white;padding:2px 10px;border-radius:8px;font-size:12px;font-weight:600;">{severity.upper()}</span></td></tr>
+                <tr><td style="padding:8px 0;color:#6b7280;">Reported By</td><td style="padding:8px 0;color:#374151;">{reported_by}</td></tr>
+                <tr><td style="padding:8px 0;color:#6b7280;">Description</td><td style="padding:8px 0;color:#374151;">{description or 'No description provided.'}</td></tr>
+              </table>
+            </div>
+            <div style="background:#f9fafb;padding:12px 28px;text-align:center;">
+              <p style="color:#9ca3af;font-size:11px;margin:0;">AssetIQ Automatic Issue Notifier • {datetime.now().strftime('%B %d, %Y at %I:%M %p')}</p>
+            </div>
+          </div>
+        </body></html>"""
+        send_notification_to_lab_incharge(
+            subject=f"🚨 New Issue: {title} [Severity: {severity.upper()}]",
+            html_body=_issue_html,
+            lab_id=device_row.get("lab_id")
+        )
+
         return jsonify({
             "success": True,
             "issue": {
@@ -2377,6 +2544,474 @@ def raise_issue():
 
     except Exception as e:
         print(f"Error raising issue: {str(e)}")
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+# -----------------------------
+# Get or Create Lab Public QR
+# -----------------------------
+@app.route("/get_or_create_lab_public_qr/<lab_id>", methods=["GET"])
+def get_or_create_lab_public_qr(lab_id):
+    """
+    Ensure each lab has a stable public token used in student-facing QR URLs.
+    """
+    try:
+        conn = db.get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            SELECT lab_id, lab_name, lab_public_token
+            FROM labs
+            WHERE lab_id = %s
+            """,
+            (lab_id,)
+        )
+        lab_row = cursor.fetchone()
+        if not lab_row:
+            cursor.close()
+            conn.close()
+            return jsonify({"success": False, "error": "Lab not found"}), 404
+
+        token = (lab_row.get("lab_public_token") or "").strip()
+        if not token:
+            token = uuid.uuid4().hex
+            cursor.execute(
+                "UPDATE labs SET lab_public_token = %s WHERE lab_id = %s",
+                (token, lab_id)
+            )
+            conn.commit()
+
+        cursor.close()
+        conn.close()
+
+        public_url = f"{FRONTEND_PUBLIC_BASE_URL}/student/lab/{token}"
+        return jsonify({
+            "success": True,
+            "labId": lab_row["lab_id"],
+            "labName": lab_row["lab_name"],
+            "labPublicToken": token,
+            "publicUrl": public_url,
+            "qrValue": public_url,
+        })
+    except Exception as e:
+        print(f"Error generating lab public QR: {str(e)}")
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+# -----------------------------
+# Public: Get Lab Station Data by Token
+# -----------------------------
+@app.route("/public/lab/<lab_token>", methods=["GET"])
+def get_public_lab_by_token(lab_token):
+    """
+    Public endpoint for students scanning a lab QR.
+    Returns lab station/device details needed to raise complaints.
+    """
+    try:
+        conn = db.get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            SELECT lab_id, lab_name
+            FROM labs
+            WHERE lab_public_token = %s
+            """,
+            (lab_token,)
+        )
+        lab = cursor.fetchone()
+        if not lab:
+            cursor.close()
+            conn.close()
+            return jsonify({"success": False, "error": "Invalid or expired lab QR"}), 404
+
+        cursor.execute(
+            """
+            SELECT
+                ls.station_id,
+                ls.assigned_code,
+                lgc.row_number,
+                lgc.column_number,
+                COALESCE(lgc.equipment_type, '') AS station_type_label,
+                lsd.device_id,
+                lsd.device_type,
+                lsd.brand,
+                lsd.model,
+                lsd.specification,
+                d.asset_code,
+                d.assigned_code AS device_assigned_code,
+                d.is_active
+            FROM lab_stations ls
+            LEFT JOIN lab_grid_cells lgc ON ls.station_id = lgc.station_id
+            LEFT JOIN lab_station_devices lsd ON ls.station_id = lsd.station_id
+            LEFT JOIN devices d ON lsd.device_id = d.device_id
+            WHERE ls.lab_id = %s
+            ORDER BY ls.assigned_code, lsd.device_type
+            """,
+            (lab["lab_id"],)
+        )
+        rows = cursor.fetchall()
+
+        stations_map = {}
+        for row in rows:
+            sid = row["station_id"]
+            if sid not in stations_map:
+                stations_map[sid] = {
+                    "stationId": sid,
+                    "assignedCode": row["assigned_code"],
+                    "row": row.get("row_number"),
+                    "column": row.get("column_number"),
+                    "stationTypeLabel": row.get("station_type_label"),
+                    "devices": []
+                }
+
+            if row.get("device_id"):
+                stations_map[sid]["devices"].append({
+                    "deviceId": row["device_id"],
+                    "type": row.get("device_type"),
+                    "brand": row.get("brand"),
+                    "model": row.get("model"),
+                    "specification": row.get("specification"),
+                    "assetCode": row.get("asset_code"),
+                    "prefixCode": row.get("device_assigned_code"),
+                    "isActive": bool(row.get("is_active")),
+                })
+
+        cursor.close()
+        conn.close()
+
+        return jsonify({
+            "success": True,
+            "lab": {
+                "labId": lab["lab_id"],
+                "labName": lab["lab_name"],
+            },
+            "stations": list(stations_map.values()),
+        })
+    except Exception as e:
+        print(f"Error in public lab endpoint: {str(e)}")
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+# -----------------------------
+# Public: Student Complaint Submission
+# -----------------------------
+@app.route("/public/student_complaint", methods=["POST"])
+def public_student_complaint():
+    """
+    Students submit complaints that remain pending until approved.
+    """
+    try:
+        data = request.get_json(force=True)
+        lab_token = (data.get("labToken") or "").strip()
+        station_id = data.get("stationId")
+        device_id = data.get("deviceId")
+        student_name = (data.get("studentName") or "").strip()
+        student_email = (data.get("studentEmail") or "").strip().lower()
+        title = (data.get("title") or "").strip()
+        description = (data.get("description") or "").strip()
+        severity = (data.get("severity") or "medium").strip().lower()
+
+        if not all([lab_token, station_id, device_id, student_name, student_email, title]):
+            return jsonify({"success": False, "error": "Missing required fields"}), 400
+        if severity not in ["low", "medium", "high", "critical"]:
+            return jsonify({"success": False, "error": "Invalid severity"}), 400
+        if "@" not in student_email:
+            return jsonify({"success": False, "error": "Invalid email address"}), 400
+
+        conn = db.get_connection()
+        cursor = conn.cursor()
+
+        # Validate lab token and device ownership
+        cursor.execute(
+            """
+            SELECT l.lab_id
+            FROM labs l
+            WHERE l.lab_public_token = %s
+            """,
+            (lab_token,)
+        )
+        lab_row = cursor.fetchone()
+        if not lab_row:
+            cursor.close()
+            conn.close()
+            return jsonify({"success": False, "error": "Invalid lab token"}), 404
+
+        cursor.execute(
+            """
+            SELECT 1
+            FROM lab_stations ls
+            JOIN lab_station_devices lsd ON lsd.station_id = ls.station_id
+            WHERE ls.lab_id = %s AND ls.station_id = %s AND lsd.device_id = %s
+            """,
+            (lab_row["lab_id"], station_id, device_id)
+        )
+        mapping_ok = cursor.fetchone()
+        if not mapping_ok:
+            cursor.close()
+            conn.close()
+            return jsonify({"success": False, "error": "Device does not belong to this lab station"}), 400
+
+        cursor.execute(
+            """
+            INSERT INTO student_issue_requests
+            (lab_id, station_id, device_id, student_name, student_email, issue_title, issue_description, severity, status)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'pending')
+            RETURNING request_id, created_at
+            """,
+            (lab_row["lab_id"], station_id, device_id, student_name, student_email, title, description, severity)
+        )
+        created = cursor.fetchone()
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return jsonify({
+            "success": True,
+            "requestId": created["request_id"],
+            "status": "pending",
+            "createdAt": created["created_at"].isoformat() if created.get("created_at") else None,
+            "message": "Complaint submitted for lab assistant approval",
+        })
+    except Exception as e:
+        print(f"Error creating student complaint: {str(e)}")
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+# -----------------------------
+# Get Pending Student Complaints
+# -----------------------------
+@app.route("/get_pending_student_complaints", methods=["GET"])
+def get_pending_student_complaints():
+    """
+    Returns complaints waiting for approval.
+    Lab assistants can optionally pass labId to view only one lab.
+    """
+    try:
+        lab_id = request.args.get("labId")
+
+        conn = db.get_connection()
+        cursor = conn.cursor()
+
+        if lab_id:
+            cursor.execute(
+                """
+                SELECT r.request_id, r.lab_id, l.lab_name, r.station_id, ls.assigned_code AS station_code,
+                       r.device_id, d.asset_code, d.assigned_code AS device_assigned_code,
+                       r.student_name, r.student_email, r.issue_title, r.issue_description,
+                       r.severity, r.status, r.created_at
+                FROM student_issue_requests r
+                LEFT JOIN labs l ON l.lab_id = r.lab_id
+                LEFT JOIN lab_stations ls ON ls.station_id = r.station_id
+                LEFT JOIN devices d ON d.device_id = r.device_id
+                WHERE r.status = 'pending' AND r.lab_id = %s
+                ORDER BY r.created_at DESC
+                """,
+                (lab_id,)
+            )
+        else:
+            cursor.execute(
+                """
+                SELECT r.request_id, r.lab_id, l.lab_name, r.station_id, ls.assigned_code AS station_code,
+                       r.device_id, d.asset_code, d.assigned_code AS device_assigned_code,
+                       r.student_name, r.student_email, r.issue_title, r.issue_description,
+                       r.severity, r.status, r.created_at
+                FROM student_issue_requests r
+                LEFT JOIN labs l ON l.lab_id = r.lab_id
+                LEFT JOIN lab_stations ls ON ls.station_id = r.station_id
+                LEFT JOIN devices d ON d.device_id = r.device_id
+                WHERE r.status = 'pending'
+                ORDER BY r.created_at DESC
+                """
+            )
+
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+
+        complaints = []
+        for row in rows:
+            complaints.append({
+                "requestId": row["request_id"],
+                "labId": row["lab_id"],
+                "labName": row["lab_name"],
+                "stationId": row["station_id"],
+                "stationCode": row["station_code"],
+                "deviceId": row["device_id"],
+                "assetCode": row["asset_code"],
+                "deviceAssignedCode": row["device_assigned_code"],
+                "studentName": row["student_name"],
+                "studentEmail": row["student_email"],
+                "title": row["issue_title"],
+                "description": row["issue_description"],
+                "severity": row["severity"],
+                "status": row["status"],
+                "createdAt": row["created_at"].isoformat() if row.get("created_at") else None,
+            })
+
+        return jsonify({"success": True, "complaints": complaints})
+    except Exception as e:
+        print(f"Error fetching pending student complaints: {str(e)}")
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+# -----------------------------
+# Approve Student Complaint
+# -----------------------------
+@app.route("/approve_student_complaint", methods=["POST"])
+def approve_student_complaint():
+    """
+    Approves a student complaint and creates a real device issue.
+    """
+    try:
+        data = request.get_json(force=True)
+        request_id = data.get("requestId")
+        approver_name = (data.get("approverName") or "Lab Assistant").strip()
+        deactivate = data.get("deactivate")
+
+        if not request_id:
+            return jsonify({"success": False, "error": "requestId is required"}), 400
+
+        conn = db.get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            SELECT request_id, device_id, issue_title, issue_description, severity,
+                   student_name, student_email, status
+            FROM student_issue_requests
+            WHERE request_id = %s
+            """,
+            (request_id,)
+        )
+        req_row = cursor.fetchone()
+        if not req_row:
+            cursor.close()
+            conn.close()
+            return jsonify({"success": False, "error": "Complaint request not found"}), 404
+        if (req_row.get("status") or "").lower() != "pending":
+            cursor.close()
+            conn.close()
+            return jsonify({"success": False, "error": "Complaint is not pending"}), 400
+
+        severity = (req_row.get("severity") or "medium").lower()
+        if deactivate is None:
+            deactivate = severity in ["high", "critical"]
+
+        reported_by = f"Student: {req_row.get('student_name')} <{req_row.get('student_email')}>"
+
+        cursor.execute(
+            """
+            INSERT INTO device_issues (device_id, issue_title, description, status, severity, reported_by)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            RETURNING issue_id, reported_at
+            """,
+            (
+                req_row["device_id"],
+                req_row["issue_title"],
+                req_row.get("issue_description") or "",
+                "open",
+                severity,
+                reported_by,
+            )
+        )
+        issue_row = cursor.fetchone()
+
+        cursor.execute(
+            """
+            INSERT INTO device_issue_history (issue_id, action, old_status, new_status, note, changed_by)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            """,
+            (
+                issue_row["issue_id"],
+                "created",
+                None,
+                "open",
+                f"Approved student complaint request #{request_id}",
+                approver_name,
+            )
+        )
+
+        if deactivate:
+            cursor.execute("UPDATE devices SET is_active = FALSE WHERE device_id = %s", (req_row["device_id"],))
+
+        cursor.execute(
+            """
+            UPDATE student_issue_requests
+            SET status = 'approved', approved_by = %s, approved_at = NOW(), approved_issue_id = %s
+            WHERE request_id = %s
+            """,
+            (approver_name, issue_row["issue_id"], request_id)
+        )
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return jsonify({
+            "success": True,
+            "issue": {
+                "id": issue_row["issue_id"],
+                "deviceId": req_row["device_id"],
+                "title": req_row["issue_title"],
+                "status": "open",
+                "severity": severity,
+                "reportedBy": reported_by,
+                "reportedDate": issue_row["reported_at"].isoformat() if issue_row.get("reported_at") else None,
+            },
+        })
+    except Exception as e:
+        print(f"Error approving student complaint: {str(e)}")
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+# -----------------------------
+# Reject Student Complaint
+# -----------------------------
+@app.route("/reject_student_complaint", methods=["POST"])
+def reject_student_complaint():
+    try:
+        data = request.get_json(force=True)
+        request_id = data.get("requestId")
+        approver_name = (data.get("approverName") or "Lab Assistant").strip()
+        note = (data.get("note") or "Rejected by lab assistant").strip()
+
+        if not request_id:
+            return jsonify({"success": False, "error": "requestId is required"}), 400
+
+        conn = db.get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            UPDATE student_issue_requests
+            SET status = 'rejected', approved_by = %s, approved_at = NOW(), rejection_note = %s
+            WHERE request_id = %s AND status = 'pending'
+            RETURNING request_id
+            """,
+            (approver_name, note, request_id)
+        )
+        row = cursor.fetchone()
+        if not row:
+            cursor.close()
+            conn.close()
+            return jsonify({"success": False, "error": "Pending complaint not found"}), 404
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return jsonify({"success": True, "message": "Complaint rejected"})
+    except Exception as e:
+        print(f"Error rejecting student complaint: {str(e)}")
         traceback.print_exc()
         return jsonify({"success": False, "error": str(e)}), 500
 
@@ -2405,18 +3040,26 @@ def update_issue_status():
         conn = db.get_connection()
         cursor = conn.cursor()
 
-        # Check if issue exists
-        cursor.execute(
-            "SELECT issue_id, status FROM device_issues WHERE issue_id = %s",
-            (issue_id,)
-        )
+        # Fetch issue + device details for notification
+        cursor.execute("""
+            SELECT di.issue_id, di.issue_title, di.severity, di.status, di.device_id,
+                   d.asset_code, d.assigned_code, d.brand, d.model,
+                     d.lab_id,
+                   COALESCE(et.name, 'Unknown') AS type_name,
+                   COALESCE(l.lab_name, 'Unassigned') AS lab_name
+            FROM device_issues di
+            JOIN devices d ON di.device_id = d.device_id
+            LEFT JOIN equipment_types et ON d.type_id = et.type_id
+            LEFT JOIN labs l ON d.lab_id = l.lab_id
+            WHERE di.issue_id = %s
+        """, (issue_id,))
         issue_row = cursor.fetchone()
         if not issue_row:
             cursor.close()
             conn.close()
             return jsonify({"success": False, "error": "Issue not found"}), 404
 
-        old_status = issue_row['status']
+        old_status = issue_row.get('status', 'open')
 
         # Update status (+ resolved_at timestamp when resolving)
         if new_status == "resolved":
@@ -2430,6 +3073,17 @@ def update_issue_status():
                 (new_status, issue_id)
             )
 
+        # Ensure history_id sequence is in sync (handles manual inserts / migrations)
+        cursor.execute(
+            """
+            SELECT setval(
+                pg_get_serial_sequence('device_issue_history', 'history_id'),
+                COALESCE((SELECT MAX(history_id) FROM device_issue_history), 0) + 1,
+                false
+            )
+            """
+        )
+
         # Log history with who changed it
         cursor.execute(
             """INSERT INTO device_issue_history (issue_id, action, old_status, new_status, note, changed_by)
@@ -2441,6 +3095,55 @@ def update_issue_status():
         conn.commit()
         cursor.close()
         conn.close()
+
+        # ── Auto notification ──
+        issue_title_str = issue_row.get('issue_title', f'Issue #{issue_id}')
+        asset_label = issue_row.get('asset_code') or issue_row.get('assigned_code') or f"#{issue_row.get('device_id', '?')}"
+        device_label = f"{issue_row.get('type_name', '')} — {issue_row.get('brand', '')} {issue_row.get('model', '')}".strip(" —")
+        lab_label = issue_row.get('lab_name', 'Unknown')
+        sev_str = issue_row.get('severity', 'unknown')
+        sev_color = {"critical": "#ef4444", "high": "#f97316", "medium": "#eab308", "low": "#22c55e"}.get(sev_str, "#6b7280")
+
+        if new_status == "resolved":
+            _icon, _header_color, _subject_prefix = "✅", "linear-gradient(135deg,#22c55e,#15803d)", "✅ Issue Resolved"
+        elif new_status == "in-progress":
+            _icon, _header_color, _subject_prefix = "🔄", "linear-gradient(135deg,#f59e0b,#d97706)", "🔄 Issue In Progress"
+        else:
+            _icon, _header_color, _subject_prefix = "📋", "linear-gradient(135deg,#6366f1,#4338ca)", "📋 Issue Reopened"
+
+        _status_html = f"""
+        <html><body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f3f4f6;padding:20px;">
+          <div style="max-width:620px;margin:0 auto;background:white;border-radius:12px;overflow:hidden;box-shadow:0 4px 6px rgba(0,0,0,0.1);">
+            <div style="background:{_header_color};padding:20px 28px;">
+              <h1 style="color:white;margin:0;font-size:18px;">{_icon} Issue Status Updated</h1>
+              <p style="color:rgba(255,255,255,0.85);margin:4px 0 0;font-size:13px;">AssetIQ — {issue_title_str}</p>
+            </div>
+            <div style="padding:20px 28px;">
+              <table style="width:100%;font-size:14px;border-collapse:collapse;">
+                <tr><td style="padding:8px 0;color:#6b7280;width:130px;">Issue</td><td style="padding:8px 0;font-weight:600;color:#111;">{issue_title_str}</td></tr>
+                <tr><td style="padding:8px 0;color:#6b7280;">Asset</td><td style="padding:8px 0;color:#374151;">{asset_label} — {device_label}</td></tr>
+                <tr><td style="padding:8px 0;color:#6b7280;">Lab</td><td style="padding:8px 0;color:#374151;">{lab_label}</td></tr>
+                <tr><td style="padding:8px 0;color:#6b7280;">Severity</td>
+                    <td style="padding:8px 0;"><span style="background:{sev_color};color:white;padding:2px 10px;border-radius:8px;font-size:12px;font-weight:600;">{sev_str.upper()}</span></td></tr>
+                <tr><td style="padding:8px 0;color:#6b7280;">Status</td>
+                    <td style="padding:8px 0;color:#374151;">
+                      <span style="text-decoration:line-through;color:#9ca3af;">{old_status}</span>
+                      &nbsp;→&nbsp;
+                      <strong>{new_status}</strong>
+                    </td></tr>
+                <tr><td style="padding:8px 0;color:#6b7280;">Changed By</td><td style="padding:8px 0;color:#374151;">{changed_by or 'System'}</td></tr>
+              </table>
+            </div>
+            <div style="background:#f9fafb;padding:12px 28px;text-align:center;">
+              <p style="color:#9ca3af;font-size:11px;margin:0;">AssetIQ Automatic Issue Notifier • {datetime.now().strftime('%B %d, %Y at %I:%M %p')}</p>
+            </div>
+          </div>
+        </body></html>"""
+        send_notification_to_lab_incharge(
+            subject=f"{_subject_prefix}: {issue_title_str} [{asset_label}]",
+            html_body=_status_html,
+            lab_id=issue_row.get("lab_id")
+        )
 
         return jsonify({
             "success": True,
@@ -2844,7 +3547,10 @@ def get_all_devices():
         cursor = conn.cursor()
         
         # Query to get all devices with equipment type name and lab name
-        query = """
+        include_inactive = (request.args.get("include_inactive") in ["1", "true", "True", "yes", "YES"])
+        active_filter = "" if include_inactive else "WHERE d.is_active = TRUE"
+
+        query = f"""
             SELECT 
                 d.device_id,
                 d.asset_code as asset_id,
@@ -2871,6 +3577,7 @@ def get_all_devices():
             FROM devices d
             LEFT JOIN equipment_types et ON d.type_id = et.type_id
             LEFT JOIN labs l ON d.lab_id = l.lab_id
+            {active_filter}
             ORDER BY et.name, d.brand, d.model, d.device_id
         """
         
@@ -3106,6 +3813,7 @@ def get_deadstock_register():
             deadstock_entries.append({
                 "srNo": str(sr_no),
                 "labName": row['lab_name'],
+                "status": "Active",
                 "stationCode": row['assigned_code'],
                 "itemDescription": item_description,
                 "deviceCount": 1,
@@ -3162,11 +3870,44 @@ def get_deadstock_register():
             WHERE lsd.device_id IS NULL
               AND (d.assigned_code IS NULL OR d.assigned_code = '')
               AND d.lab_id IS NULL
+                            AND NOT EXISTS (
+                                    SELECT 1 FROM scrapped_devices sd WHERE sd.device_id = d.device_id
+                            )
             ORDER BY b.bill_date DESC, d.device_id
         """
 
         cursor.execute(unassigned_query)
         unassigned_rows = cursor.fetchall()
+
+        scrapped_query = """
+            SELECT
+                sd.device_id,
+                sd.device_type,
+                sd.brand,
+                sd.model,
+                sd.specification,
+                sd.asset_code,
+                sd.station_code,
+                sd.lab_name,
+                sd.cost,
+                sd.scrapped_at,
+                d.warranty_years,
+                d.purchase_date,
+                d.dept,
+                d.assigned_code,
+                b.vendor_name,
+                b.gstin,
+                b.bill_date,
+                b.stock_entry,
+                COALESCE(b.invoice_number, d.invoice_number) AS invoice_number
+            FROM scrapped_devices sd
+            LEFT JOIN devices d ON sd.device_id = d.device_id
+            LEFT JOIN bills b ON d.bill_id = b.bill_id
+            ORDER BY sd.scrapped_at DESC NULLS LAST, sd.device_id
+        """
+
+        cursor.execute(scrapped_query)
+        scrapped_rows = cursor.fetchall()
         cursor.close()
         conn.close()
 
@@ -3185,6 +3926,7 @@ def get_deadstock_register():
             deadstock_entries.append({
                 "srNo": str(sr_no),
                 "labName": "Unassigned",
+                "status": "Unassigned",
                 "stationCode": "UNASSIGNED",
                 "itemDescription": item_description,
                 "deviceCount": 1,
@@ -3210,6 +3952,50 @@ def get_deadstock_register():
                 "specification": row['specification'] or "",
                 "assetCode": row['asset_code'] or "",
                 "unitPrice": unit_price
+            })
+            sr_no += 1
+
+        for row in scrapped_rows:
+            device_type = row['device_type'] or "Unknown"
+            desc_parts = [device_type]
+            if row['brand']:
+                desc_parts.append(row['brand'])
+            if row['model']:
+                desc_parts.append(row['model'])
+            item_description = " ".join(desc_parts)
+
+            cost_value = float(row['cost']) if row.get('cost') is not None else 0
+            purchase_date = row['purchase_date'].strftime("%d/%m/%Y") if row.get('purchase_date') else ""
+
+            deadstock_entries.append({
+                "srNo": str(sr_no),
+                "labName": row.get('lab_name') or "Unknown",
+                "status": "Scrapped",
+                "stationCode": row.get('station_code') or "SCRAPPED",
+                "itemDescription": item_description,
+                "deviceCount": 1,
+                "devices": [],
+                "supplierInfo": row.get('vendor_name') or "",
+                "orderNo": row.get('gstin') or "",
+                "billNo": row.get('invoice_number') or "",
+                "billDate": row.get('bill_date').strftime("%d/%m/%Y") if row.get('bill_date') else "",
+                "centralStore": row.get('stock_entry') or "",
+                "quantity": "01",
+                "ratePerUnit": f"{cost_value:.2f}/-",
+                "cost": f"{cost_value:.2f}/-",
+                "dateOfDelivery": purchase_date,
+                "dateOfInstallation": purchase_date,
+                "identityNo": row.get('asset_code') or "",
+                "assignedCode": row.get('assigned_code') or "",
+                "remark": row.get('dept') or "",
+                "signOfLabInCharge": "",
+                "warrantyYears": row.get('warranty_years') or 0,
+                "deviceType": device_type,
+                "brand": row.get('brand') or "",
+                "model": row.get('model') or "",
+                "specification": row.get('specification') or "",
+                "assetCode": row.get('asset_code') or "",
+                "unitPrice": cost_value,
             })
             sr_no += 1
         
@@ -4122,7 +4908,7 @@ def resolve_transfer_dest_cell(cursor, lab_id, cell_id):
 
     cursor.execute("""
         SELECT lc.row_number, lc.column_number,
-               COALESCE(lc.station_label, st.name, 'Station') AS label
+               COALESCE(lc.label, st.name, 'Station') AS label
         FROM lab_layout_cells lc
         JOIN station_types st ON lc.station_type_id = st.station_type_id
         JOIN labs l ON lc.layout_id = l.layout_id
@@ -4211,13 +4997,15 @@ def export_transfer_history_excel():
             """)
 
         rows = cursor.fetchall()
-        lines = []
         header = [
             "Transfer ID", "Status", "From Lab", "To Lab", "Requested By", "Requested At",
             "Approved By", "Approved At", "Transfer Type", "Device Type", "Brand", "Model",
             "Asset Code", "Assigned Code", "Station Code", "Dest Cell", "Dest Position", "Remark"
         ]
-        lines.append(",".join(header))
+        csv_text = StringIO()
+        csv_text.write("\ufeff")
+        writer = csv.writer(csv_text, quoting=csv.QUOTE_ALL)
+        writer.writerow(header)
 
         for row in rows:
             device_ids = json.loads(row['device_ids']) if isinstance(row['device_ids'], str) else row['device_ids']
@@ -4270,12 +5058,10 @@ def export_transfer_history_excel():
                     pos or dest_label,
                     (row['remark'] or "").replace("\n", " ").replace("\r", " ")
                 ]
-                safe_line = [str(v).replace('"', '""') for v in line]
-                lines.append(",".join([f'"{v}"' for v in safe_line]))
+                writer.writerow(line)
 
-        csv_data = "\n".join(lines)
         output = BytesIO()
-        output.write(csv_data.encode('utf-8'))
+        output.write(csv_text.getvalue().encode('utf-8'))
         output.seek(0)
 
         cursor.close()
@@ -4361,15 +5147,50 @@ def export_transfer_history_pdf():
         rows = cursor.fetchall()
 
         buffer = BytesIO()
-        doc = SimpleDocTemplate(buffer, pagesize=A4)
+        doc = SimpleDocTemplate(
+            buffer,
+            pagesize=landscape(A4),
+            topMargin=0.45 * inch,
+            bottomMargin=0.45 * inch,
+            leftMargin=0.55 * inch,
+            rightMargin=0.55 * inch,
+        )
         styles = getSampleStyleSheet()
+        cell_style = ParagraphStyle(
+            'TransferCell',
+            parent=styles['Normal'],
+            fontSize=9,
+            leading=12,
+            wordWrap='CJK'
+        )
         elems = []
 
+        header_candidates = [
+            os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'frontend', 'public', 'header.png')),
+            os.path.join(os.path.dirname(__file__), 'header.png')
+        ]
+        for header_path in header_candidates:
+            if os.path.exists(header_path):
+                header_img = Image.open(header_path)
+                img_w, img_h = header_img.size
+                target_w = doc.width
+                target_h = (img_h / img_w) * target_w
+                max_header_h = 1.1 * inch
+                if target_h > max_header_h:
+                    scale = max_header_h / target_h
+                    target_w = target_w * scale
+                    target_h = max_header_h
+                elems.append(RLImage(header_path, width=target_w, height=target_h))
+                elems.append(Spacer(1, 0.18 * inch))
+                break
+
         elems.append(Paragraph("Transfer History", styles['Title']))
-        elems.append(Spacer(1, 0.2 * inch))
+        elems.append(Paragraph(f"Generated on: {datetime.now().strftime('%Y-%m-%d')}", styles['Normal']))
+        elems.append(Spacer(1, 0.18 * inch))
 
         table_data = [[
-            "Transfer", "From", "To", "Status", "Requested", "Approved", "Device", "Destination"
+            "Transfer", "From", "To", "Status", "Requested", "Approved",
+            "Device", "Asset Code", "Destination"
         ]]
 
         for row in rows:
@@ -4380,6 +5201,7 @@ def export_transfer_history_pdf():
                     et.name as type_name,
                     d.brand,
                     d.model,
+                    d.asset_code as asset_id,
                     d.assigned_code
                 FROM devices d
                 LEFT JOIN equipment_types et ON d.type_id = et.type_id
@@ -4400,26 +5222,41 @@ def export_transfer_history_pdf():
 
                 device_text = f"{dev['type_name']} {dev['brand'] or ''} {dev['model'] or ''}"
                 table_data.append([
-                    f"#{row['transfer_id']}",
-                    row['from_lab_name'] or row['from_lab_id'],
-                    row['to_lab_name'] or row['to_lab_id'],
-                    row['status'],
-                    row['requested_at'].strftime('%Y-%m-%d') if row['requested_at'] else '',
-                    row['approved_at'].strftime('%Y-%m-%d') if row['approved_at'] else '',
-                    device_text.strip(),
-                    dest_text.strip()
+                    Paragraph(f"#{row['transfer_id']}", cell_style),
+                    Paragraph(row['from_lab_name'] or row['from_lab_id'] or "", cell_style),
+                    Paragraph(row['to_lab_name'] or row['to_lab_id'] or "", cell_style),
+                    Paragraph(row['status'], cell_style),
+                    Paragraph(row['requested_at'].strftime('%Y-%m-%d') if row['requested_at'] else '', cell_style),
+                    Paragraph(row['approved_at'].strftime('%Y-%m-%d') if row['approved_at'] else '', cell_style),
+                    Paragraph(device_text.strip(), cell_style),
+                    Paragraph(dev['asset_id'] or "", cell_style),
+                    Paragraph(dest_text.strip(), cell_style)
                 ])
 
-        table = Table(table_data, repeatRows=1)
+        table = Table(
+            table_data,
+            repeatRows=1,
+            colWidths=[
+                0.75 * inch, 1.3 * inch, 1.3 * inch, 0.75 * inch, 0.9 * inch,
+                0.9 * inch, 1.9 * inch, 1.05 * inch, 1.55 * inch
+            ]
+        )
+        table.hAlign = 'CENTER'
         table.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#4B5563')),
             ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
             ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+            ('ALIGN', (3, 1), (5, -1), 'CENTER'),
             ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, 0), 9),
-            ('FONTSIZE', (0, 1), (-1, -1), 8),
+            ('FONTSIZE', (0, 0), (-1, 0), 10),
+            ('FONTSIZE', (0, 1), (-1, -1), 9),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.whitesmoke, colors.lightgrey]),
             ('GRID', (0, 0), (-1, -1), 0.25, colors.grey),
             ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('LEFTPADDING', (0, 0), (-1, -1), 5),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 5),
+            ('TOPPADDING', (0, 0), (-1, -1), 6),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
         ]))
 
         elems.append(table)
@@ -4449,10 +5286,10 @@ def approve_transfer(transfer_id):
         # Get current user (should be HOD)
         user_info = get_current_user()
         user_email = user_info.email if user_info else 'Unknown'
-        
+
         conn = db.get_connection()
         cursor = conn.cursor()
-        
+
         # Get transfer details (read device_dest_map if available)
         cursor.execute("""
             SELECT 1
@@ -4463,29 +5300,40 @@ def approve_transfer(transfer_id):
 
         if has_device_dest_map:
             cursor.execute("""
-                SELECT from_lab_id, to_lab_id, device_ids, transfer_type, station_ids, dest_cell_id, device_dest_map
-                FROM transfer_requests
-                WHERE transfer_id = %s AND status = 'pending'
+                SELECT tr.from_lab_id, tr.to_lab_id, tr.device_ids, tr.transfer_type, tr.station_ids,
+                       tr.dest_cell_id, tr.device_dest_map, tr.requested_by,
+                       l1.lab_name AS from_lab_name, l2.lab_name AS to_lab_name
+                FROM transfer_requests tr
+                LEFT JOIN labs l1 ON tr.from_lab_id = l1.lab_id
+                LEFT JOIN labs l2 ON tr.to_lab_id = l2.lab_id
+                WHERE tr.transfer_id = %s AND tr.status = 'pending'
             """, (transfer_id,))
         else:
             cursor.execute("""
-                SELECT from_lab_id, to_lab_id, device_ids, transfer_type, station_ids, dest_cell_id
-                FROM transfer_requests
-                WHERE transfer_id = %s AND status = 'pending'
+                SELECT tr.from_lab_id, tr.to_lab_id, tr.device_ids, tr.transfer_type, tr.station_ids,
+                       tr.dest_cell_id, tr.requested_by,
+                       l1.lab_name AS from_lab_name, l2.lab_name AS to_lab_name
+                FROM transfer_requests tr
+                LEFT JOIN labs l1 ON tr.from_lab_id = l1.lab_id
+                LEFT JOIN labs l2 ON tr.to_lab_id = l2.lab_id
+                WHERE tr.transfer_id = %s AND tr.status = 'pending'
             """, (transfer_id,))
-        
+
         result = cursor.fetchone()
         if not result:
             return jsonify({'success': False, 'error': 'Transfer request not found or already processed'}), 404
-        
+
         from_lab_id = result['from_lab_id']
         to_lab_id = result['to_lab_id']
         device_ids_json = result['device_ids']
         transfer_type = result.get('transfer_type', 'individual')
         station_ids_json = result.get('station_ids')
         dest_cell_id = result.get('dest_cell_id')
+        requested_by_email = result.get('requested_by')
+        from_lab_name = result.get('from_lab_name') or from_lab_id
+        to_lab_name = result.get('to_lab_name') or to_lab_id
         device_dest_map_json = result.get('device_dest_map') if has_device_dest_map else None
-        
+
         device_ids = json.loads(device_ids_json) if isinstance(device_ids_json, str) else device_ids_json
         station_ids = json.loads(station_ids_json) if isinstance(station_ids_json, str) and station_ids_json else (station_ids_json or [])
         device_dest_map = json.loads(device_dest_map_json) if isinstance(device_dest_map_json, str) and device_dest_map_json else (device_dest_map_json or {})
@@ -4649,16 +5497,40 @@ def approve_transfer(transfer_id):
                 approved_at = NOW()
             WHERE transfer_id = %s
         """, (user_email, transfer_id))
-        
+
         conn.commit()
         cursor.close()
         conn.close()
-        
+
+        approval_html = f"""
+        <html><body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f3f4f6;padding:20px;">
+          <div style="max-width:620px;margin:0 auto;background:white;border-radius:12px;overflow:hidden;box-shadow:0 4px 6px rgba(0,0,0,0.1);">
+            <div style="background:linear-gradient(135deg,#22c55e,#15803d);padding:20px 28px;">
+              <h1 style="color:white;margin:0;font-size:18px;">✅ Transfer Request Approved</h1>
+              <p style="color:rgba(255,255,255,0.85);margin:4px 0 0;font-size:13px;">Transfer #{transfer_id}</p>
+            </div>
+            <div style="padding:20px 28px;">
+              <table style="width:100%;font-size:14px;border-collapse:collapse;">
+                <tr><td style="padding:8px 0;color:#6b7280;width:140px;">From Lab</td><td style="padding:8px 0;color:#111;">{from_lab_name}</td></tr>
+                <tr><td style="padding:8px 0;color:#6b7280;">To Lab</td><td style="padding:8px 0;color:#111;">{to_lab_name}</td></tr>
+                <tr><td style="padding:8px 0;color:#6b7280;">Devices Moved</td><td style="padding:8px 0;color:#111;">{len(device_ids)}</td></tr>
+                <tr><td style="padding:8px 0;color:#6b7280;">Approved By</td><td style="padding:8px 0;color:#111;">{user_email}</td></tr>
+              </table>
+            </div>
+          </div>
+        </body></html>
+        """
+        send_notification_to_user(
+            subject=f"✅ Transfer Approved: Request #{transfer_id}",
+            html_body=approval_html,
+            user_email=requested_by_email
+        )
+
         return jsonify({
             'success': True,
             'message': f'Transfer approved and {len(device_ids)} devices moved successfully'
         })
-        
+
     except Exception as e:
         print(f"Error approving transfer: {str(e)}")
         traceback.print_exc()
@@ -6069,8 +6941,1565 @@ Be concise and specific. Use device IDs and invoice numbers when referencing ite
         return jsonify({"error": str(e)}), 500
 
 
+# =============================================
+# PROACTIVE MAINTENANCE ENDPOINTS
+# =============================================
+
+@app.route("/get_proactive_maintenance", methods=["GET"])
+def get_proactive_maintenance():
+    """
+    Comprehensive proactive maintenance analytics.
+    Returns: health scores, warranty alerts, risk heatmap,
+    maintenance timeline, at-risk assets, and summary stats.
+    """
+    try:
+        conn = db.get_connection()
+        if not conn:
+            return jsonify({"error": "Database connection failed"}), 500
+
+        cursor = conn.cursor()
+
+        # 1. Asset health scores — compute for every active device
+        cursor.execute("""
+            SELECT d.device_id, d.asset_code, d.brand, d.model,
+                   d.assigned_code, d.is_active,
+                   COALESCE(et.name, 'Unknown') AS type_name,
+                   COALESCE(l.lab_name, 'Unassigned') AS lab_name,
+                   b.bill_date, b.vendor_name, b.invoice_number,
+                   CASE WHEN d.purchase_date IS NOT NULL AND d.warranty_years IS NOT NULL AND d.warranty_years > 0
+                        THEN d.purchase_date + (d.warranty_years * INTERVAL '1 year')
+                        ELSE NULL END AS warranty_expiry_date,
+                   COUNT(di.issue_id) AS issue_count,
+                   SUM(CASE WHEN LOWER(di.status) = 'open' THEN 1 ELSE 0 END) AS open_issues,
+                   SUM(CASE WHEN LOWER(di.severity) IN ('critical','high') THEN 1 ELSE 0 END) AS severe_issues,
+                   MAX(di.reported_at) AS last_issue_date,
+                   MIN(di.reported_at) AS first_issue_date
+            FROM devices d
+            LEFT JOIN equipment_types et ON d.type_id = et.type_id
+            LEFT JOIN labs l ON d.lab_id = l.lab_id
+            LEFT JOIN bills b ON d.bill_id = b.bill_id
+            LEFT JOIN device_issues di ON d.device_id = di.device_id
+            WHERE d.is_active = TRUE
+            GROUP BY d.device_id, d.asset_code, d.brand, d.model,
+                     d.assigned_code, d.is_active, et.name, l.lab_name,
+                     b.bill_date, b.vendor_name, b.invoice_number,
+                     d.purchase_date, d.warranty_years
+            ORDER BY issue_count DESC
+        """)
+        raw_devices = cursor.fetchall()
+
+        # Compute health scores
+        asset_health = []
+        high_risk_assets = []
+        for dev in raw_devices:
+            score = 100
+            issue_count = dev.get('issue_count', 0) or 0
+            open_issues = dev.get('open_issues', 0) or 0
+            severe_issues = dev.get('severe_issues', 0) or 0
+
+            # Deduct for issues — balanced so 2-3 issues surfaces the device, but 1 minor issue doesn't
+            score -= min(issue_count * 6, 30)    # max -30: 5+ issues fully penalised
+            score -= min(open_issues * 8, 20)    # max -20: 2-3 open issues is enough to flag
+            score -= min(severe_issues * 10, 25) # max -25: 2-3 severe issues is critical
+
+            # Deduct for recency of issues
+            last_issue = dev.get('last_issue_date')
+            if last_issue:
+                if hasattr(last_issue, 'timestamp'):
+                    days_since = (datetime.now() - last_issue).days
+                else:
+                    days_since = (datetime.now() - datetime.fromisoformat(str(last_issue))).days
+                if days_since < 7:
+                    score -= 10
+                elif days_since < 30:
+                    score -= 5
+                elif days_since < 90:
+                    score -= 2
+
+            # Deduct for warranty status
+            warranty_expiry = dev.get('warranty_expiry_date')
+            warranty_status = 'unknown'
+            days_until_expiry = None
+            if warranty_expiry:
+                if hasattr(warranty_expiry, 'date'):
+                    exp_date = warranty_expiry.date()
+                else:
+                    exp_date = datetime.fromisoformat(str(warranty_expiry)).date()
+                days_until_expiry = (exp_date - datetime.now().date()).days
+                if days_until_expiry < 0:
+                    warranty_status = 'expired'
+                    score -= 10
+                elif days_until_expiry <= 30:
+                    warranty_status = 'expiring_soon'
+                    score -= 5
+                elif days_until_expiry <= 90:
+                    warranty_status = 'expiring'
+                else:
+                    warranty_status = 'active'
+
+            score = max(score, 0)
+
+            risk_level = 'critical' if score <= 25 else ('high' if score <= 50 else ('medium' if score <= 75 else 'healthy'))
+
+            entry = {
+                'device_id': dev['device_id'],
+                'asset_code': dev.get('asset_code', ''),
+                'brand': dev.get('brand', ''),
+                'model': dev.get('model', ''),
+                'assigned_code': dev.get('assigned_code', ''),
+                'type_name': dev.get('type_name', 'Unknown'),
+                'lab_name': dev.get('lab_name', 'Unassigned'),
+                'vendor_name': dev.get('vendor_name', ''),
+                'invoice_number': dev.get('invoice_number', ''),
+                'issue_count': issue_count,
+                'open_issues': open_issues,
+                'severe_issues': severe_issues,
+                'health_score': score,
+                'risk_level': risk_level,
+                'warranty_status': warranty_status,
+                'days_until_expiry': days_until_expiry,
+                'last_issue_date': dev['last_issue_date'].isoformat() if dev.get('last_issue_date') and hasattr(dev['last_issue_date'], 'isoformat') else str(dev.get('last_issue_date', '')),
+                'first_issue_date': dev['first_issue_date'].isoformat() if dev.get('first_issue_date') and hasattr(dev['first_issue_date'], 'isoformat') else str(dev.get('first_issue_date', '')),
+            }
+            asset_health.append(entry)
+            if score <= 75:
+                high_risk_assets.append(entry)
+
+        # 2. Health distribution
+        health_distribution = [
+            {'range': 'Critical (0-25)', 'count': sum(1 for a in asset_health if a['health_score'] <= 25), 'color': '#ef4444'},
+            {'range': 'High Risk (26-50)', 'count': sum(1 for a in asset_health if 26 <= a['health_score'] <= 50), 'color': '#f97316'},
+            {'range': 'Medium (51-75)', 'count': sum(1 for a in asset_health if 51 <= a['health_score'] <= 75), 'color': '#eab308'},
+            {'range': 'Healthy (76-100)', 'count': sum(1 for a in asset_health if a['health_score'] >= 76), 'color': '#22c55e'},
+        ]
+
+        # 3. Warranty expiry alerts
+        warranty_alerts = {'expired': [], 'within_30': [], 'within_60': [], 'within_90': []}
+        for a in asset_health:
+            d = a.get('days_until_expiry')
+            if d is None:
+                continue
+            if d < 0:
+                warranty_alerts['expired'].append(a)
+            elif d <= 30:
+                warranty_alerts['within_30'].append(a)
+            elif d <= 60:
+                warranty_alerts['within_60'].append(a)
+            elif d <= 90:
+                warranty_alerts['within_90'].append(a)
+
+        # 4. Maintenance timeline (issues per month, last 12 months)
+        cursor.execute("""
+            SELECT TO_CHAR(reported_at, 'YYYY-MM') AS month,
+                   COUNT(*) AS total,
+                   SUM(CASE WHEN LOWER(severity) = 'critical' THEN 1 ELSE 0 END) AS critical,
+                   SUM(CASE WHEN LOWER(severity) = 'high' THEN 1 ELSE 0 END) AS high,
+                   SUM(CASE WHEN LOWER(severity) = 'medium' THEN 1 ELSE 0 END) AS medium,
+                   SUM(CASE WHEN LOWER(severity) = 'low' THEN 1 ELSE 0 END) AS low
+            FROM device_issues
+            WHERE reported_at >= NOW() - INTERVAL '12 months'
+            GROUP BY TO_CHAR(reported_at, 'YYYY-MM')
+            ORDER BY month
+        """)
+        maintenance_timeline = cursor.fetchall()
+
+        # 5. Open issues by age
+        cursor.execute("""
+            SELECT
+                SUM(CASE WHEN EXTRACT(DAY FROM NOW() - reported_at) <= 7 THEN 1 ELSE 0 END) AS week,
+                SUM(CASE WHEN EXTRACT(DAY FROM NOW() - reported_at) > 7 AND EXTRACT(DAY FROM NOW() - reported_at) <= 30 THEN 1 ELSE 0 END) AS month,
+                SUM(CASE WHEN EXTRACT(DAY FROM NOW() - reported_at) > 30 AND EXTRACT(DAY FROM NOW() - reported_at) <= 90 THEN 1 ELSE 0 END) AS quarter,
+                SUM(CASE WHEN EXTRACT(DAY FROM NOW() - reported_at) > 90 THEN 1 ELSE 0 END) AS older
+            FROM device_issues
+            WHERE LOWER(status) IN ('open', 'in-progress')
+        """)
+        issues_by_age_raw = cursor.fetchone()
+        issues_by_age = [
+            {'age': '0-7 days', 'count': issues_by_age_raw.get('week', 0) or 0},
+            {'age': '8-30 days', 'count': issues_by_age_raw.get('month', 0) or 0},
+            {'age': '31-90 days', 'count': issues_by_age_raw.get('quarter', 0) or 0},
+            {'age': '90+ days', 'count': issues_by_age_raw.get('older', 0) or 0},
+        ]
+
+        # 6. Lab risk heatmap
+        cursor.execute("""
+            SELECT COALESCE(l.lab_name, 'Unassigned') AS lab_name,
+                   COUNT(DISTINCT d.device_id) AS total_devices,
+                   COUNT(di.issue_id) AS total_issues,
+                   SUM(CASE WHEN LOWER(di.status) = 'open' THEN 1 ELSE 0 END) AS open_issues,
+                   SUM(CASE WHEN LOWER(di.severity) IN ('critical','high') THEN 1 ELSE 0 END) AS severe_issues
+            FROM devices d
+            LEFT JOIN labs l ON d.lab_id = l.lab_id
+            LEFT JOIN device_issues di ON d.device_id = di.device_id
+            WHERE d.is_active = TRUE
+            GROUP BY COALESCE(l.lab_name, 'Unassigned')
+            ORDER BY total_issues DESC
+        """)
+        lab_risk = cursor.fetchall()
+
+        # 7. Summary stats
+        total_devices = len(asset_health)
+        needs_attention = len(high_risk_assets)
+        upcoming_warranty = len(warranty_alerts['within_30']) + len(warranty_alerts['within_60']) + len(warranty_alerts['within_90'])
+        expired_warranty = len(warranty_alerts['expired'])
+
+        cursor.execute("""
+            SELECT COUNT(*) AS critical_open
+            FROM device_issues
+            WHERE LOWER(status) = 'open' AND LOWER(severity) = 'critical'
+        """)
+        critical_open = cursor.fetchone().get('critical_open', 0) or 0
+
+        cursor.close()
+        conn.close()
+
+        summary = {
+            'total_devices': total_devices,
+            'needs_attention': needs_attention,
+            'upcoming_warranty': upcoming_warranty,
+            'expired_warranty': expired_warranty,
+            'critical_open': critical_open,
+        }
+
+        return jsonify({
+            "success": True,
+            "asset_health": asset_health,
+            "high_risk_assets": high_risk_assets,
+            "health_distribution": health_distribution,
+            "warranty_alerts": warranty_alerts,
+            "maintenance_timeline": maintenance_timeline,
+            "issues_by_age": issues_by_age,
+            "lab_risk": lab_risk,
+            "summary": summary,
+        })
+
+    except Exception as e:
+        print(f"Error fetching proactive maintenance data: {str(e)}")
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/get_maintenance_insights", methods=["POST"])
+def get_maintenance_insights():
+    """
+    Send maintenance analytics to local LLM for AI-powered proactive insights.
+    """
+    try:
+        data = request.get_json(force=True)
+        analytics = data.get("analytics", {})
+
+        prompt = f"""You are an IT asset management analyst specializing in proactive maintenance. Analyze the following data and provide a preventive maintenance strategy.
+
+ASSET HEALTH SUMMARY:
+- Total devices: {analytics.get('total_devices', 0)}
+- Devices needing attention (health score ≤ 50): {analytics.get('needs_attention', 0)}
+- Upcoming warranty expirations: {analytics.get('upcoming_warranty', 0)}
+- Expired warranties: {analytics.get('expired_warranty', 0)}
+- Open critical issues: {analytics.get('critical_open', 0)}
+
+HIGH-RISK ASSETS (health score ≤ 50):
+{json.dumps(analytics.get('high_risk_assets', [])[:8], indent=2, default=str)}
+
+WARRANTY ALERTS:
+- Expired: {len(analytics.get('warranty_expired', []))} devices
+- Expiring within 30 days: {len(analytics.get('warranty_30', []))} devices
+- Expiring within 60 days: {len(analytics.get('warranty_60', []))} devices
+
+LAB RISK DATA:
+{json.dumps(analytics.get('lab_risk', [])[:6], indent=2, default=str)}
+
+OPEN ISSUES BY AGE:
+{json.dumps(analytics.get('issues_by_age', []), indent=2, default=str)}
+
+Based on this data, provide:
+### CRITICAL ALERTS
+2-3 most urgent issues that need immediate attention.
+### MAINTENANCE SCHEDULE
+Suggest a prioritized maintenance schedule for the next 30 days.
+### RISK ASSESSMENT
+Identify which labs and device types are at highest risk.
+### COST SAVINGS
+Estimate potential savings from proactive vs reactive maintenance.
+### ACTION ITEMS
+5 specific actionable steps to improve asset health.
+
+Be concise. Use device codes and lab names when referencing items."""
+
+        try:
+            resp = requests.post(
+                "http://localhost:8080/v1/chat/completions",
+                json={
+                    "model": "local-model",
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0.3
+                },
+                timeout=120
+            )
+            if resp.status_code == 200:
+                result = resp.json()
+                insight_text = result.get("choices", [{}])[0].get("message", {}).get("content", "")
+                return jsonify({"success": True, "insights": insight_text})
+            else:
+                return jsonify({"success": False, "error": f"LLM returned status {resp.status_code}"}), 502
+        except requests.exceptions.ConnectionError:
+            return jsonify({"success": False, "error": "Local AI model not available at port 8080"}), 503
+        except requests.exceptions.Timeout:
+            return jsonify({"success": False, "error": "AI model request timed out"}), 504
+
+    except Exception as e:
+        print(f"Error getting maintenance insights: {str(e)}")
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/get_alert_recipients", methods=["GET"])
+def get_alert_recipients():
+    """
+    Return lab incharge users (name + email + assigned_lab)
+    so the frontend can display who will receive lab-scoped maintenance alerts.
+    """
+    try:
+        conn = db.get_connection()
+        if not conn:
+            return jsonify({"error": "Database connection failed"}), 500
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, first_name, last_name, email, role, assigned_lab
+            FROM users
+                        WHERE role = 'Lab Incharge'
+                            AND assigned_lab IS NOT NULL
+                            AND assigned_lab != ''
+                        ORDER BY assigned_lab, first_name
+        """)
+        recipients = cursor.fetchall()
+        cursor.close()
+        conn.close()
+
+        return jsonify({
+            "success": True,
+            "recipients": [
+                {
+                    "id": r["id"],
+                    "name": f"{r['first_name']} {r['last_name']}",
+                    "email": r["email"],
+                    "role": r["role"],
+                    "assigned_lab": r.get("assigned_lab", None),
+                }
+                for r in recipients
+            ],
+        })
+    except Exception as e:
+        print(f"Error fetching alert recipients: {str(e)}")
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/send_maintenance_alerts", methods=["POST"])
+def send_maintenance_alerts():
+    """
+    Automatically send proactive maintenance alerts to incharge(s) of each lab.
+    Expects: { alerts: [{asset_code, type_name, lab_name, risk_level, health_score, issue_summary}] }
+    """
+    try:
+        import smtplib
+        from email.mime.text import MIMEText
+        from email.mime.multipart import MIMEMultipart
+
+        data = request.get_json(force=True)
+        alerts = data.get("alerts", [])
+
+        if not alerts:
+            return jsonify({"error": "No alerts to send"}), 400
+
+        # Auto-fetch recipients: only lab incharges with assigned labs
+        conn = db.get_connection()
+        if not conn:
+            return jsonify({"error": "Database connection failed"}), 500
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT email, first_name, last_name, role, assigned_lab
+            FROM users
+            WHERE role = 'Lab Incharge'
+              AND assigned_lab IS NOT NULL
+              AND assigned_lab != ''
+        """)
+        recipients = cursor.fetchall()
+
+        cursor.execute("""
+            SELECT lab_id, lab_name
+            FROM labs
+        """)
+        labs = cursor.fetchall() or []
+        cursor.close()
+        conn.close()
+
+        if not recipients:
+            return jsonify({"success": False, "error": "No lab incharge users found in the system"}), 404
+
+        incharges_by_lab = {}
+        for r in recipients:
+            lab_id = str(r.get("assigned_lab") or "").strip()
+            if not lab_id:
+                continue
+            incharges_by_lab.setdefault(lab_id, []).append(r)
+
+        lab_id_by_name = {
+            (l.get("lab_name") or "").strip().lower(): str(l.get("lab_id") or "").strip()
+            for l in labs
+            if (l.get("lab_name") or "").strip() and (l.get("lab_id") or "").strip()
+        }
+
+        alerts_by_lab = {}
+        unresolved_alerts = []
+        for a in alerts:
+            lab_id = str(a.get("lab_id") or a.get("labId") or "").strip()
+            if not lab_id:
+                lab_name_key = str(a.get("lab_name") or a.get("labName") or "").strip().lower()
+                lab_id = lab_id_by_name.get(lab_name_key, "")
+
+            if not lab_id:
+                unresolved_alerts.append({"asset_code": a.get("asset_code"), "reason": "lab not resolved"})
+                continue
+
+            alerts_by_lab.setdefault(lab_id, []).append(a)
+
+        # Build HTML email
+        risk_colors = {
+            'critical': '#ef4444',
+            'high': '#f97316',
+            'medium': '#eab308',
+            'healthy': '#22c55e',
+        }
+
+        # Send via SMTP to incharge recipients grouped by lab
+        mail_server = os.getenv("MAIL_SERVER", "smtp.gmail.com")
+        mail_port = int(os.getenv("MAIL_PORT", 587))
+        mail_username = os.getenv("MAIL_USERNAME", "")
+        mail_password = os.getenv("MAIL_PASSWORD", "")
+
+        if not mail_username or mail_username == "your_email@gmail.com":
+            return jsonify({
+                "success": False,
+                "error": "Email not configured. Please update MAIL_USERNAME and MAIL_PASSWORD in your .env file with real Gmail App Password credentials."
+            }), 400
+
+        server = smtplib.SMTP(mail_server, mail_port)
+        server.starttls()
+        server.login(mail_username, mail_password)
+
+        sent_to = []
+        failed = []
+        labs_notified = 0
+        for lab_id, lab_alerts in alerts_by_lab.items():
+            lab_recipients = incharges_by_lab.get(lab_id, [])
+            if not lab_recipients:
+                failed.append({"lab_id": lab_id, "error": "No assigned lab incharge found"})
+                continue
+
+            rows_html = ""
+            for a in lab_alerts:
+                color = risk_colors.get(a.get('risk_level', 'medium'), '#6b7280')
+                rows_html += f"""
+                <tr style="border-bottom: 1px solid #e5e7eb;">
+                    <td style="padding: 12px; font-weight: 600;">{a.get('asset_code', 'N/A')}</td>
+                    <td style="padding: 12px;">{a.get('type_name', '')}</td>
+                    <td style="padding: 12px;">{a.get('lab_name') or a.get('labName') or lab_id}</td>
+                    <td style="padding: 12px; text-align: center;">
+                        <span style="background: {color}; color: white; padding: 4px 12px; border-radius: 12px; font-size: 12px; font-weight: 600;">
+                            {a.get('risk_level', 'unknown').upper()}
+                        </span>
+                    </td>
+                    <td style="padding: 12px; text-align: center; font-weight: 700;">{a.get('health_score', 'N/A')}</td>
+                    <td style="padding: 12px; font-size: 13px; color: #6b7280;">{a.get('issue_summary', '')}</td>
+                </tr>"""
+
+            lab_name = lab_alerts[0].get('lab_name') or lab_alerts[0].get('labName') or lab_id
+            html_body = f"""
+            <html>
+            <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f3f4f6; padding: 20px;">
+                <div style="max-width: 800px; margin: 0 auto; background: white; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+                    <div style="background: linear-gradient(135deg, #f59e0b, #d97706); padding: 24px 32px;">
+                        <h1 style="color: white; margin: 0; font-size: 22px;">⚠️ AssetIQ — Proactive Maintenance Alert</h1>
+                        <p style="color: rgba(255,255,255,0.85); margin: 8px 0 0 0; font-size: 14px;">
+                            Lab: {lab_name} • {len(lab_alerts)} asset(s) require your attention
+                        </p>
+                    </div>
+                    <div style="padding: 24px 32px;">
+                        <p style="color: #374151; font-size: 14px; line-height: 1.6;">
+                            You are receiving this notification because you are assigned as lab incharge for {lab_name}.
+                        </p>
+                        <table style="width: 100%; border-collapse: collapse; margin-top: 16px; font-size: 14px;">
+                            <thead>
+                                <tr style="background: #f9fafb; border-bottom: 2px solid #e5e7eb;">
+                                    <th style="padding: 12px; text-align: left; color: #6b7280; font-size: 12px; text-transform: uppercase;">Asset</th>
+                                    <th style="padding: 12px; text-align: left; color: #6b7280; font-size: 12px; text-transform: uppercase;">Type</th>
+                                    <th style="padding: 12px; text-align: left; color: #6b7280; font-size: 12px; text-transform: uppercase;">Lab</th>
+                                    <th style="padding: 12px; text-align: center; color: #6b7280; font-size: 12px; text-transform: uppercase;">Risk</th>
+                                    <th style="padding: 12px; text-align: center; color: #6b7280; font-size: 12px; text-transform: uppercase;">Health</th>
+                                    <th style="padding: 12px; text-align: left; color: #6b7280; font-size: 12px; text-transform: uppercase;">Details</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {rows_html}
+                            </tbody>
+                        </table>
+                    </div>
+                    <div style="background: #f9fafb; padding: 16px 32px; text-align: center;">
+                        <p style="color: #9ca3af; font-size: 12px; margin: 0;">
+                            Generated by AssetIQ Proactive Maintenance System • {datetime.now().strftime('%B %d, %Y at %I:%M %p')}
+                        </p>
+                    </div>
+                </div>
+            </body>
+            </html>
+            """
+
+            subject = f"⚠️ Proactive Maintenance Alert — {lab_name} ({len(lab_alerts)} Asset(s))"
+            for r in lab_recipients:
+                recipient_email = (r.get("email") or "").strip()
+                if not recipient_email:
+                    continue
+                try:
+                    msg = MIMEMultipart("alternative")
+                    msg["Subject"] = subject
+                    msg["From"] = mail_username
+                    msg["To"] = recipient_email
+                    msg.attach(MIMEText(html_body, "html"))
+                    server.sendmail(mail_username, recipient_email, msg.as_string())
+                    sent_to.append(recipient_email)
+                except Exception as send_err:
+                    failed.append({"email": recipient_email, "error": str(send_err), "lab_id": lab_id})
+
+            labs_notified += 1
+
+        server.quit()
+
+        return jsonify({
+            "success": True,
+            "message": f"Alerts sent to {len(set(sent_to))} recipient(s) across {labs_notified} lab(s)",
+            "sent_to": sorted(set(sent_to)),
+            "failed": failed,
+            "unresolved_alerts": unresolved_alerts,
+        })
+
+    except smtplib.SMTPAuthenticationError:
+        return jsonify({"success": False, "error": "SMTP authentication failed. Check your email credentials in .env"}), 401
+    except smtplib.SMTPException as smtp_err:
+        return jsonify({"success": False, "error": f"SMTP error: {str(smtp_err)}"}), 500
+    except Exception as e:
+        print(f"Error sending maintenance alerts: {str(e)}")
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+# =============================================
+# AUTOMATIC NOTIFICATION SYSTEM
+# =============================================
+
+def _build_smtp_connection():
+    """Open and return an authenticated SMTP connection, or None if not configured."""
+    import smtplib
+    mail_server = os.getenv("MAIL_SERVER", "smtp.gmail.com")
+    mail_port = int(os.getenv("MAIL_PORT", 587))
+    mail_username = os.getenv("MAIL_USERNAME", "")
+    mail_password = os.getenv("MAIL_PASSWORD", "")
+    if not mail_username or mail_username == "your_email@gmail.com" or not mail_password:
+        return None, mail_username
+    server = smtplib.SMTP(mail_server, mail_port)
+    server.starttls()
+    server.login(mail_username, mail_password)
+    return server, mail_username
+
+
+def _send_email_async(subject: str, html_body: str, recipient_emails: List[str]) -> bool:
+    """Send HTML email in a background thread to explicit recipients.
+    Returns True when at least one valid recipient exists and dispatch starts.
+    """
+    from email.mime.text import MIMEText
+    from email.mime.multipart import MIMEMultipart
+
+    normalized = []
+    seen = set()
+    for e in recipient_emails or []:
+        email = (e or "").strip()
+        if not email or "@" not in email:
+            continue
+        lower = email.lower()
+        if lower in seen:
+            continue
+        seen.add(lower)
+        normalized.append(email)
+
+    if not normalized:
+        return False
+
+    def _send():
+        try:
+            server, mail_username = _build_smtp_connection()
+            if not server:
+                print("[Notifier] SMTP not configured — skipping email")
+                return
+
+            sent = 0
+            for recipient_email in normalized:
+                try:
+                    msg = MIMEMultipart("alternative")
+                    msg["Subject"] = subject
+                    msg["From"] = mail_username
+                    msg["To"] = recipient_email
+                    msg.attach(MIMEText(html_body, "html"))
+                    server.sendmail(mail_username, recipient_email, msg.as_string())
+                    sent += 1
+                except Exception as exc:
+                    print(f"[Notifier] Failed to send to {recipient_email}: {exc}")
+
+            server.quit()
+            print(f"[Notifier] Sent '{subject}' to {sent}/{len(normalized)} recipients")
+        except Exception as e:
+            print(f"[Notifier] Unexpected error: {e}")
+            traceback.print_exc()
+
+    t = threading.Thread(target=_send, daemon=True)
+    t.start()
+    return True
+
+
+def _get_lab_incharge_emails(lab_id: Optional[str]) -> List[str]:
+    """Return email list for Lab Incharge users assigned to the given lab."""
+    if not lab_id:
+        return []
+
+    conn = None
+    cursor = None
+    try:
+        conn = db.get_connection()
+        if not conn:
+            return []
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT email
+            FROM users
+            WHERE role = 'Lab Incharge'
+              AND assigned_lab = %s
+              AND email IS NOT NULL
+              AND email != ''
+            """,
+            (str(lab_id),)
+        )
+        rows = cursor.fetchall() or []
+        return [r["email"] for r in rows if r.get("email")]
+    except Exception as e:
+        print(f"[Notifier] Failed to resolve incharge emails for lab {lab_id}: {e}")
+        return []
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+
+def send_notification_to_lab_incharge(subject: str, html_body: str, lab_id: Optional[str]) -> bool:
+    """Send email only to incharge(s) assigned to the provided lab."""
+    emails = _get_lab_incharge_emails(lab_id)
+    if not emails:
+        print(f"[Notifier] No lab incharge recipients found for lab {lab_id}")
+        return False
+    return _send_email_async(subject, html_body, emails)
+
+
+def send_notification_to_user(subject: str, html_body: str, user_email: Optional[str]) -> bool:
+    """Send email to a single user (used for requester approval notifications)."""
+    email = (user_email or "").strip()
+    if not email or "@" not in email:
+        print("[Notifier] Requester email missing/invalid — skipping notification")
+        return False
+    return _send_email_async(subject, html_body, [email])
+
+
+def send_notification_email(subject: str, html_body: str, role_filter: list):
+    """Backward-compatible role-based notifier."""
+    conn = None
+    cursor = None
+    try:
+        conn = db.get_connection()
+        if not conn:
+            print("[Notifier] DB connection failed — skipping email")
+            return
+        cursor = conn.cursor()
+        placeholders = ",".join(["%s"] * len(role_filter))
+        cursor.execute(
+            f"SELECT email FROM users WHERE role IN ({placeholders})",
+            role_filter
+        )
+        rows = cursor.fetchall() or []
+        emails = [r["email"] for r in rows if r.get("email")]
+        _send_email_async(subject, html_body, emails)
+    except Exception as e:
+        print(f"[Notifier] Unexpected role-based email error: {e}")
+        traceback.print_exc()
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+
+_WARRANTY_NOTIFIED_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "warranty_notified_ids.json")
+
+
+def _load_notified_ids() -> dict:
+    """Load {device_id: notified_date_str} tracking dict from disk."""
+    try:
+        if os.path.exists(_WARRANTY_NOTIFIED_FILE):
+            with open(_WARRANTY_NOTIFIED_FILE, "r") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return {}
+
+
+def _save_notified_ids(data: dict):
+    try:
+        with open(_WARRANTY_NOTIFIED_FILE, "w") as f:
+            json.dump(data, f)
+    except Exception as e:
+        print(f"[Scheduler] Could not save notified IDs: {e}")
+
+
+def _warranty_expiry_job():
+    """
+    Scheduled daily job — only notify about devices newly entering the 90-day expiry window.
+    Devices already notified are skipped to avoid repeated emails.
+    When a device's warranty actually expires it is removed from tracking so a final
+    'expired' alert can be sent if it ever re-enters the window (edge case).
+    """
+    print(f"[Scheduler] Running daily warranty expiry check at {datetime.now()}")
+    try:
+        conn = db.get_connection()
+        if not conn:
+            print("[Scheduler] DB connection failed")
+            return
+
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT d.device_id, d.lab_id, d.asset_code, d.assigned_code, d.brand, d.model,
+                   COALESCE(et.name, 'Unknown') AS type_name,
+                   COALESCE(l.lab_name, 'Unassigned') AS lab_name,
+                   b.vendor_name, b.invoice_number,
+                   (d.purchase_date + (d.warranty_years * INTERVAL '1 year'))::date AS warranty_expiry,
+                   ((d.purchase_date + (d.warranty_years * INTERVAL '1 year'))::date - CURRENT_DATE) AS days_left
+            FROM devices d
+            LEFT JOIN equipment_types et ON d.type_id = et.type_id
+            LEFT JOIN labs l ON d.lab_id = l.lab_id
+            LEFT JOIN bills b ON d.bill_id = b.bill_id
+            WHERE d.is_active = TRUE
+              AND d.purchase_date IS NOT NULL
+              AND d.warranty_years IS NOT NULL
+              AND d.warranty_years > 0
+              AND (d.purchase_date + (d.warranty_years * INTERVAL '1 year'))::date
+                  BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '90 days'
+            ORDER BY days_left ASC
+            """
+        )
+        devices = cursor.fetchall()
+        cursor.close()
+        conn.close()
+
+        notified = _load_notified_ids()
+        today_str = datetime.now().strftime("%Y-%m-%d")
+
+        expired_device_ids = [str(d["device_id"]) for d in devices if int(d["days_left"]) <= 0]
+        for dev_id in expired_device_ids:
+            notified.pop(dev_id, None)
+
+        new_devices = [d for d in devices if str(d["device_id"]) not in notified]
+        if not new_devices:
+            print(f"[Scheduler] All {len(devices)} expiring device(s) already notified — skipping email")
+            return
+
+        print(f"[Scheduler] {len(new_devices)} new device(s) entering expiry window — sending lab-scoped alerts")
+
+        def urgency(days):
+            if days <= 30:
+                return "#ef4444", "Critical"
+            if days <= 60:
+                return "#f97316", "Warning"
+            return "#eab308", "Notice"
+
+        devices_by_lab = {}
+        for d in new_devices:
+            lab_key = str(d.get("lab_id") or "")
+            if not lab_key:
+                print(f"[Scheduler] Skipping device {d.get('device_id')} (no lab_id)")
+                continue
+            devices_by_lab.setdefault(lab_key, []).append(d)
+
+        dispatched_device_ids = []
+        for lab_id, lab_devices in devices_by_lab.items():
+            lab_name = lab_devices[0].get("lab_name") or lab_id
+
+            rows_html = ""
+            for d in lab_devices:
+                days_left = int(d["days_left"])
+                color, label = urgency(days_left)
+                rows_html += f"""
+                <tr style="border-bottom:1px solid #e5e7eb;">
+                    <td style="padding:10px 12px;font-weight:600;">{d.get('asset_code') or d.get('assigned_code') or f"#{d['device_id']}"}</td>
+                    <td style="padding:10px 12px;">{d['type_name']} — {d['brand']} {d['model']}</td>
+                    <td style="padding:10px 12px;">{d['lab_name']}</td>
+                    <td style="padding:10px 12px;">{d.get('vendor_name') or '—'}</td>
+                    <td style="padding:10px 12px;text-align:center;">{d['warranty_expiry']}</td>
+                    <td style="padding:10px 12px;text-align:center;font-weight:700;color:{color};">{days_left}d</td>
+                    <td style="padding:10px 12px;text-align:center;">
+                        <span style="background:{color};color:white;padding:3px 10px;border-radius:10px;font-size:12px;font-weight:600;">{label}</span>
+                    </td>
+                </tr>"""
+
+            html_body = f"""
+            <html>
+            <body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f3f4f6;padding:20px;">
+              <div style="max-width:860px;margin:0 auto;background:white;border-radius:12px;overflow:hidden;box-shadow:0 4px 6px rgba(0,0,0,0.1);">
+                <div style="background:linear-gradient(135deg,#f59e0b,#d97706);padding:22px 32px;">
+                  <h1 style="color:white;margin:0;font-size:20px;">📅 AssetIQ — Warranty Expiry Alert</h1>
+                  <p style="color:rgba(255,255,255,0.85);margin:6px 0 0;font-size:13px;">
+                    Lab: {lab_name} &nbsp;•&nbsp; {len(lab_devices)} device(s) in the 90-day expiry window &nbsp;•&nbsp; {datetime.now().strftime('%B %d, %Y')}
+                  </p>
+                </div>
+                <div style="padding:24px 32px;">
+                  <p style="color:#374151;font-size:13px;margin:0 0 16px;">
+                    You are receiving this alert because you are assigned as the lab incharge for {lab_name}.
+                  </p>
+                  <table style="width:100%;border-collapse:collapse;font-size:13px;">
+                    <thead>
+                      <tr style="background:#f9fafb;border-bottom:2px solid #e5e7eb;">
+                        <th style="padding:10px 12px;text-align:left;color:#6b7280;font-size:11px;text-transform:uppercase;">Asset</th>
+                        <th style="padding:10px 12px;text-align:left;color:#6b7280;font-size:11px;text-transform:uppercase;">Device</th>
+                        <th style="padding:10px 12px;text-align:left;color:#6b7280;font-size:11px;text-transform:uppercase;">Lab</th>
+                        <th style="padding:10px 12px;text-align:left;color:#6b7280;font-size:11px;text-transform:uppercase;">Vendor</th>
+                        <th style="padding:10px 12px;text-align:center;color:#6b7280;font-size:11px;text-transform:uppercase;">Expiry</th>
+                        <th style="padding:10px 12px;text-align:center;color:#6b7280;font-size:11px;text-transform:uppercase;">Days Left</th>
+                        <th style="padding:10px 12px;text-align:center;color:#6b7280;font-size:11px;text-transform:uppercase;">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>{rows_html}</tbody>
+                  </table>
+                </div>
+                <div style="background:#f9fafb;padding:14px 32px;text-align:center;">
+                  <p style="color:#9ca3af;font-size:11px;margin:0;">
+                    AssetIQ Automatic Warranty Monitor • One-time alert per device
+                  </p>
+                </div>
+              </div>
+            </body></html>"""
+
+            subject = f"📅 Warranty Expiry Alert — {lab_name} ({len(lab_devices)} device(s))"
+            if send_notification_to_lab_incharge(subject, html_body, lab_id):
+                dispatched_device_ids.extend(str(d["device_id"]) for d in lab_devices)
+
+        for device_id in dispatched_device_ids:
+            notified[device_id] = today_str
+
+        if dispatched_device_ids:
+            _save_notified_ids(notified)
+            print(f"[Scheduler] Warranty email dispatched for {len(dispatched_device_ids)} device(s)")
+        else:
+            print("[Scheduler] No lab-scoped warranty emails were dispatched")
+
+    except Exception as e:
+        print(f"[Scheduler] Error in warranty job: {e}")
+        traceback.print_exc()
+
+
+# Start APScheduler — daily warranty check at 08:00
+_scheduler = BackgroundScheduler(timezone="Asia/Kolkata")
+_scheduler.add_job(
+    _warranty_expiry_job,
+    trigger=CronTrigger(hour=8, minute=0),
+    id="daily_warranty_check",
+    replace_existing=True,
+)
+_scheduler.start()
+print("[Scheduler] APScheduler started — daily warranty check at 08:00 IST")
+
+
+# -----------------------------
+# Scrap Devices + Scrap Register
+# -----------------------------
+def _ensure_scrapped_devices_table(cursor):
+    # Schema migrations removed from runtime (assumed already applied).
+    return None
+
+
+def _ensure_scrap_requests_table(cursor):
+    # Schema migrations removed from runtime (assumed already applied).
+    return None
+
+
+def _scrap_devices_by_ids(cursor, conn, device_ids, user, justification=None):
+    # Schema migrations removed from runtime (assumed already applied).
+
+    cursor.execute(
+        """
+        SELECT
+            d.device_id,
+            d.asset_code,
+            d.assigned_code AS device_assigned_code,
+            d.lab_id AS device_lab_id,
+            l.lab_name,
+            lsd.device_type,
+            lsd.brand,
+            lsd.model,
+            lsd.specification,
+            lsd.station_id,
+            ls.lab_id AS station_lab_id,
+            ls.assigned_code AS station_code,
+            d.unit_price
+        FROM devices d
+        LEFT JOIN lab_station_devices lsd ON d.device_id = lsd.device_id
+        LEFT JOIN lab_stations ls ON lsd.station_id = ls.station_id
+        LEFT JOIN labs l ON d.lab_id = l.lab_id
+        WHERE d.device_id = ANY(%s)
+        """,
+        (device_ids,),
+    )
+    rows = cursor.fetchall() or []
+    by_id = {r["device_id"]: r for r in rows}
+
+    scrapped_by_text = (getattr(user, "email", None) or f"user:{getattr(user, 'id', None)}")
+    scrapped_by_user_id = None
+    try:
+        raw_uid = getattr(user, "id", None)
+        if raw_uid is not None and str(raw_uid).strip() != "":
+            scrapped_by_user_id = int(raw_uid)
+    except Exception:
+        scrapped_by_user_id = None
+
+    inserted = 0
+    for did in device_ids:
+        info = by_id.get(did, {})
+        scrap_id_value = info.get("asset_code")
+        cost_value = info.get("unit_price") if info.get("unit_price") is not None else 0
+        cursor.execute(
+            """
+                        INSERT INTO scrapped_devices
+                            (scrap_id, device_id, asset_code, device_type, brand, model, specification,
+                             lab_id, lab_name, station_id, station_code,
+                             scrapped_by, scrapped_by_text, scrapped_by_user_id,
+                             dead_stock_number, cost, justification_for_scrapping, reason, notes)
+                        VALUES
+                            (%s, %s, %s, %s, %s, %s, %s,
+                             %s, %s, %s, %s,
+                             %s, %s, %s,
+                             %s, %s, %s, %s, %s)
+            """,
+            (
+                scrap_id_value,
+                did,
+                info.get("asset_code"),
+                info.get("device_type"),
+                info.get("brand"),
+                info.get("model"),
+                info.get("specification"),
+                info.get("station_lab_id") or info.get("device_lab_id"),
+                info.get("lab_name"),
+                                info.get("station_id"),
+                info.get("station_code"),
+                                scrapped_by_user_id,
+                scrapped_by_text,
+                scrapped_by_user_id,
+                info.get("asset_code"),
+                cost_value,
+                justification,
+                                justification,
+                                None,
+            ),
+        )
+        inserted += 1
+
+    cursor.execute(
+        "DELETE FROM lab_station_devices WHERE device_id = ANY(%s)",
+        (device_ids,),
+    )
+
+    cursor.execute(
+        "UPDATE devices SET is_active = FALSE, lab_id = NULL WHERE device_id = ANY(%s)",
+        (device_ids,),
+    )
+
+    return inserted
+
+
+@app.route("/scrap_devices", methods=["POST"])
+def scrap_devices():
+    """
+    Scrap (dispose) a list of devices.
+    Expects JSON: { deviceIds: number[] }
+    - Stores a record in scrapped_devices
+    - Removes device mappings from lab_station_devices
+    - Marks devices inactive and clears lab_id
+    """
+    try:
+        user = get_current_user()
+        if not user or getattr(user, "role", None) != "HOD":
+            return jsonify({"success": False, "error": "Unauthorized"}), 403
+
+        data = request.get_json(force=True) or {}
+        device_ids = data.get("deviceIds") or []
+        remark = (data.get("remark") or "").strip()
+        if not isinstance(device_ids, list) or not device_ids:
+            return jsonify({"success": False, "error": "deviceIds must be a non-empty array"}), 400
+
+        # Normalize and keep only positive ints
+        normalized_ids = []
+        for x in device_ids:
+            try:
+                xi = int(x)
+                if xi > 0:
+                    normalized_ids.append(xi)
+            except Exception:
+                continue
+
+        if not normalized_ids:
+            return jsonify({"success": False, "error": "No valid device IDs provided"}), 400
+
+        conn = db.get_connection()
+        if not conn:
+            return jsonify({"success": False, "error": "Database connection failed"}), 500
+        cursor = conn.cursor()
+
+        try:
+            inserted = _scrap_devices_by_ids(cursor, conn, normalized_ids, user, remark or None)
+            conn.commit()
+            return jsonify(
+                {
+                    "success": True,
+                    "message": f"Scrapped {inserted} device(s) successfully",
+                    "count": inserted,
+                }
+            )
+
+        except Exception as e:
+            conn.rollback()
+            raise e
+        finally:
+            cursor.close()
+            conn.close()
+
+    except Exception as e:
+        print(f"Error scrapping devices: {str(e)}")
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/create_scrap_request", methods=["POST"])
+def create_scrap_request():
+    """Create a scrap request (Lab Incharge/Lab Assistant)."""
+    try:
+        user = get_current_user()
+        if not user:
+            return jsonify({"success": False, "error": "Unauthorized"}), 401
+        if getattr(user, "role", None) not in ("Lab Incharge", "Lab Assistant", "HOD"):
+            return jsonify({"success": False, "error": "Forbidden"}), 403
+
+        data = request.get_json(force=True) or {}
+        device_ids = data.get("deviceIds") or []
+        remark = (data.get("remark") or "").strip()
+
+        if not isinstance(device_ids, list) or not device_ids:
+            return jsonify({"success": False, "error": "deviceIds must be a non-empty array"}), 400
+
+        normalized_ids = []
+        for x in device_ids:
+            try:
+                xi = int(x)
+                if xi > 0:
+                    normalized_ids.append(xi)
+            except Exception:
+                continue
+
+        if not normalized_ids:
+            return jsonify({"success": False, "error": "No valid device IDs provided"}), 400
+
+        conn = db.get_connection()
+        if not conn:
+            return jsonify({"success": False, "error": "Database connection failed"}), 500
+        cursor = conn.cursor()
+
+        try:
+            _ensure_scrap_requests_table(cursor)
+            conn.commit()
+
+            cursor.execute(
+                """
+                SELECT device_id, lab_id, is_active
+                FROM devices
+                WHERE device_id = ANY(%s)
+                """,
+                (normalized_ids,),
+            )
+            rows = cursor.fetchall() or []
+            if len(rows) != len(set(normalized_ids)):
+                return jsonify({"success": False, "error": "One or more devices are invalid"}), 400
+
+            if getattr(user, "role", None) == "Lab Incharge" and getattr(user, "assigned_lab", None):
+                allowed_lab = user.assigned_lab
+                for r in rows:
+                    if r.get("lab_id") != allowed_lab:
+                        return jsonify({"success": False, "error": "Devices must belong to your assigned lab"}), 403
+
+            inactive = [r.get("device_id") for r in rows if r.get("is_active") is False]
+            if inactive:
+                return jsonify({"success": False, "error": "One or more devices are already inactive"}), 400
+
+            cursor.execute(
+                """
+                SELECT device_ids
+                FROM scrap_requests
+                WHERE status = 'pending'
+                """
+            )
+            pending_rows = cursor.fetchall() or []
+            pending_set = set()
+            for prow in pending_rows:
+                existing_ids = json.loads(prow["device_ids"]) if isinstance(prow["device_ids"], str) else (prow["device_ids"] or [])
+                pending_set.update(int(x) for x in existing_ids)
+            overlap = pending_set & set(normalized_ids)
+            if overlap:
+                return jsonify({"success": False, "error": "Some selected devices already have pending scrap requests"}), 400
+
+            lab_ids = list({r.get("lab_id") for r in rows})
+            lab_id = lab_ids[0] if len(lab_ids) == 1 else None
+
+            requested_by_text = (getattr(user, "email", None) or f"user:{getattr(user, 'id', None)}")
+            requested_by_user_id = None
+            try:
+                raw_uid = getattr(user, "id", None)
+                if raw_uid is not None and str(raw_uid).strip() != "":
+                    requested_by_user_id = int(raw_uid)
+            except Exception:
+                requested_by_user_id = None
+
+            cursor.execute(
+                """
+                INSERT INTO scrap_requests
+                (device_ids, lab_id, status, remark, requested_by, requested_by_user_id, requested_at)
+                VALUES (%s, %s, 'pending', %s, %s, %s, NOW())
+                RETURNING scrap_request_id
+                """,
+                (json.dumps(normalized_ids), lab_id, remark, requested_by_text, requested_by_user_id),
+            )
+            req_id = cursor.fetchone()["scrap_request_id"]
+            conn.commit()
+            return jsonify({"success": True, "request_id": req_id, "message": "Scrap request submitted"})
+
+        except Exception as e:
+            conn.rollback()
+            raise e
+        finally:
+            cursor.close()
+            conn.close()
+
+    except Exception as e:
+        print(f"Error creating scrap request: {str(e)}")
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/get_pending_scrap_requests", methods=["GET"])
+def get_pending_scrap_requests():
+    """Return pending scrap requests (HOD only)."""
+    try:
+        user = get_current_user()
+        if not user or getattr(user, "role", None) != "HOD":
+            return jsonify({"success": False, "error": "Unauthorized"}), 403
+
+        conn = db.get_connection()
+        if not conn:
+            return jsonify({"success": False, "error": "Database connection failed"}), 500
+        cursor = conn.cursor()
+
+        try:
+            _ensure_scrap_requests_table(cursor)
+            conn.commit()
+
+            cursor.execute(
+                """
+                SELECT
+                    sr.scrap_request_id,
+                    sr.device_ids,
+                    sr.lab_id,
+                    l.lab_name,
+                    sr.status,
+                    sr.remark,
+                    sr.requested_by,
+                    TRIM(CONCAT_WS(' ', u_req.first_name, u_req.last_name)) AS requested_by_name,
+                    sr.requested_at
+                FROM scrap_requests sr
+                LEFT JOIN labs l ON sr.lab_id = l.lab_id
+                LEFT JOIN users u_req ON sr.requested_by = u_req.email
+                WHERE sr.status = 'pending'
+                ORDER BY sr.requested_at DESC
+                """
+            )
+            requests = []
+            for row in cursor.fetchall():
+                device_ids = json.loads(row["device_ids"]) if isinstance(row["device_ids"], str) else row["device_ids"]
+                cursor.execute(
+                    """
+                    SELECT d.device_id, et.name AS type_name, d.brand, d.model,
+                           d.asset_code AS asset_id, d.assigned_code,
+                           d.bill_id, d.invoice_number,
+                           b.vendor_name, b.bill_date
+                    FROM devices d
+                    LEFT JOIN equipment_types et ON d.type_id = et.type_id
+                    LEFT JOIN bills b ON d.bill_id = b.bill_id
+                    WHERE d.device_id = ANY(%s)
+                    """,
+                    (device_ids,),
+                )
+                devices = cursor.fetchall()
+                requests.append(
+                    {
+                        "scrap_request_id": row["scrap_request_id"],
+                        "device_ids": device_ids,
+                        "devices": devices,
+                        "lab_id": row["lab_id"],
+                        "lab_name": row.get("lab_name"),
+                        "status": row["status"],
+                        "remark": row.get("remark"),
+                        "requested_by": row.get("requested_by"),
+                        "requested_by_name": row.get("requested_by_name"),
+                        "requested_at": row["requested_at"].isoformat() if row["requested_at"] else None,
+                    }
+                )
+
+            return jsonify({"success": True, "requests": requests})
+        finally:
+            cursor.close()
+            conn.close()
+
+    except Exception as e:
+        print(f"Error fetching pending scrap requests: {str(e)}")
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/approve_scrap_request/<int:req_id>", methods=["POST"])
+def approve_scrap_request(req_id):
+    """Approve scrap request and scrap devices (HOD only)."""
+    conn = None
+    try:
+        user = get_current_user()
+        if not user or getattr(user, "role", None) != "HOD":
+            return jsonify({"success": False, "error": "Unauthorized"}), 403
+
+        conn = db.get_connection()
+        if not conn:
+            return jsonify({"success": False, "error": "Database connection failed"}), 500
+        cursor = conn.cursor()
+
+        _ensure_scrap_requests_table(cursor)
+        conn.commit()
+
+        cursor.execute(
+            """
+            SELECT sr.device_ids, sr.remark, sr.requested_by, sr.lab_id,
+                   COALESCE(l.lab_name, sr.lab_id::text) AS lab_name
+            FROM scrap_requests sr
+            LEFT JOIN labs l ON sr.lab_id = l.lab_id
+            WHERE sr.scrap_request_id = %s AND sr.status = 'pending'
+            """,
+            (req_id,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return jsonify({"success": False, "error": "Scrap request not found or already processed"}), 404
+
+        device_ids = json.loads(row["device_ids"]) if isinstance(row["device_ids"], str) else row["device_ids"]
+        remark = (row.get("remark") or "").strip()
+        requested_by_email = row.get("requested_by")
+        lab_name = row.get("lab_name") or row.get("lab_id") or "Unknown"
+
+        inserted = _scrap_devices_by_ids(cursor, conn, device_ids, user, remark or None)
+
+        approver = (getattr(user, "email", None) or f"user:{getattr(user, 'id', None)}")
+        cursor.execute(
+            """
+            UPDATE scrap_requests
+            SET status = 'approved', approved_by = %s, approved_at = NOW()
+            WHERE scrap_request_id = %s
+            """,
+            (approver, req_id),
+        )
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        scrap_html = f"""
+                <html><body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f3f4f6;padding:20px;">
+                    <div style="max-width:620px;margin:0 auto;background:white;border-radius:12px;overflow:hidden;box-shadow:0 4px 6px rgba(0,0,0,0.1);">
+                        <div style="background:linear-gradient(135deg,#22c55e,#15803d);padding:20px 28px;">
+                            <h1 style="color:white;margin:0;font-size:18px;">✅ Scrap Request Approved</h1>
+                            <p style="color:rgba(255,255,255,0.85);margin:4px 0 0;font-size:13px;">Request #{req_id}</p>
+                        </div>
+                        <div style="padding:20px 28px;">
+                            <table style="width:100%;font-size:14px;border-collapse:collapse;">
+                                <tr><td style="padding:8px 0;color:#6b7280;width:140px;">Lab</td><td style="padding:8px 0;color:#111;">{lab_name}</td></tr>
+                                <tr><td style="padding:8px 0;color:#6b7280;">Devices Scrapped</td><td style="padding:8px 0;color:#111;">{inserted}</td></tr>
+                                <tr><td style="padding:8px 0;color:#6b7280;">Approved By</td><td style="padding:8px 0;color:#111;">{approver}</td></tr>
+                            </table>
+                        </div>
+                    </div>
+                </body></html>
+        """
+        send_notification_to_user(
+            subject=f"✅ Scrap Approved: Request #{req_id}",
+            html_body=scrap_html,
+            user_email=requested_by_email
+        )
+
+        return jsonify({"success": True, "message": f"Scrap request approved ({inserted} device(s) scrapped)"})
+
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        print(f"Error approving scrap request: {str(e)}")
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/reject_scrap_request/<int:req_id>", methods=["POST"])
+def reject_scrap_request(req_id):
+    """Reject scrap request (HOD only)."""
+    try:
+        user = get_current_user()
+        if not user or getattr(user, "role", None) != "HOD":
+            return jsonify({"success": False, "error": "Unauthorized"}), 403
+
+        conn = db.get_connection()
+        if not conn:
+            return jsonify({"success": False, "error": "Database connection failed"}), 500
+        cursor = conn.cursor()
+
+        _ensure_scrap_requests_table(cursor)
+        conn.commit()
+
+        approver = (getattr(user, "email", None) or f"user:{getattr(user, 'id', None)}")
+        cursor.execute(
+            """
+            UPDATE scrap_requests
+            SET status = 'rejected', approved_by = %s, approved_at = NOW()
+            WHERE scrap_request_id = %s AND status = 'pending'
+            """,
+            (approver, req_id),
+        )
+
+        if cursor.rowcount == 0:
+            return jsonify({"success": False, "error": "Scrap request not found or already processed"}), 404
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return jsonify({"success": True, "message": "Scrap request rejected"})
+
+    except Exception as e:
+        print(f"Error rejecting scrap request: {str(e)}")
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/get_scrap_request_history", methods=["GET"])
+def get_scrap_request_history():
+    """Return scrap request history."""
+    conn = None
+    cursor = None
+    try:
+        user = get_current_user()
+        if not user:
+            return jsonify({"success": False, "error": "Unauthorized"}), 401
+
+        conn = db.get_connection()
+        if not conn:
+            return jsonify({"success": False, "error": "Database connection failed"}), 500
+        cursor = conn.cursor()
+
+        _ensure_scrap_requests_table(cursor)
+        conn.commit()
+
+        cursor.execute(
+            """
+            SELECT
+                sr.scrap_request_id,
+                sr.device_ids,
+                sr.lab_id,
+                l.lab_name,
+                sr.status,
+                sr.remark,
+                sr.requested_by,
+                TRIM(CONCAT_WS(' ', u_req.first_name, u_req.last_name)) AS requested_by_name,
+                sr.requested_at,
+                sr.approved_by,
+                TRIM(CONCAT_WS(' ', u_app.first_name, u_app.last_name)) AS approved_by_name,
+                sr.approved_at
+            FROM scrap_requests sr
+            LEFT JOIN labs l ON sr.lab_id = l.lab_id
+            LEFT JOIN users u_req ON sr.requested_by = u_req.email
+            LEFT JOIN users u_app ON sr.approved_by = u_app.email
+            ORDER BY COALESCE(sr.approved_at, sr.requested_at) DESC
+            """
+        )
+
+        history = []
+        for row in cursor.fetchall():
+            device_ids = json.loads(row["device_ids"]) if isinstance(row["device_ids"], str) else row["device_ids"]
+            cursor.execute(
+                """
+                SELECT d.device_id, et.name AS type_name, d.brand, d.model,
+                       d.asset_code AS asset_id, d.assigned_code,
+                       d.bill_id, d.invoice_number,
+                       b.vendor_name, b.bill_date
+                FROM devices d
+                LEFT JOIN equipment_types et ON d.type_id = et.type_id
+                LEFT JOIN bills b ON d.bill_id = b.bill_id
+                WHERE d.device_id = ANY(%s)
+                """,
+                (device_ids,),
+            )
+            devices = cursor.fetchall()
+            history.append(
+                {
+                    "scrap_request_id": row["scrap_request_id"],
+                    "device_ids": device_ids,
+                    "devices": devices,
+                    "lab_id": row["lab_id"],
+                    "lab_name": row.get("lab_name"),
+                    "status": row["status"],
+                    "remark": row.get("remark"),
+                    "requested_by": row.get("requested_by"),
+                    "requested_by_name": row.get("requested_by_name"),
+                    "requested_at": row["requested_at"].isoformat() if row["requested_at"] else None,
+                    "approved_by": row.get("approved_by"),
+                    "approved_by_name": row.get("approved_by_name"),
+                    "approved_at": row["approved_at"].isoformat() if row["approved_at"] else None,
+                }
+            )
+
+        return jsonify({"success": True, "requests": history})
+    except Exception as e:
+        print(f"Error fetching scrap request history: {str(e)}")
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+
+@app.route("/get_scrapped_devices", methods=["GET"])
+def get_scrapped_devices():
+    """
+    Scrap register list.
+    Returns: { success: true, items: [...] }
+    """
+    try:
+        user = get_current_user()
+        if not user:
+            return jsonify({"success": False, "error": "Unauthorized"}), 401
+
+        conn = db.get_connection()
+        if not conn:
+            return jsonify({"success": False, "error": "Database connection failed"}), 500
+
+        cursor = conn.cursor()
+        try:
+            _ensure_scrapped_devices_table(cursor)
+            conn.commit()
+            lab_id = request.args.get("lab_id")
+            year = request.args.get("year")
+            device_type = request.args.get("device_type")
+            limit = request.args.get("limit", "500")
+
+            where = []
+            params = []
+            if lab_id:
+                where.append("sd.lab_id = %s")
+                params.append(lab_id)
+            if year and str(year).isdigit():
+                where.append("EXTRACT(YEAR FROM sd.scrapped_at) = %s")
+                params.append(int(year))
+            if device_type:
+                where.append("sd.device_type = %s")
+                params.append(device_type)
+
+            limit_val = 500
+            try:
+                limit_val = max(1, min(2000, int(limit)))
+            except Exception:
+                limit_val = 500
+
+            where_sql = f"WHERE {' AND '.join(where)}" if where else ""
+            cursor.execute(
+                f"""
+                  SELECT sd.scrap_id, sd.device_id, sd.asset_code, sd.device_type, sd.brand, sd.model, sd.specification,
+                      sd.lab_id, sd.lab_name, sd.station_code,
+                      sd.dead_stock_number, COALESCE(sd.cost, d.unit_price) AS cost,
+                      sd.justification_for_scrapping,
+                      COALESCE(sd.scrapped_by_text, sd.scrapped_by::text) AS scrapped_by,
+                      sd.scrapped_at,
+                      d.assigned_code
+                FROM scrapped_devices sd
+                LEFT JOIN devices d ON sd.device_id = d.device_id
+                {where_sql}
+                ORDER BY sd.scrapped_at DESC
+                LIMIT {limit_val}
+                """,
+                tuple(params),
+            )
+            rows = cursor.fetchall() or []
+            items = []
+            for r in rows:
+                items.append(
+                    {
+                        "scrap_id": str(r.get("scrap_id")) if r.get("scrap_id") is not None else None,
+                        "device_id": r.get("device_id"),
+                        "asset_code": r.get("asset_code"),
+                        "assigned_code": r.get("assigned_code"),
+                        "device_type": r.get("device_type"),
+                        "brand": r.get("brand"),
+                        "model": r.get("model"),
+                        "specification": r.get("specification"),
+                        "lab_id": r.get("lab_id"),
+                        "lab_name": r.get("lab_name"),
+                        "station_code": r.get("station_code"),
+                        "dead_stock_number": r.get("dead_stock_number"),
+                        "cost": float(r.get("cost")) if r.get("cost") is not None else None,
+                        "justification_for_scrapping": r.get("justification_for_scrapping"),
+                        "scrapped_by": r.get("scrapped_by"),
+                        "scrapped_at": r.get("scrapped_at").isoformat() if r.get("scrapped_at") else None,
+                    }
+                )
+            return jsonify({"success": True, "items": items})
+        finally:
+            cursor.close()
+            conn.close()
+
+    except Exception as e:
+        print(f"Error fetching scrapped devices: {str(e)}")
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 # -----------------------------
 # Run App
 # -----------------------------
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(
+        host=os.getenv("FLASK_HOST", "0.0.0.0"),
+        port=int(os.getenv("PORT", "5000")),
+        debug=os.getenv("FLASK_DEBUG", "false").lower() == "true"
+    )

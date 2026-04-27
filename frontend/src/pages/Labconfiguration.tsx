@@ -2,13 +2,10 @@
 import { useState, useEffect, useMemo } from "react";
 import { motion } from "motion/react";
 import { QRCodeSVG } from "qrcode.react";
-import { BackgroundGradient } from "@/components/ui/background-gradient";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { HoverBorderGradient } from "@/components/ui/hover-border-gradient";
-import { Menu, MenuItem, HoveredLink } from "@/components/ui/navbar-menu";
-import { LogoButton } from "@/components/ui/logo-button";
-import { useAuth } from "@/contexts/AuthContext";
+import AppNavbar from "@/components/AppNavbar";
 
 // ── Types ────────────────────────────────────────────────────────────
 interface Equipment {
@@ -68,9 +65,6 @@ const EQUIPMENT_TYPES = [
 
 // ── Component ────────────────────────────────────────────────────────
 export default function LabConfiguration() {
-  const { logout } = useAuth();
-  const [active, setActive] = useState<string | null>(null);
-
   // Lab selection
   const [labs, setLabs] = useState<LabSummary[]>([]);
   const [selectedLabId, setSelectedLabId] = useState<string | null>(null);
@@ -159,7 +153,7 @@ export default function LabConfiguration() {
   useEffect(() => {
     (async () => {
       try {
-        const res = await fetch("http://127.0.0.1:5000/get_labs_for_layout", { headers: authHeaders() });
+        const res = await fetch("/api/get_labs_for_layout", { headers: authHeaders() });
         const data = await res.json();
         if (data.success) setLabs(data.labs);
       } catch (err) {
@@ -180,7 +174,7 @@ export default function LabConfiguration() {
 
     // Fetch layout blueprint
     try {
-      const res = await fetch(`http://127.0.0.1:5000/get_lab_layout/${labId}`, { headers: authHeaders() });
+      const res = await fetch(`/api/get_lab_layout/${labId}`, { headers: authHeaders() });
       const data = await res.json();
       if (data.success && data.layout) {
         const l = data.layout;
@@ -195,7 +189,7 @@ export default function LabConfiguration() {
 
     // Fetch existing equipment pool + reconstruct linked groups + prefixes
     try {
-      const res = await fetch(`http://127.0.0.1:5000/get_lab/${labId}`, { headers: authHeaders() });
+      const res = await fetch(`/api/get_lab/${labId}`, { headers: authHeaders() });
       const data = await res.json();
       if (data.success && data.lab) {
         const labData = data.lab;
@@ -327,7 +321,7 @@ export default function LabConfiguration() {
       return;
     setIsResetting(true);
     try {
-      const res = await fetch(`http://127.0.0.1:5000/reset_lab_assignments/${selectedLabId}`, {
+      const res = await fetch(`/api/reset_lab_assignments/${selectedLabId}`, {
         method: "POST",
         headers: authHeaders(),
       });
@@ -352,7 +346,7 @@ export default function LabConfiguration() {
       return;
     setIsResettingCounters(true);
     try {
-      const res = await fetch(`http://127.0.0.1:5000/reset_device_counters/${selectedLabId}`, {
+      const res = await fetch(`/api/reset_device_counters/${selectedLabId}`, {
         method: "POST",
         headers: authHeaders(),
       });
@@ -382,7 +376,7 @@ export default function LabConfiguration() {
     }
     setIsSaving(true);
     try {
-      const res = await fetch("http://127.0.0.1:5000/save_lab_config", {
+      const res = await fetch("/api/save_lab_config", {
         method: "POST",
         headers: authHeaders(),
         body: JSON.stringify({
@@ -409,7 +403,7 @@ export default function LabConfiguration() {
   // ── Refresh helpers (don't reset dropdown/search state) ──────────
   const refreshLabData = async (labId: string) => {
     try {
-      const res = await fetch(`http://127.0.0.1:5000/get_lab/${labId}`, { headers: authHeaders() });
+      const res = await fetch(`/api/get_lab/${labId}`, { headers: authHeaders() });
       const data = await res.json();
       if (data.success && data.lab) {
         setEquipment(data.lab.equipment || []);
@@ -430,7 +424,7 @@ export default function LabConfiguration() {
   const refreshSearch = async () => {
     if (!equipmentDropdown) return;
     try {
-      const res = await fetch(`http://127.0.0.1:5000/search_devices?type_id=${equipmentDropdown}`, { headers: authHeaders() });
+      const res = await fetch(`/api/search_devices?type_id=${equipmentDropdown}`, { headers: authHeaders() });
       const data = await res.json();
       setRawSearchResults(data.devices || []);
     } catch (err) {
@@ -451,7 +445,7 @@ export default function LabConfiguration() {
       return;
     }
     try {
-      const res = await fetch("http://127.0.0.1:5000/reserve_devices_for_lab", {
+      const res = await fetch("/api/reserve_devices_for_lab", {
         method: "POST",
         headers: authHeaders(),
         body: JSON.stringify({
@@ -521,7 +515,7 @@ export default function LabConfiguration() {
 
     setIsAssigning(true);
     try {
-      const res = await fetch("http://127.0.0.1:5000/auto_assign_devices", {
+      const res = await fetch("/api/auto_assign_devices", {
         method: "POST",
         headers: authHeaders(),
         body: JSON.stringify({
@@ -581,53 +575,19 @@ export default function LabConfiguration() {
         backgroundRepeat: "no-repeat",
       }}
     >
-      {/* Navbar */}
-      <div className="fixed top-2 inset-x-0 max-w-6xl mx-auto z-50 flex items-center justify-center px-4 py-2">
-        <Menu setActive={setActive}>
-          <MenuItem setActive={setActive} active={active} item="Asset Management">
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/assets">All Assets</HoveredLink>
-              <HoveredLink href="/ocr">Add Assets</HoveredLink>
-            </div>
-          </MenuItem>
-          <MenuItem setActive={setActive} active={active} item="Lab Management">
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/lab-plan">Lab Floor Plans</HoveredLink>
-              <HoveredLink href="/lab-layout">Lab Layout Designer</HoveredLink>
-              <HoveredLink href="/lab-configuration">Lab Configuration</HoveredLink>
-            </div>
-          </MenuItem>
-          <MenuItem setActive={setActive} active={active} item="Operations">
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/transfers">Transfers</HoveredLink>
-              <HoveredLink href="/dashboard/issues">Issues</HoveredLink>
-              <HoveredLink href="/dashboard/documents">Documents</HoveredLink>
-            </div>
-          </MenuItem>
-          <MenuItem setActive={setActive} active={active} item="Analytics">
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/reports">Reports</HoveredLink>
-              <HoveredLink href="/warranty-expiry">Warranty Expiry</HoveredLink>
-            </div>
-          </MenuItem>
-          <MenuItem setActive={setActive} active={active} item="Account">
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/settings">Settings</HoveredLink>
-              <button
-                onClick={logout}
-                className="text-left text-neutral-600 hover:text-neutral-800 transition-colors"
-              >
-                Logout
-              </button>
-            </div>
-          </MenuItem>
-        </Menu>
-      </div>
+      <AppNavbar />
 
       {/* Page Content */}
       <div className="flex items-start justify-center pt-24 px-4 pb-12">
-        <BackgroundGradient className="w-full max-w-7xl p-8 rounded-xl shadow-xl">
-          <LogoButton />
+        <div 
+          className="w-full max-w-5xl p-8 rounded-xl shadow-xl"
+          style={{
+            backgroundColor: "rgba(0, 0, 0, 0.5)",
+            backdropFilter: "blur(10px)",
+            border: "1px solid rgba(255, 255, 255, 0.2)",
+            boxShadow: "0 8px 32px 0 rgba(0, 0, 0, 0.3), inset 0 1px 1px rgba(255, 255, 255, 0.1), 0 8px 32px rgba(0, 0, 0, 0.2)"
+          }}
+        >
           <motion.div
             initial={{ opacity: 0, y: 30 }}
             animate={{ opacity: 1, y: 0 }}
@@ -660,20 +620,20 @@ export default function LabConfiguration() {
                     <button
                       onClick={resetAssignments}
                       disabled={isResetting}
-                      className="px-4 py-2 bg-red-700 hover:bg-red-600 text-white rounded-lg transition text-sm disabled:opacity-50"
+                      className="px-4 py-2 bg-red-700 hover:bg-red-600 text-white rounded-lg transition text-xs disabled:opacity-50"
                     >
                       {isResetting ? "Resetting…" : "Reset Assignments"}
                     </button>
                     <button
                       onClick={resetDeviceCounters}
                       disabled={isResettingCounters}
-                      className="px-4 py-2 bg-amber-700 hover:bg-amber-600 text-white rounded-lg transition text-sm disabled:opacity-50"
+                      className="px-4 py-2 bg-amber-700 hover:bg-amber-600 text-white rounded-lg transition text-xs disabled:opacity-50"
                     >
                       {isResettingCounters ? "Resetting…" : "Reset Code Counters"}
                     </button>
                     <button
                       onClick={resetForm}
-                      className="px-4 py-2 bg-neutral-700 hover:bg-neutral-600 text-white rounded-lg transition text-sm"
+                      className="px-4 py-2 bg-neutral-700 hover:bg-neutral-600 text-white rounded-lg transition text-xs"
                     >
                       Deselect Lab
                     </button>
@@ -690,13 +650,13 @@ export default function LabConfiguration() {
                     <p className="text-yellow-300 font-semibold mb-2">
                       ⚠️ This lab has no layout designed yet
                     </p>
-                    <p className="text-gray-400 text-sm mb-3">
+                    <p className="text-gray-400 text-xs mb-3">
                       You need to design a layout in the Lab Layout Designer first before you can
                       auto-assign devices.
                     </p>
                     <a
                       href="/lab-layout"
-                      className="inline-block px-4 py-2 bg-cyan-600 hover:bg-cyan-700 text-white rounded-lg transition text-sm"
+                      className="inline-block px-4 py-2 bg-cyan-600 hover:bg-cyan-700 text-white rounded-lg transition text-xs"
                     >
                       Go to Lab Layout Designer →
                     </a>
@@ -768,7 +728,7 @@ export default function LabConfiguration() {
                                           {devices.map((d: any, di: number) => (
                                             <div
                                               key={di}
-                                              className="text-green-300 text-[10px] font-semibold leading-tight truncate"
+                                              className="text-green-300 text-[12px] font-semibold leading-tight truncate"
                                               title={d.assignedCode || ""}
                                             >
                                               {d.assignedCode || d.type}
@@ -776,7 +736,7 @@ export default function LabConfiguration() {
                                           ))}
                                           {/* Station QR button */}
                                           <button
-                                            className="mt-1 px-1.5 py-0.5 bg-cyan-600 hover:bg-cyan-700 text-white text-[9px] rounded flex items-center gap-0.5 mx-auto"
+                                            className="mt-1 px-1.5 py-0.5 bg-cyan-600 hover:bg-cyan-700 text-white text-[12px] rounded flex items-center gap-0.5 mx-auto"
                                             title="View Station QR Code"
                                             onClick={() => {
                                               const qrVal = deviceGroup?.stationQrValue || "";
@@ -795,7 +755,7 @@ export default function LabConfiguration() {
                                           </button>
                                         </div>
                                       ) : (
-                                        <div className="text-gray-400 text-[10px] text-center leading-tight">
+                                        <div className="text-gray-400 text-[12px] text-center leading-tight">
                                           {cell.stationTypeLabel}
                                         </div>
                                       )}
@@ -815,7 +775,7 @@ export default function LabConfiguration() {
                       {Object.entries(getLayoutStats()).map(([label, info]) => (
                         <div
                           key={label}
-                          className="flex items-center gap-1.5 bg-neutral-800 px-3 py-1.5 rounded-full text-sm"
+                          className="flex items-center gap-1.5 bg-neutral-800 px-3 py-1.5 rounded-full text-xs"
                         >
                           <span>{info.icon}</span>
                           <span className="text-gray-300">{label}:</span>
@@ -831,14 +791,14 @@ export default function LabConfiguration() {
                   <Label className="text-white">Search Equipment from Inventory</Label>
                   <div className="flex gap-3 items-end">
                     <div className="flex-1">
-                      <Label className="text-gray-300 text-sm mb-1">Equipment Type</Label>
+                      <Label className="text-gray-300 text-xs mb-1">Equipment Type</Label>
                       <select
                         value={equipmentDropdown}
                         onChange={(e) => {
                           setEquipmentDropdown(e.target.value);
                           if (e.target.value) {
                             setIsSearching(true);
-                            fetch(`http://127.0.0.1:5000/search_devices?type_id=${e.target.value}`, {
+                            fetch(`/api/search_devices?type_id=${e.target.value}`, {
                               headers: authHeaders(),
                             })
                               .then((r) => r.json())
@@ -869,7 +829,7 @@ export default function LabConfiguration() {
                       </select>
                     </div>
                     {isSearching && (
-                      <span className="text-gray-400 text-sm self-end pb-2">Searching…</span>
+                      <span className="text-gray-400 text-xs self-end pb-2">Searching…</span>
                     )}
                   </div>
                 </div>
@@ -890,7 +850,7 @@ export default function LabConfiguration() {
                             <div className="text-white font-semibold mb-1">
                               {item.brand} {item.model} ({item.quantity} available)
                             </div>
-                            <div className="text-gray-300 text-sm space-y-1">
+                            <div className="text-gray-300 text-xs space-y-1">
                               <p>
                                 <span className="text-gray-400">Type:</span> {item.type}
                               </p>
@@ -914,7 +874,7 @@ export default function LabConfiguration() {
                           </div>
                           <div className="flex flex-col gap-2 items-end">
                             <div className="flex items-center gap-2">
-                              <label className="text-gray-300 text-sm">Qty:</label>
+                              <label className="text-gray-300 text-xs">Qty:</label>
                               <Input
                                 type="number"
                                 min="1"
@@ -934,7 +894,7 @@ export default function LabConfiguration() {
                             </div>
                             <button
                               onClick={() => addEquipmentFromSearch(item, idx)}
-                              className="px-3 py-1 bg-green-600 hover:bg-green-700 text-white rounded text-sm transition whitespace-nowrap"
+                              className="px-3 py-1 bg-green-600 hover:bg-green-700 text-white rounded text-xs transition whitespace-nowrap"
                             >
                               Add to Lab
                             </button>
@@ -978,14 +938,14 @@ export default function LabConfiguration() {
                                 {eq.brand} {eq.model} - {eq.type} × {eq.quantity}
                               </div>
                               {eq.specification && (
-                                <div className="text-gray-400 text-sm">{eq.specification}</div>
+                                <div className="text-gray-400 text-xs">{eq.specification}</div>
                               )}
                               {eq.invoiceNumber && (
-                                <div className="text-gray-400 text-sm">Invoice: {eq.invoiceNumber}</div>
+                                <div className="text-gray-400 text-xs">Invoice: {eq.invoiceNumber}</div>
                               )}
                             </div>
                             <div className="flex items-center gap-2">
-                              <label className="text-gray-300 text-sm">Qty:</label>
+                              <label className="text-gray-300 text-xs">Qty:</label>
                               <Input
                                 type="number"
                                 min="1"
@@ -1009,7 +969,7 @@ export default function LabConfiguration() {
                                   }
                                   const qty = Math.min(releaseQuantities[idx] ?? 1, unassigned);
                                   try {
-                                    const res = await fetch("http://127.0.0.1:5000/release_devices_from_lab", {
+                                    const res = await fetch("/api/release_devices_from_lab", {
                                       method: "POST",
                                       headers: authHeaders(),
                                       body: JSON.stringify({
@@ -1052,7 +1012,7 @@ export default function LabConfiguration() {
                     <h3 className="text-white font-semibold">Device Linking</h3>
                     <button
                       onClick={() => setShowLinkingModal(true)}
-                      className="px-3 py-1 bg-purple-600 hover:bg-purple-700 text-white rounded text-sm transition"
+                      className="px-3 py-1 bg-purple-600 hover:bg-purple-700 text-white rounded text-xs transition"
                     >
                       + Create Link
                     </button>
@@ -1062,7 +1022,7 @@ export default function LabConfiguration() {
                     link PC + Monitor + Keyboard + Mouse so they go to the same station.
                   </p>
                   {linkedDeviceGroups.length === 0 ? (
-                    <p className="text-gray-400 text-sm">No device groups linked yet.</p>
+                    <p className="text-gray-400 text-xs">No device groups linked yet.</p>
                   ) : (
                     <div className="space-y-2">
                       {linkedDeviceGroups.map((group, gi) => (
@@ -1071,7 +1031,7 @@ export default function LabConfiguration() {
                           className="bg-neutral-700 p-2 rounded flex justify-between items-start"
                         >
                           <div>
-                            <div className="text-white font-semibold text-sm">Group {gi + 1}</div>
+                            <div className="text-white font-semibold text-xs">Group {gi + 1}</div>
                             <div className="text-gray-300 text-xs">
                               {group.map((d, i) => (
                                 <div key={i}>
@@ -1110,7 +1070,7 @@ export default function LabConfiguration() {
                     return (
                       <div key={dt} className="bg-neutral-700 p-3 rounded-lg mb-2">
                         <div className="flex items-center justify-between mb-1">
-                          <Label className="text-white text-sm font-semibold">{dt}</Label>
+                          <Label className="text-white text-xs font-semibold">{dt}</Label>
                         </div>
                         <Input
                           value={codePrefixes[dt] || ""}
@@ -1125,7 +1085,7 @@ export default function LabConfiguration() {
                         </p>
                         {(dt === "PC" || dt === "Laptop") && (
                           <div className="mt-2 flex items-center gap-4">
-                            <span className="text-gray-300 text-sm">OS:</span>
+                            <span className="text-gray-300 text-xs">OS:</span>
                             {(["windows", "linux", "other"] as const).map((osKey) => (
                               <label key={osKey} className="flex items-center gap-1.5 cursor-pointer">
                                 <input
@@ -1139,7 +1099,7 @@ export default function LabConfiguration() {
                                   }
                                   className="w-4 h-4 rounded border-gray-500 bg-neutral-600 accent-cyan-500"
                                 />
-                                <span className="text-gray-300 text-sm capitalize">{osKey}</span>
+                                <span className="text-gray-300 text-xs capitalize">{osKey}</span>
                               </label>
                             ))}
                           </div>
@@ -1148,12 +1108,12 @@ export default function LabConfiguration() {
                     );
                   })}
                   {equipment.length === 0 && (
-                    <p className="text-gray-400 text-sm">
+                    <p className="text-gray-400 text-xs">
                       Add equipment first to configure prefixes.
                     </p>
                   )}
                   {equipment.length > 0 && unassignedTypes.size === 0 && (
-                    <p className="text-green-400 text-sm">
+                    <p className="text-green-400 text-xs">
                       All devices have been assigned.
                     </p>
                   )}
@@ -1171,7 +1131,7 @@ export default function LabConfiguration() {
               </>
             )}
           </motion.div>
-        </BackgroundGradient>
+        </div>
       </div>
 
       {/* ── Device Linking Modal ──────────────────────────────────── */}
@@ -1179,7 +1139,7 @@ export default function LabConfiguration() {
         <div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center z-50 p-4">
           <div className="bg-neutral-900 rounded-xl p-6 max-w-2xl w-full max-h-[80vh] overflow-y-auto">
             <h2 className="text-2xl font-bold text-white mb-4">Link Devices Together</h2>
-            <p className="text-gray-400 text-sm mb-4">
+            <p className="text-gray-400 text-xs mb-4">
               Select devices to link. When assigned, they will share the same station code.
             </p>
 
@@ -1188,7 +1148,7 @@ export default function LabConfiguration() {
                 Linking Group ({currentLinkingGroup.length} devices)
               </h3>
               {currentLinkingGroup.length === 0 ? (
-                <p className="text-gray-400 text-sm">Select devices below.</p>
+                <p className="text-gray-400 text-xs">Select devices below.</p>
               ) : (
                 <ul className="space-y-2">
                   {currentLinkingGroup.map((d, i) => (
@@ -1196,7 +1156,7 @@ export default function LabConfiguration() {
                       key={i}
                       className="bg-neutral-700 p-2 rounded flex justify-between items-center"
                     >
-                      <span className="text-white text-sm">
+                      <span className="text-white text-xs">
                         {d.type}: {d.brand} {d.model}
                       </span>
                       <button
@@ -1217,7 +1177,7 @@ export default function LabConfiguration() {
               <h3 className="text-white font-semibold mb-2">Available Devices</h3>
               <div className="space-y-2 max-h-64 overflow-y-auto bg-neutral-800 p-3 rounded-lg">
                 {equipment.length === 0 ? (
-                  <p className="text-gray-400 text-sm">No devices available.</p>
+                  <p className="text-gray-400 text-xs">No devices available.</p>
                 ) : (
                   equipment.map((d, i) => (
                     <div
@@ -1228,13 +1188,13 @@ export default function LabConfiguration() {
                         <div className="text-white font-semibold">
                           {d.brand} {d.model}
                         </div>
-                        <div className="text-gray-300 text-sm">
+                        <div className="text-gray-300 text-xs">
                           {d.type} - {d.quantity} units
                         </div>
                       </div>
                       <button
                         onClick={() => addToLinkingGroup(d)}
-                        className="px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded text-sm"
+                        className="px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded text-xs"
                       >
                         Add
                       </button>
@@ -1271,7 +1231,7 @@ export default function LabConfiguration() {
             <h2 className="text-xl font-bold text-white mb-2">
               Station QR — {stationQrModal.stationCode}
             </h2>
-            <p className="text-gray-400 text-sm mb-4">
+            <p className="text-gray-400 text-xs mb-4">
               Scan this QR code to view all devices at this station.
             </p>
             <div className="flex justify-center mb-4 bg-white p-4 rounded-lg">
@@ -1282,10 +1242,10 @@ export default function LabConfiguration() {
               />
             </div>
             <div className="mb-4 bg-neutral-800 p-3 rounded-lg">
-              <h3 className="text-white font-semibold text-sm mb-2">Devices in this station:</h3>
+              <h3 className="text-white font-semibold text-xs mb-2">Devices in this station:</h3>
               <ul className="space-y-1">
                 {stationQrModal.devices.map((d, i) => (
-                  <li key={i} className="text-gray-300 text-sm flex justify-between">
+                  <li key={i} className="text-gray-300 text-xs flex justify-between">
                     <span>{d.type}</span>
                     <span className="text-green-400 font-mono text-xs">{d.assignedCode}</span>
                   </li>
@@ -1309,3 +1269,5 @@ export default function LabConfiguration() {
     </div>
   );
 }
+
+

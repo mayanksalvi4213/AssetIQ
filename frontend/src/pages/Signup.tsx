@@ -1,5 +1,5 @@
 "use client";
-import React, { useMemo, useState } from "react";
+import React, { useState } from "react";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
@@ -7,14 +7,6 @@ import { BackgroundGradient } from "@/components/ui/background-gradient";
 import { motion } from "motion/react";
 
 type Role = "HOD" | "Lab Assistant" | "Lab Incharge";
-
-const LAB_OPTIONS = [
-  "Physics Lab",
-  "Chemistry Lab",
-  "Computer Lab",
-  "Electronics Lab",
-  "Mechanical Lab",
-];
 
 const validatePassword = (password: string) => ({
   length: password.length >= 8,
@@ -31,15 +23,21 @@ export default function Signup() {
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [role, setRole] = useState<Role | "">("");
-  const [lab, setLab] = useState<string>("");
   const [showPasswordValidation, setShowPasswordValidation] = useState(false);
 
   const passwordValidations = validatePassword(password);
   const isPasswordValid = Object.values(passwordValidations).every(Boolean);
   const passwordsMatch = password === confirmPassword && confirmPassword.length > 0;
+  const normalizedEmail = email.trim().toLowerCase();
+  const isApsitEmail = normalizedEmail.endsWith("@apsit.edu.in");
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
+
+    if (!isApsitEmail) {
+      alert("Only @apsit.edu.in email addresses are allowed for registration.");
+      return;
+    }
 
     if (!isPasswordValid) {
       alert("Password does not meet security requirements.");
@@ -54,13 +52,13 @@ export default function Signup() {
     const payload = {
       firstName,
       lastName,
-      email,
+      email: normalizedEmail,
       password,
       role,
     };
 
     try {
-      const response = await fetch("http://127.0.0.1:5000/signup", {
+      const response = await fetch("/api/signup", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -148,12 +146,15 @@ export default function Signup() {
                   <Label htmlFor="email" className="text-white">Email Address</Label>
                   <Input
                     id="email"
-                    placeholder="you@example.com"
+                    placeholder="you@apsit.edu.in"
                     type="email"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
                     className="bg-gray-900/50 border-gray-700 focus:border-blue-500 focus:ring-blue-500 text-white placeholder-gray-400"
                   />
+                  {email.length > 0 && !isApsitEmail && (
+                    <p className="text-xs text-red-400">Only @apsit.edu.in email addresses are allowed.</p>
+                  )}
                 </LabelInputContainer>
 
                 {/* Password */}
@@ -209,7 +210,7 @@ export default function Signup() {
                   <Label htmlFor="role" className="text-white">Role</Label>
                   <select
                     id="role"
-                    className="h-10 w-full rounded-md border border-gray-700 bg-gray-900/50 px-3 text-sm text-white placeholder-gray-400 focus:border-blue-500 focus:ring-blue-500"
+                    className="h-10 w-full rounded-md border border-gray-700 bg-gray-900/50 px-3 text-xs text-white placeholder-gray-400 focus:border-blue-500 focus:ring-blue-500"
                     value={role}
                     onChange={(e) => {
                       const value = e.target.value as Role | "";
@@ -228,13 +229,13 @@ export default function Signup() {
                 <button
                   className={`group/btn relative block h-10 w-full rounded-md font-medium text-white shadow-[0px_1px_0px_0px_#ffffff20_inset,0px_-1px_0px_0px_#ffffff20_inset] border transition-all duration-200 ${isPasswordValid && passwordsMatch ? "bg-gradient-to-br from-gray-800 to-gray-900 border-gray-700 hover:from-gray-700 hover:to-gray-800" : "bg-gray-700 cursor-not-allowed opacity-60"}`}
                   type="submit"
-                  disabled={!isPasswordValid || !passwordsMatch}
+                  disabled={!isPasswordValid || !passwordsMatch || !isApsitEmail}
                 >
                   Create Account →
                 </button>
 
                 <div className="text-center">
-                  <p className="text-gray-400 text-sm">
+                  <p className="text-gray-400 text-xs">
                     Already have an account?{" "}
                     <a href="/login" className="text-blue-400 hover:text-blue-300 transition-colors duration-200 font-medium">
                       Login
@@ -253,3 +254,5 @@ export default function Signup() {
 const LabelInputContainer = ({ children, className }: { children: React.ReactNode; className?: string }) => (
   <div className={cn("flex w-full flex-col space-y-2", className)}>{children}</div>
 );
+
+

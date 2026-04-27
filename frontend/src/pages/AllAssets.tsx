@@ -2,8 +2,7 @@
 
 import React, { useEffect, useState } from "react";
 import { motion } from "motion/react";
-import { Menu, MenuItem, HoveredLink } from "@/components/ui/navbar-menu";
-import { LogoButton } from "@/components/ui/logo-button";
+import AppNavbar from "@/components/AppNavbar";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useAuth } from "@/contexts/AuthContext";
@@ -40,11 +39,11 @@ interface DeviceGroup {
 }
 
 export default function AllAssets() {
-  const { logout } = useAuth();
+  const { user } = useAuth();
   const [devices, setDevices] = useState<Device[]>([]);
   const [groupedAssets, setGroupedAssets] = useState<DeviceGroup[]>([]);
   const [filteredAssets, setFilteredAssets] = useState<DeviceGroup[]>([]);
-  const [active, setActive] = useState<string | null>(null);
+  
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState("");
   const [filterType, setFilterType] = useState("all");
@@ -91,7 +90,7 @@ export default function AllAssets() {
         headers["Authorization"] = `Bearer ${token}`;
       }
 
-      const response = await fetch("http://127.0.0.1:5000/get_all_devices", {
+      const response = await fetch("/api/get_all_devices", {
         method: "GET",
         headers,
       });
@@ -195,7 +194,7 @@ export default function AllAssets() {
   const fetchBillDetails = async (billId: number, groupIdx: number) => {
     try {
       setLoadingBills(prev => new Set(prev).add(groupIdx));
-      const response = await fetch(`http://localhost:5000/get_bill/${billId}`);
+      const response = await fetch(`/api/get_bill/${billId}`);
       const data = await response.json();
       
       setGroupBills(prev => new Map(prev).set(groupIdx, data));
@@ -224,7 +223,7 @@ export default function AllAssets() {
       // Update all devices in the batch
       const results = await Promise.all(
         ids.map(id =>
-          fetch("http://127.0.0.1:5000/update_device_type", {
+          fetch("/api/update_device_type", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ deviceId: id, newTypeId }),
@@ -272,57 +271,10 @@ export default function AllAssets() {
       backgroundPosition: 'center',
       backgroundRepeat: 'no-repeat'
     }}>
-      
-      {/* Navbar */}
-      <div className="fixed top-2 inset-x-0 max-w-6xl mx-auto z-50 flex items-center justify-center px-4 py-2">
-        <Menu setActive={setActive}>
-          <MenuItem setActive={setActive} active={active} item="Asset Management">
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/assets">All Assets</HoveredLink>
-              <HoveredLink href="/ocr">Add Assets</HoveredLink>
-            </div>
-          </MenuItem>
-
-          <MenuItem setActive={setActive} active={active} item="Lab Management">
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/lab-plan">Lab Floor Plans</HoveredLink>
-              <HoveredLink href="/lab-layout">Lab Layout Designer</HoveredLink>
-              <HoveredLink href="/lab-configuration">Lab Configuration</HoveredLink>
-            </div>
-          </MenuItem>
-
-          <MenuItem setActive={setActive} active={active} item="Operations">
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/transfers">Transfers</HoveredLink>
-              <HoveredLink href="/dashboard/issues">Issues</HoveredLink>
-              <HoveredLink href="/documents">Documents</HoveredLink>
-            </div>
-          </MenuItem>
-
-          <MenuItem setActive={setActive} active={active} item="Analytics">
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/reports">Reports</HoveredLink>
-              <HoveredLink href="/warranty-expiry">Warranty Expiry</HoveredLink>
-            </div>
-          </MenuItem>
-
-          <MenuItem setActive={setActive} active={active} item="Account">
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/settings">Settings</HoveredLink>
-              <button 
-                onClick={logout}
-                className="text-left text-neutral-600 hover:text-neutral-800 transition-colors"
-              >
-                Logout
-              </button>
-            </div>
-          </MenuItem>
-        </Menu>
-      </div>
+      <AppNavbar />
 
       {/* Page Content */}
       <div className="flex items-center justify-center pt-24 px-4 pb-16 w-full relative z-10">
-        <LogoButton />
         <motion.div
           initial={{ opacity: 0, y: 30 }}
           animate={{ opacity: 1, y: 0 }}
@@ -334,15 +286,15 @@ export default function AllAssets() {
           {/* Stats Cards */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
             <div className="bg-gradient-to-br from-blue-600/20 to-blue-800/20 border border-blue-500/30 rounded-lg p-4">
-              <div className="text-blue-400 text-sm font-semibold">Total Assets</div>
+              <div className="text-blue-400 text-xs font-semibold">Total Assets</div>
               <div className="text-3xl font-bold text-white">{stats.total}</div>
             </div>
             <div className="bg-gradient-to-br from-green-600/20 to-green-800/20 border border-green-500/30 rounded-lg p-4">
-              <div className="text-green-400 text-sm font-semibold">Assigned</div>
+              <div className="text-green-400 text-xs font-semibold">Assigned</div>
               <div className="text-3xl font-bold text-white">{stats.assigned}</div>
             </div>
             <div className="bg-gradient-to-br from-yellow-600/20 to-yellow-800/20 border border-yellow-500/30 rounded-lg p-4">
-              <div className="text-yellow-400 text-sm font-semibold">Unassigned</div>
+              <div className="text-yellow-400 text-xs font-semibold">Unassigned</div>
               <div className="text-3xl font-bold text-white">{stats.unassigned}</div>
             </div>
           </div>
@@ -418,7 +370,7 @@ export default function AllAssets() {
                             handleTypeChange(asset.devices.map(d => d.device_id), newType);
                           }}
                           onClick={(e) => e.stopPropagation()}
-                          className="bg-neutral-700 text-white text-sm px-2 py-1 rounded border border-neutral-600 cursor-pointer hover:border-blue-500 transition font-semibold disabled:opacity-50"
+                          className="bg-neutral-700 text-white text-xs px-2 py-1 rounded border border-neutral-600 cursor-pointer hover:border-blue-500 transition font-semibold disabled:opacity-50"
                         >
                           {deviceTypes.slice(1).map(t => (
                             <option key={t} value={t}>{t}</option>
@@ -459,21 +411,21 @@ export default function AllAssets() {
                     const isLoading = loadingBills.has(idx);
                     
                     return (
-                      <div className="border-t border-neutral-700 p-4 bg-neutral-900/50 space-y-4">
+                      <div className="border-t border-neutral-700 p-4 bg-neutral-900/50 space-y-4 text-[14px]">
                         {/* Bill Details Section */}
                         {isLoading ? (
                           <div className="text-center text-gray-400 py-4">Loading bill details...</div>
                         ) : billData?.error ? (
-                          <div className="bg-red-900/20 border border-red-500/30 rounded-lg p-4 text-red-400 text-sm">
+                          <div className="bg-red-900/20 border border-red-500/30 rounded-lg p-4 text-red-400">
                             {billData.error}
                           </div>
                         ) : billData?.bill ? (
                           <div className="bg-neutral-800/50 rounded-lg p-4">
-                            <h3 className="text-white font-semibold mb-3 text-sm">Bill Details</h3>
+                            <h3 className="text-white font-semibold mb-3 text-[14px]">Bill Details</h3>
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                               <div className="bg-neutral-700/30 rounded p-3">
-                                <h4 className="text-purple-400 font-semibold text-sm mb-2">📄 Bill Information</h4>
-                                <div className="space-y-2 text-xs">
+                                <h4 className="text-purple-400 font-semibold text-[14px] mb-2">📄 Bill Information</h4>
+                                <div className="space-y-2 text-[14px]">
                                   <div>
                                     <span className="text-gray-400">Invoice:</span>
                                     <span className="text-white ml-2 font-semibold">{billData.bill.invoiceNumber || "N/A"}</span>
@@ -499,8 +451,8 @@ export default function AllAssets() {
                                 </div>
                               </div>
                               <div className="bg-neutral-700/30 rounded p-3">
-                                <h4 className="text-orange-400 font-semibold text-sm mb-2">🏢 Vendor Information</h4>
-                                <div className="space-y-2 text-xs">
+                                <h4 className="text-orange-400 font-semibold text-[14px] mb-2">🏢 Vendor Information</h4>
+                                <div className="space-y-2 text-[14px]">
                                   <div>
                                     <span className="text-gray-400">Name:</span>
                                     <span className="text-white ml-2 font-semibold">{billData.bill.vendorName || "N/A"}</span>
@@ -516,15 +468,15 @@ export default function AllAssets() {
                             </div>
                           </div>
                         ) : (
-                          <div className="bg-neutral-800/50 rounded-lg p-4 text-center text-gray-400 text-sm">
+                          <div className="bg-neutral-800/50 rounded-lg p-4 text-center text-gray-400">
                             No bill information available
                           </div>
                         )}
 
                         {/* Device List Table */}
                         <div className="overflow-x-auto">
-                          <h3 className="text-white font-semibold mb-2 text-sm">Devices ({asset.total})</h3>
-                          <table className="min-w-full text-sm">
+                          <h3 className="text-white font-semibold mb-2 text-[14px]">Devices ({asset.total})</h3>
+                          <table className="min-w-full text-[14px]">
                             <thead>
                               <tr className="border-b border-neutral-700">
                                 <th className="px-3 py-2 text-left text-gray-400">Asset ID</th>
@@ -578,3 +530,4 @@ export default function AllAssets() {
     </div>
   );
 }
+

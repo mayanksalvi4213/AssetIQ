@@ -110,7 +110,7 @@ const FeatureCard = ({
   return (
     <CardSpotlight className="h-auto w-full p-6">
       <h3 className="text-xl font-bold relative z-20 mt-2 text-white">{title}</h3>
-      <p className="text-neutral-300 mt-2 relative z-20 text-sm">{description}</p>
+      <p className="text-neutral-300 mt-2 relative z-20 text-xs">{description}</p>
       <ul className="list-none mt-4 space-y-2">
         {steps.map((step, index) => (
           <Step key={index} title={step} />

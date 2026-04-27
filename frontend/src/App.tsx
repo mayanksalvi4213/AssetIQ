@@ -20,6 +20,13 @@ import Documents from "./pages/Documents.tsx";
 import Transfers from "./pages/Transfers.tsx";
 import LabLayout from "./pages/LabLayout.tsx";
 import IssueTrends from "./pages/IssueTrends.tsx";
+import Scrap from "./pages/Scrap.tsx";
+import { ScrapHoverButton } from "./components/ui/ScrapHoverButton.tsx";
+import ProactiveMaintenance from "./pages/ProactiveMaintenance.tsx";
+import AssignLabIncharge from "./pages/AssignLabIncharge.tsx";
+import StudentLabComplaint from "./pages/StudentLabComplaint";
+import StudentComplaintsApproval from "./pages/StudentComplaintsApproval";
+
 
 const App: React.FC = () => {
   return (
@@ -31,6 +38,7 @@ const App: React.FC = () => {
           <Route path="/login" element={<LoginForm />} />
           <Route path="/forgot" element={<ForgotPassword />} />
           <Route path="/signup" element={<Signup />} />
+          <Route path="/student/lab/:labToken" element={<StudentLabComplaint />} />
           
           {/* Protected routes */}
           <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
@@ -56,9 +64,15 @@ const App: React.FC = () => {
               <LabLayout />
             </ProtectedRoute>
           } />
+          <Route path="/assign-lab-incharge" element={
+            <ProtectedRoute allowedRoles={['HOD']}>
+              <AssignLabIncharge />
+            </ProtectedRoute>
+          } />
           
           {/* Operations - All roles */}
           <Route path="/transfers" element={<ProtectedRoute><Transfers /></ProtectedRoute>} />
+          <Route path="/scrap" element={<ProtectedRoute><Scrap /></ProtectedRoute>} />
           <Route path="/dashboard/issues" element={<ProtectedRoute><Issues /></ProtectedRoute>} />
           <Route path="/documents" element={<ProtectedRoute><Documents /></ProtectedRoute>} />
           <Route path="/dashboard/documents" element={<ProtectedRoute><Documents /></ProtectedRoute>} />
@@ -68,7 +82,14 @@ const App: React.FC = () => {
           <Route path="/warranty-expiry" element={<ProtectedRoute><WarrantyExpiry /></ProtectedRoute>} />
           <Route path="/reports/warranty" element={<ProtectedRoute><WarrantyExpiry /></ProtectedRoute>} />
           <Route path="/reports/issue-trends" element={<ProtectedRoute><IssueTrends /></ProtectedRoute>} />
+          <Route path="/reports/proactive-maintenance" element={<ProtectedRoute><ProactiveMaintenance /></ProtectedRoute>} />
+          <Route path="/reports/student-complaints" element={
+            <ProtectedRoute allowedRoles={['HOD', 'Lab Assistant', 'Lab Incharge']}>
+              <StudentComplaintsApproval />
+            </ProtectedRoute>
+          } />
         </Routes>
+        <ScrapHoverButton />
       </AuthProvider>
     </Router>
   );

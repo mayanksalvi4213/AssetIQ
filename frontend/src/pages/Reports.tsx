@@ -1,14 +1,9 @@
 "use client";
-import React, { useState } from "react";
-import { Menu, MenuItem, HoveredLink } from "@/components/ui/navbar-menu";
+import React from "react";
 import { CometCard } from "@/components/ui/comet-card";
-import { LogoButton } from "@/components/ui/logo-button";
-import { useAuth } from "@/contexts/AuthContext";
+import AppNavbar from "@/components/AppNavbar";
 
 const Reports: React.FC = () => {
-  const [active, setActive] = useState<string | null>(null);
-  const { logout } = useAuth();
-
   return (
     <div
       className="relative min-h-screen flex flex-col items-center py-12 px-4"
@@ -21,67 +16,27 @@ const Reports: React.FC = () => {
       }}
     >
 
-      {/* Navbar */}
-      <div className="fixed top-3 right-6 z-50">
-        <Menu setActive={setActive}>
-          <MenuItem setActive={setActive} active={active} item="Asset Management">
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/assets">All Assets</HoveredLink>
-              <HoveredLink href="/ocr">Add Assets</HoveredLink>
-              
-            </div>
-          </MenuItem>
-
-          <MenuItem setActive={setActive} active={active} item="Lab Management">
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/lab-plan">Lab Floor Plans</HoveredLink>
-              <HoveredLink href="/lab-layout">Lab Layout Designer</HoveredLink>
-              <HoveredLink href="/lab-configuration">Lab Configuration</HoveredLink>
-            </div>
-          </MenuItem>
-
-          <MenuItem setActive={setActive} active={active} item="Operations">
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/transfers">Transfers</HoveredLink>
-              <HoveredLink href="/dashboard/issues">Issues</HoveredLink>
-              <HoveredLink href="/documents">Documents</HoveredLink>
-            </div>
-          </MenuItem>
-
-          <MenuItem setActive={setActive} active={active} item="Analytics">
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/reports">Reports</HoveredLink>
-              <HoveredLink href="/warranty-expiry">Warranty Expiry</HoveredLink>
-            </div>
-          </MenuItem>
-
-          <MenuItem setActive={setActive} active={active} item="Account">
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/settings">Settings</HoveredLink>
-              <button 
-                onClick={logout}
-                className="text-left text-neutral-600 hover:text-neutral-800 transition-colors"
-              >
-                Logout
-              </button>
-            </div>
-          </MenuItem>
-        </Menu>
-      </div>
+      <AppNavbar />
 
       {/* Heading */}
-      <h1 className="text-3xl font-bold mb-12 relative z-20 mt-16 text-gray-200">
+      <h1 
+        className="text-3xl font-bold mb-12 relative z-20 mt-16 px-5 py-2 rounded-xl inline-block"
+        style={{
+          background: "linear-gradient(135deg, rgba(10, 14, 25, 0.75) 0%,rgba(15, 23, 42, 0.80) 25%,rgba(8, 10, 15, 0.88) 50%,rgba(15, 23, 42, 0.80) 75%, rgba(20, 18, 16, 0.75) 100%)",
+          color: "white",
+          boxShadow: "0 4px 15px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.1)"
+        }}
+      >
         Asset Reports
       </h1>
 
       {/* Reports Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-2 gap-8 max-w-6xl relative z-20">
-        <LogoButton />
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-2 gap-10 max-w-7xl relative z-20">
         {/* Warranty Expiry */}
         <CometCard>
-          <div className="p-6 text-white bg-neutral-800/95 rounded-2xl backdrop-blur-sm">
+          <div className="p-7 text-white bg-neutral-800/95 rounded-2xl backdrop-blur-sm">
             <h2 className="text-xl font-semibold mb-2">Warranty Expiry</h2>
-            <p className="text-gray-300 text-sm mb-4">
+            <p className="text-gray-300 text-xs mb-4">
               Track which asset batches are nearing warranty expiry.
             </p>
             <button
@@ -95,9 +50,9 @@ const Reports: React.FC = () => {
 
         {/* Issue Trends */}
         <CometCard>
-          <div className="p-6 text-white bg-neutral-800/95 rounded-2xl backdrop-blur-sm">
+          <div className="p-7 text-white bg-neutral-800/95 rounded-2xl backdrop-blur-sm">
             <h2 className="text-xl font-semibold mb-2">Issue Trends</h2>
-            <p className="text-gray-300 text-sm mb-4">
+            <p className="text-gray-300 text-xs mb-4">
               Find which batches had the most reported issues.
             </p>
             <button
@@ -113,25 +68,31 @@ const Reports: React.FC = () => {
 
         {/* Proactive Maintenance */}
         <CometCard>
-          <div className="p-6 text-white bg-neutral-800/95 rounded-2xl backdrop-blur-sm">
+          <div className="p-7 text-white bg-neutral-800/95 rounded-2xl backdrop-blur-sm">
             <h2 className="text-xl font-semibold mb-2">Proactive Maintenance</h2>
-            <p className="text-gray-300 text-sm mb-4">
+            <p className="text-gray-300 text-xs mb-4">
               Identify assets that require preventive maintenance.
             </p>
-            <button className="px-4 py-2 bg-yellow-600 rounded-lg text-white font-semibold hover:bg-yellow-700 transition-colors">
+            <button
+              onClick={() => (window.location.href = "/reports/proactive-maintenance")}
+              className="px-4 py-2 bg-yellow-600 rounded-lg text-white font-semibold hover:bg-yellow-700 transition-colors"
+            >
               View Report
             </button>
           </div>
         </CometCard>
 
-        {/* Asset Transfer/Scrap */}
+        {/* Student Complaint Approvals */}
         <CometCard>
-          <div className="p-6 text-white bg-neutral-800/95 rounded-2xl backdrop-blur-sm">
-            <h2 className="text-xl font-semibold mb-2">Asset Transfer / Scrap</h2>
-            <p className="text-gray-300 text-sm mb-4">
-              Track asset transfers and scrapped devices.
+          <div className="p-7 text-white bg-neutral-800/95 rounded-2xl backdrop-blur-sm">
+            <h2 className="text-xl font-semibold mb-2">Student Complaint Approvals</h2>
+            <p className="text-gray-300 text-xs mb-4">
+              Review and approve or reject student-submitted device complaints.
             </p>
-            <button className="px-4 py-2 bg-purple-600 rounded-lg text-white font-semibold hover:bg-purple-700 transition-colors">
+            <button
+              onClick={() => (window.location.href = "/reports/student-complaints")}
+              className="px-4 py-2 bg-purple-600 rounded-lg text-white font-semibold hover:bg-purple-700 transition-colors"
+            >
               View Report
             </button>
           </div>
@@ -142,3 +103,4 @@ const Reports: React.FC = () => {
 };
 
 export default Reports;
+

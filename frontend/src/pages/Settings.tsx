@@ -1,7 +1,6 @@
 "use client";
 import React, { useEffect, useState } from "react";
-import { Menu, MenuItem, HoveredLink } from "@/components/ui/navbar-menu";
-import { LogoButton } from "@/components/ui/logo-button";
+import AppNavbar from "@/components/AppNavbar";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
@@ -19,8 +18,7 @@ const LAB_OPTIONS = [
 ];
 
 export default function Settings() {
-  const [active, setActive] = useState<string | null>(null);
-  const { user, logout } = useAuth();
+  const { user } = useAuth();
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
   const [email, setEmail] = useState("");
@@ -68,7 +66,7 @@ export default function Settings() {
         payload.newPassword = newPassword;
       }
 
-      const response = await fetch("http://localhost:5000/user/update", {
+      const response = await fetch("/api/user/update", {
         method: "PUT",
         headers: {
           "Content-Type": "application/json",
@@ -100,53 +98,7 @@ export default function Settings() {
       backgroundPosition: 'center',
       backgroundRepeat: 'no-repeat'
     }}>
-      <div className="fixed top-3 right-6 z-50">
-        <Menu setActive={setActive}>
-          <MenuItem setActive={setActive} active={active} item="Asset Management">
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/assets">All Assets</HoveredLink>
-              <HoveredLink href="/ocr">Add Assets</HoveredLink>
-            </div>
-          </MenuItem>
-
-          <MenuItem setActive={setActive} active={active} item="Lab Management">
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/lab-plan">Lab Floor Plans</HoveredLink>
-              <HoveredLink href="/lab-layout">Lab Layout Designer</HoveredLink>
-              <HoveredLink href="/lab-configuration">Lab Configuration</HoveredLink>
-            </div>
-          </MenuItem>
-
-          <MenuItem setActive={setActive} active={active} item="Operations">
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/transfers">Transfers</HoveredLink>
-              <HoveredLink href="/dashboard/issues">Issues</HoveredLink>
-              <HoveredLink href="/documents">Documents</HoveredLink>
-            </div>
-          </MenuItem>
-
-          <MenuItem setActive={setActive} active={active} item="Analytics">
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/reports">Reports</HoveredLink>
-              <HoveredLink href="/warranty-expiry">Warranty Expiry</HoveredLink>
-            </div>
-          </MenuItem>
-
-          <MenuItem setActive={setActive} active={active} item="Account">
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/settings">Settings</HoveredLink>
-              <button 
-                onClick={logout}
-                className="text-left text-neutral-600 hover:text-neutral-800 transition-colors"
-              >
-                Logout
-              </button>
-            </div>
-          </MenuItem>
-        </Menu>
-      </div>
-
-      <LogoButton />
+      <AppNavbar />
 
       <h1 className="text-3xl font-bold mb-6 mt-16 text-gray-200">⚙️ Account Settings</h1>
 
@@ -211,7 +163,7 @@ export default function Settings() {
                     <Label htmlFor="lab" className="text-white">Assigned Lab</Label>
                     <select
                       id="lab"
-                      className="h-10 w-full rounded-md border border-neutral-600 bg-neutral-800/50 px-3 text-sm text-white focus:border-blue-500 focus:ring-blue-500"
+                      className="h-10 w-full rounded-md border border-neutral-600 bg-neutral-800/50 px-3 text-xs text-white focus:border-blue-500 focus:ring-blue-500"
                       value={lab}
                       onChange={(e) => setLab(e.target.value)}
                       required
@@ -291,3 +243,5 @@ export default function Settings() {
 const LabelInputContainer = ({ children, className }: { children: React.ReactNode; className?: string }) => (
   <div className={cn("flex w-full flex-col space-y-2", className)}>{children}</div>
 );
+
+

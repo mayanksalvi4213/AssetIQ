@@ -5,9 +5,7 @@ import { BackgroundGradient } from "@/components/ui/background-gradient";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { HoverBorderGradient } from "@/components/ui/hover-border-gradient";
-import { Menu, MenuItem, HoveredLink } from "@/components/ui/navbar-menu";
-import { LogoButton } from "@/components/ui/logo-button";
-import { useAuth } from "@/contexts/AuthContext";
+import AppNavbar from "@/components/AppNavbar";
 
 // ── Types ────────────────────────────────────────────────────────────
 interface StationType {
@@ -58,9 +56,6 @@ const buildEmptyGrid = (rows: number, cols: number): LayoutCell[][] =>
 
 // ── Component ────────────────────────────────────────────────────────
 export default function LabLayout() {
-  const { logout } = useAuth();
-  const [active, setActive] = useState<string | null>(null);
-
   // Saved labs
   const [labs, setLabs] = useState<LabSummary[]>([]);
   const [selectedLabId, setSelectedLabId] = useState<string | null>(null);
@@ -97,7 +92,7 @@ export default function LabLayout() {
   // ── Fetch station types ──────────────────────────────────────────
   const fetchStationTypes = useCallback(async () => {
     try {
-      const res = await fetch("http://127.0.0.1:5000/get_station_types", { headers: authHeaders() });
+      const res = await fetch("/api/get_station_types", { headers: authHeaders() });
       const data = await res.json();
       if (data.success) setStationTypes(data.stationTypes);
     } catch (err) {
@@ -108,7 +103,7 @@ export default function LabLayout() {
   // ── Fetch existing labs ──────────────────────────────────────────
   const fetchLabs = useCallback(async () => {
     try {
-      const res = await fetch("http://127.0.0.1:5000/get_labs_for_layout", { headers: authHeaders() });
+      const res = await fetch("/api/get_labs_for_layout", { headers: authHeaders() });
       const data = await res.json();
       if (data.success) setLabs(data.labs);
     } catch (err) {
@@ -124,7 +119,7 @@ export default function LabLayout() {
   // ── Load lab layout ──────────────────────────────────────────────
   const loadLabLayout = async (labId: string) => {
     try {
-      const res = await fetch(`http://127.0.0.1:5000/get_lab_layout/${labId}`, { headers: authHeaders() });
+      const res = await fetch(`/api/get_lab_layout/${labId}`, { headers: authHeaders() });
       const data = await res.json();
       if (data.success && data.layout) {
         const l = data.layout;
@@ -147,7 +142,7 @@ export default function LabLayout() {
     if (!labName.trim()) { alert("Please enter a lab name"); return; }
     setIsSaving(true);
     try {
-      const res = await fetch("http://127.0.0.1:5000/save_lab_layout", {
+      const res = await fetch("/api/save_lab_layout", {
         method: "POST",
         headers: authHeaders(),
         body: JSON.stringify({ labNumber, labName, rows, columns, grid }),
@@ -172,7 +167,7 @@ export default function LabLayout() {
   const deleteLabLayout = async (labId: string) => {
     if (!confirm("Clear the layout for this lab? (The lab itself will not be deleted)")) return;
     try {
-      const res = await fetch(`http://127.0.0.1:5000/delete_lab_layout/${labId}`, {
+      const res = await fetch(`/api/delete_lab_layout/${labId}`, {
         method: "DELETE",
         headers: authHeaders(),
       });
@@ -333,50 +328,19 @@ export default function LabLayout() {
       className="min-h-screen bg-neutral-950"
       style={{ backgroundImage: "url(/bg.jpg)", backgroundSize: "cover", backgroundPosition: "center", backgroundRepeat: "no-repeat" }}
     >
-      {/* Navbar */}
-      <div className="fixed top-2 inset-x-0 max-w-6xl mx-auto z-50 flex items-center justify-center px-4 py-2">
-        <Menu setActive={setActive}>
-          <MenuItem setActive={setActive} active={active} item="Asset Management">
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/assets">All Assets</HoveredLink>
-              <HoveredLink href="/ocr">Add Assets</HoveredLink>
-            </div>
-          </MenuItem>
-          <MenuItem setActive={setActive} active={active} item="Lab Management">
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/lab-plan">Lab Floor Plans</HoveredLink>
-              <HoveredLink href="/lab-layout">Lab Layout Designer</HoveredLink>
-              <HoveredLink href="/lab-configuration">Lab Configuration</HoveredLink>
-            </div>
-          </MenuItem>
-          <MenuItem setActive={setActive} active={active} item="Operations">
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/transfers">Transfers</HoveredLink>
-              <HoveredLink href="/dashboard/issues">Issues</HoveredLink>
-              <HoveredLink href="/dashboard/documents">Documents</HoveredLink>
-            </div>
-          </MenuItem>
-          <MenuItem setActive={setActive} active={active} item="Analytics">
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/reports">Reports</HoveredLink>
-              <HoveredLink href="/warranty-expiry">Warranty Expiry</HoveredLink>
-            </div>
-          </MenuItem>
-          <MenuItem setActive={setActive} active={active} item="Account">
-            <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/settings">Settings</HoveredLink>
-              <button onClick={logout} className="text-left text-neutral-600 hover:text-neutral-800 transition-colors">
-                Logout
-              </button>
-            </div>
-          </MenuItem>
-        </Menu>
-      </div>
+      <AppNavbar />
 
       {/* Page Content */}
       <div className="flex items-start justify-center pt-24 px-4 pb-12">
-        <BackgroundGradient className="w-full max-w-7xl p-8 rounded-xl shadow-xl">
-          <LogoButton />
+        <div 
+          className="w-full max-w-5xl p-8 rounded-xl shadow-xl"
+          style={{
+            backgroundColor: "rgba(0, 0, 0, 0.5)",
+            backdropFilter: "blur(10px)",
+            border: "1px solid rgba(255, 255, 255, 0.2)",
+            boxShadow: "0 8px 32px 0 rgba(0, 0, 0, 0.3), inset 0 1px 1px rgba(255, 255, 255, 0.1), 0 8px 32px rgba(0, 0, 0, 0.2)"
+          }}
+        >
           <motion.div initial={{ opacity: 0, y: 30 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4 }}>
             <h1 className="text-3xl font-bold text-center mb-6 text-white">
               {selectedLabId ? "Edit Lab Layout" : "Design New Lab Layout"}
@@ -405,7 +369,7 @@ export default function LabLayout() {
                 {selectedLabId && (
                   <button
                     onClick={() => deleteLabLayout(selectedLabId)}
-                    className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition text-sm"
+                    className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition text-xs"
                   >
                     🗑️ Clear Layout
                   </button>
@@ -446,7 +410,7 @@ export default function LabLayout() {
               <h3 className="text-white font-semibold mb-3">Grid Dimensions</h3>
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <Label className="text-gray-300 text-sm">Rows</Label>
+                  <Label className="text-gray-300 text-xs">Rows</Label>
                   <input
                     type="number" min="1" max="30" value={rows}
                     onChange={(e) => updateGridSize(Math.max(1, Math.min(30, Number(e.target.value))), columns)}
@@ -454,7 +418,7 @@ export default function LabLayout() {
                   />
                 </div>
                 <div>
-                  <Label className="text-gray-300 text-sm">Columns</Label>
+                  <Label className="text-gray-300 text-xs">Columns</Label>
                   <input
                     type="number" min="1" max="30" value={columns}
                     onChange={(e) => updateGridSize(rows, Math.max(1, Math.min(30, Number(e.target.value))))}
@@ -472,7 +436,7 @@ export default function LabLayout() {
               </p>
 
               {stationTypes.length === 0 ? (
-                <p className="text-yellow-400 text-sm">
+                <p className="text-yellow-400 text-xs">
                   ⚠️ No station types found. Make sure the <code className="bg-neutral-700 px-1 rounded">station_types</code> table exists and has seed data.
                 </p>
               ) : (
@@ -483,7 +447,7 @@ export default function LabLayout() {
                       <button
                         key={st.station_type_id}
                         onClick={() => setSelectedStationType(isSelected ? null : st)}
-                        className={`flex items-center gap-2 px-3 py-2 rounded-lg border-2 transition text-left text-sm ${
+                        className={`flex items-center gap-2 px-3 py-2 rounded-lg border-2 transition text-left text-xs ${
                           isSelected ? "border-white" : "border-transparent hover:border-gray-500"
                         }`}
                         style={{
@@ -505,7 +469,7 @@ export default function LabLayout() {
               {selectedStationType && (
                 <div className="mt-3 p-2 rounded-lg flex items-center gap-2" style={{ backgroundColor: selectedStationType.color + "20" }}>
                   <span className="text-lg">{selectedStationType.icon}</span>
-                  <span className="text-white text-sm font-medium">
+                  <span className="text-white text-xs font-medium">
                     Brush: <strong>{selectedStationType.name}</strong>
                   </span>
                   <button onClick={() => setSelectedStationType(null)} className="ml-auto text-gray-400 hover:text-white text-xs">
@@ -517,10 +481,10 @@ export default function LabLayout() {
 
             {/* ── Actions Bar ────────────────────────────────────────── */}
             <div className="mb-4 flex gap-3 flex-wrap">
-              <button onClick={clearGrid} className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition text-sm">
+              <button onClick={clearGrid} className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition text-xs">
                 🗑️ Clear Grid
               </button>
-              <button onClick={resetForm} className="px-4 py-2 bg-neutral-700 hover:bg-neutral-600 text-white rounded-lg transition text-sm">
+              <button onClick={resetForm} className="px-4 py-2 bg-neutral-700 hover:bg-neutral-600 text-white rounded-lg transition text-xs">
                 📄 New Lab
               </button>
             </div>
@@ -554,11 +518,11 @@ export default function LabLayout() {
                             <>
                               <span className="text-2xl leading-none">{cell.icon}</span>
                               {cell.stationLabel && (
-                                <div className="text-white text-[10px] font-bold mt-0.5 text-center break-all leading-tight">
+                                <div className="text-white text-[12px] font-bold mt-0.5 text-center break-all leading-tight">
                                   {cell.stationLabel}
                                 </div>
                               )}
-                              <div className="text-gray-300 text-[9px] text-center leading-tight">
+                              <div className="text-gray-300 text-[12px] text-center leading-tight">
                                 {cell.stationTypeLabel}
                               </div>
                             </>
@@ -604,8 +568,10 @@ export default function LabLayout() {
               </HoverBorderGradient>
             </div>
           </motion.div>
-        </BackgroundGradient>
+        </div>
       </div>
     </div>
   );
 }
+
+
