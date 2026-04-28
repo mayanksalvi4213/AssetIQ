@@ -54,43 +54,62 @@ const LandingPage: React.FC = () => {
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-10">
           <FeatureCard
-            title="Centralized Asset Management"
-            description="Track and manage IT assets across labs and facilities from a single dashboard."
+            title="OCR Bill Ingestion"
+            description="Upload invoices and let AssetIQ extract item data and build your asset inventory."
             steps={[
-              "Monitor lifecycle from procurement to scrapping",
-              "Centralized dashboard for all devices",
-              "Quick search & filtering",
+              "Upload bills and invoices",
+              "Auto-extract vendor and item details",
+              "Create assets from parsed data",
             ]}
           />
           <FeatureCard
-            title="AI-Powered Insights"
-            description="Predictive maintenance and warranty tracking to minimize downtime."
+            title="Lab Layout & Configuration"
+            description="Design lab layouts and map devices to stations with QR-ready assignments."
             steps={[
-              "Smart alerts for expiring warranties",
-              "AI-based health predictions",
-              "Preventive maintenance schedules",
+              "Build lab layouts with station types",
+              "Assign devices to seating grids",
+              "Generate station and lab QR codes",
             ]}
           />
           <FeatureCard
-            title="Workflow Automation"
-            description="Automated approval processes for asset transfers and lifecycle updates."
+            title="Transfers & Scrap Workflow"
+            description="Structured approval flow for moving or scrapping assets across labs."
             steps={[
-              "Streamlined request approvals",
-              "Auto updates for asset movement",
-              "Reduce manual paperwork",
+              "Submit transfer or scrap requests",
+              "Role-based approvals and tracking",
+              "Live status updates on requests",
             ]}
           />
           <FeatureCard
-            title="Actionable Analytics"
-            description="Data-driven insights and alerts to support smarter decision-making."
+            title="Maintenance & Warranty Tracking"
+            description="Track issues, inactive devices, and warranty expiries from one place."
             steps={[
-              "Interactive analytics dashboard",
-              "Custom reports & KPIs",
-              "Real-time asset usage trends",
+              "Log and monitor lab issues",
+              "Proactive maintenance alerts",
+              "Warranty expiry dashboards",
             ]}
           />
         </div>
       </div>
+
+      <footer className="w-full border-t border-neutral-800 pb-10">
+        <div className="max-w-6xl mx-auto px-6 pt-8">
+          <div className="flex flex-col gap-6 md:flex-row md:items-center md:justify-between rounded-2xl border border-neutral-800 bg-neutral-950/70 px-5 py-4 backdrop-blur-sm">
+            <div>
+              <p className="text-base text-gray-100 font-semibold">AssetIQ </p>
+              <p className="text-sm text-gray-200 mt-2">
+                Makers: Mayank Salvi, Aniruddha Sangle, Gandhar Rane, Pawan Walke
+              </p>
+              <p className="text-sm text-gray-200">Project Guide: Dr. Vishal Badgujar</p>
+            </div>
+            <Link to="/project-credits">
+              <HoverBorderGradient as="span">
+                Know More
+              </HoverBorderGradient>
+            </Link>
+          </div>
+        </div>
+      </footer>
     </div>
   );
 };
