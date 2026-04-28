@@ -90,7 +90,7 @@ export default function AllAssets() {
         headers["Authorization"] = `Bearer ${token}`;
       }
 
-      const response = await fetch("/api/get_all_devices", {
+      const response = await fetch("/api/get_all_devices?include_inactive=1", {
         method: "GET",
         headers,
       });

@@ -96,7 +96,7 @@ export default function Dashboard() {
       setLoading(true);
       
       // Fetch all devices for stats
-      const devicesResponse = await fetch("/api/get_all_devices");
+      const devicesResponse = await fetch("/api/get_all_devices?include_inactive=1");
       const devicesData = await devicesResponse.json();
       if (devicesData.success) {
         setDevices(devicesData.devices || []);
