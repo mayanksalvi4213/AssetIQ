@@ -2,6 +2,7 @@
 import React, { useState, useEffect, useMemo } from "react";
 import { PlaceholdersAndVanishInput } from "@/components/ui/placeholders-and-vanish-input";
 import { WobbleCard } from "@/components/ui/wobble-card";
+import { HoverBorderGradient } from "@/components/ui/hover-border-gradient";
 import AppNavbar from "@/components/AppNavbar";
 import { useAuth } from "@/contexts/AuthContext";
 
@@ -477,6 +478,21 @@ export default function Dashboard() {
                 </a>
               </div>
             </div>
+
+            <footer className="border-t border-neutral-800 pt-8 pb-6">
+              <div className="flex flex-col gap-6 md:flex-row md:items-center md:justify-between rounded-2xl border border-neutral-800 bg-neutral-950/70 px-5 py-4 backdrop-blur-sm">
+                <div>
+                  <p className="text-base text-gray-100 font-semibold">AssetIQ </p>
+                  <p className="text-sm text-gray-200 mt-2">
+                    Makers: Mayank Salvi, Aniruddha Sangle, Gandhar Rane, Pawan Walke
+                  </p>
+                  <p className="text-sm text-gray-200">Project Guide: Dr. Vishal Badgujar</p>
+                </div>
+                <HoverBorderGradient as="a" href="/project-credits">
+                  Know More
+                </HoverBorderGradient>
+              </div>
+            </footer>
           </>
         )}
         {" "}

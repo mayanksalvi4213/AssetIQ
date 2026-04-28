@@ -26,6 +26,7 @@ import ProactiveMaintenance from "./pages/ProactiveMaintenance.tsx";
 import AssignLabIncharge from "./pages/AssignLabIncharge.tsx";
 import StudentLabComplaint from "./pages/StudentLabComplaint";
 import StudentComplaintsApproval from "./pages/StudentComplaintsApproval";
+import ProjectCredits from "./pages/ProjectCredits";
 
 
 const App: React.FC = () => {
@@ -48,19 +49,19 @@ const App: React.FC = () => {
           <Route path="/assets" element={<ProtectedRoute><AllAssets /></ProtectedRoute>} />
           <Route path="/ocr" element={<ProtectedRoute><OcrPage /></ProtectedRoute>} />
           
-          {/* Lab Management - HOD and Lab Incharge */}
+          {/* Lab Management - HOD, Lab Incharge, and Lab Assistant */}
           <Route path="/lab-configuration" element={
-            <ProtectedRoute allowedRoles={['HOD', 'Lab Incharge']}>
+            <ProtectedRoute allowedRoles={['HOD', 'Lab Incharge', 'Lab Assistant']}>
               <LabConfiguration />
             </ProtectedRoute>
           } />
           <Route path="/lab-plan" element={
-            <ProtectedRoute allowedRoles={['HOD', 'Lab Incharge']}>
+            <ProtectedRoute allowedRoles={['HOD', 'Lab Incharge', 'Lab Assistant']}>
               <LabFloorPlan />
             </ProtectedRoute>
           } />
           <Route path="/lab-layout" element={
-            <ProtectedRoute allowedRoles={['HOD', 'Lab Incharge']}>
+            <ProtectedRoute allowedRoles={['HOD', 'Lab Incharge', 'Lab Assistant']}>
               <LabLayout />
             </ProtectedRoute>
           } />
@@ -86,6 +87,11 @@ const App: React.FC = () => {
           <Route path="/reports/student-complaints" element={
             <ProtectedRoute allowedRoles={['HOD', 'Lab Assistant', 'Lab Incharge']}>
               <StudentComplaintsApproval />
+            </ProtectedRoute>
+          } />
+          <Route path="/project-credits" element={
+            <ProtectedRoute>
+              <ProjectCredits />
             </ProtectedRoute>
           } />
         </Routes>
