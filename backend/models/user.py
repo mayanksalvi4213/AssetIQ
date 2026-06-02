@@ -62,7 +62,7 @@ class User:
     # Create a new user
     # ------------------------------
     @classmethod
-    def create_user(cls, first_name, last_name, email, password, role, assigned_lab=None):
+    def create_user(cls, first_name, last_name, email, password, role, assigned_lab=None, email_verified=False, email_verified_at=None):
         conn = db.get_connection()
         if not conn:
             return {"error": "Database connection failed"}
@@ -87,13 +87,15 @@ class User:
             # Insert user
             insert_query = """
                 INSERT INTO users 
-                (first_name, last_name, email, password_hash, role, assigned_lab, access_scope)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                (first_name, last_name, email, password_hash, role, assigned_lab, access_scope,
+                 email_verified, email_verified_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING *
             """
             cursor.execute(insert_query, (
                 first_name, last_name, email, password_hash, role,
-                assigned_lab, json.dumps(access_scope)
+                assigned_lab, json.dumps(access_scope),
+                email_verified, email_verified_at
             ))
             user_data = cursor.fetchone()
             conn.commit()

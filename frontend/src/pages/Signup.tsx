@@ -24,12 +24,45 @@ export default function Signup() {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [role, setRole] = useState<Role | "">("");
   const [showPasswordValidation, setShowPasswordValidation] = useState(false);
+  const [verificationCode, setVerificationCode] = useState("");
+  const [codeSent, setCodeSent] = useState(false);
+  const [isSendingCode, setIsSendingCode] = useState(false);
 
   const passwordValidations = validatePassword(password);
   const isPasswordValid = Object.values(passwordValidations).every(Boolean);
   const passwordsMatch = password === confirmPassword && confirmPassword.length > 0;
   const normalizedEmail = email.trim().toLowerCase();
   const isApsitEmail = normalizedEmail.endsWith("@apsit.edu.in");
+  const isVerificationCodeValid = /^[0-9]{6}$/.test(verificationCode.trim());
+
+  const handleSendCode = async () => {
+    if (!isApsitEmail) {
+      alert("Enter a valid @apsit.edu.in email before requesting a code.");
+      return;
+    }
+
+    try {
+      setIsSendingCode(true);
+      const response = await fetch("/api/request_signup_code", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: normalizedEmail }),
+      });
+
+      const data = await response.json();
+      if (response.ok) {
+        setCodeSent(true);
+        alert("Verification code sent to your email.");
+      } else {
+        alert(data.error || "Failed to send verification code.");
+      }
+    } catch (error) {
+      console.error("Error sending verification code:", error);
+      alert("Something went wrong while sending the code.");
+    } finally {
+      setIsSendingCode(false);
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -47,6 +80,10 @@ export default function Signup() {
       alert("Passwords do not match.");
       return;
     }
+    if (!isVerificationCodeValid) {
+      alert("Enter the 6-digit verification code sent to your email.");
+      return;
+    }
 
     // ✅ Correct payload for backend
     const payload = {
@@ -55,6 +92,7 @@ export default function Signup() {
       email: normalizedEmail,
       password,
       role,
+      verificationCode: verificationCode.trim(),
     };
 
     try {
@@ -149,11 +187,52 @@ export default function Signup() {
                     placeholder="you@apsit.edu.in"
                     type="email"
                     value={email}
-                    onChange={(e) => setEmail(e.target.value)}
+                    onChange={(e) => {
+                      setEmail(e.target.value);
+                      setCodeSent(false);
+                      setVerificationCode("");
+                    }}
                     className="bg-gray-900/50 border-gray-700 focus:border-blue-500 focus:ring-blue-500 text-white placeholder-gray-400"
                   />
                   {email.length > 0 && !isApsitEmail && (
                     <p className="text-xs text-red-400">Only @apsit.edu.in email addresses are allowed.</p>
+                  )}
+                  <button
+                    type="button"
+                    onClick={handleSendCode}
+                    disabled={!isApsitEmail || isSendingCode}
+                    className={`mt-2 h-9 w-full rounded-md border text-xs font-medium transition-all duration-200 ${
+                      !isApsitEmail || isSendingCode
+                        ? "bg-gray-700/60 text-gray-300 border-gray-600 cursor-not-allowed"
+                        : "bg-gray-900/70 text-white border-gray-700 hover:border-blue-500"
+                    }`}
+                  >
+                    {isSendingCode ? "Sending..." : codeSent ? "Resend code" : "Send verification code"}
+                  </button>
+                  {codeSent && (
+                    <p className="text-xs text-emerald-400 mt-1">Code sent. Check your inbox/spam.</p>
+                  )}
+                </LabelInputContainer>
+
+                {/* Verification Code */}
+                <LabelInputContainer>
+                  <Label htmlFor="verificationCode" className="text-white">Verification Code</Label>
+                  <Input
+                    id="verificationCode"
+                    placeholder="6-digit code"
+                    type="text"
+                    inputMode="numeric"
+                    maxLength={6}
+                    value={verificationCode}
+                    onChange={(e) => setVerificationCode(e.target.value)}
+                    className={`bg-gray-900/50 border ${
+                      verificationCode.length === 0 || isVerificationCodeValid
+                        ? "border-gray-700 focus:border-blue-500"
+                        : "border-red-500 focus:border-red-500"
+                    } focus:ring-blue-500 text-white placeholder-gray-400`}
+                  />
+                  {verificationCode.length > 0 && !isVerificationCodeValid && (
+                    <p className="text-xs text-red-400">Enter the 6-digit code.</p>
                   )}
                 </LabelInputContainer>
 
@@ -227,9 +306,9 @@ export default function Signup() {
 
                 {/* Submit button */}
                 <button
-                  className={`group/btn relative block h-10 w-full rounded-md font-medium text-white shadow-[0px_1px_0px_0px_#ffffff20_inset,0px_-1px_0px_0px_#ffffff20_inset] border transition-all duration-200 ${isPasswordValid && passwordsMatch ? "bg-gradient-to-br from-gray-800 to-gray-900 border-gray-700 hover:from-gray-700 hover:to-gray-800" : "bg-gray-700 cursor-not-allowed opacity-60"}`}
+                  className={`group/btn relative block h-10 w-full rounded-md font-medium text-white shadow-[0px_1px_0px_0px_#ffffff20_inset,0px_-1px_0px_0px_#ffffff20_inset] border transition-all duration-200 ${isPasswordValid && passwordsMatch && isApsitEmail && isVerificationCodeValid ? "bg-gradient-to-br from-gray-800 to-gray-900 border-gray-700 hover:from-gray-700 hover:to-gray-800" : "bg-gray-700 cursor-not-allowed opacity-60"}`}
                   type="submit"
-                  disabled={!isPasswordValid || !passwordsMatch || !isApsitEmail}
+                  disabled={!isPasswordValid || !passwordsMatch || !isApsitEmail || !isVerificationCodeValid}
                 >
                   Create Account →
                 </button>

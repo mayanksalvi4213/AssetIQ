@@ -130,11 +130,17 @@ export default function StudentLabComplaint() {
   const [selectedDeviceIds, setSelectedDeviceIds] = useState<number[]>([]);
   const [studentName, setStudentName] = useState("");
   const [studentEmail, setStudentEmail] = useState("");
+  const [verificationCode, setVerificationCode] = useState("");
+  const [codeSent, setCodeSent] = useState(false);
+  const [sendingCode, setSendingCode] = useState(false);
   const [issueKey, setIssueKey] = useState("not-working");
   const [details, setDetails] = useState("");
   const [customTitle, setCustomTitle] = useState("");
   const [customSeverity, setCustomSeverity] = useState<"low" | "medium" | "high" | "critical">("medium");
   const [submitting, setSubmitting] = useState(false);
+  const normalizedStudentEmail = studentEmail.trim().toLowerCase();
+  const isApsitStudentEmail = normalizedStudentEmail.endsWith("@apsit.edu.in");
+  const isStudentCodeValid = /^[0-9]{6}$/.test(verificationCode.trim());
 
   const buildStationsFromGrid = (
     grid: LabGridCell[][],
@@ -286,6 +292,14 @@ export default function StudentLabComplaint() {
       alert("Name and email are required.");
       return;
     }
+    if (!isApsitStudentEmail) {
+      alert("Only @apsit.edu.in email addresses are allowed.");
+      return;
+    }
+    if (!isStudentCodeValid) {
+      alert("Enter the 6-digit verification code sent to your email.");
+      return;
+    }
     const isCustomIssue = selectedIssueOption?.key === "custom";
     const finalTitle = isCustomIssue
       ? customTitle.trim()
@@ -315,7 +329,8 @@ export default function StudentLabComplaint() {
             stationId: selectedStation.stationId,
             deviceId,
             studentName,
-            studentEmail,
+            studentEmail: normalizedStudentEmail,
+            verificationCode: verificationCode.trim(),
             title: finalTitle,
             description: finalDescription,
             severity: finalSeverity,
@@ -347,6 +362,32 @@ export default function StudentLabComplaint() {
   if (loading) {
     return <div className="min-h-screen bg-neutral-950 text-gray-200 p-8">Loading lab details...</div>;
   }
+  const handleSendCode = async () => {
+    if (!isApsitStudentEmail) {
+      alert("Enter a valid @apsit.edu.in email before requesting a code.");
+      return;
+    }
+
+    try {
+      setSendingCode(true);
+      const response = await fetch("/api/public/request_student_complaint_code", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: normalizedStudentEmail }),
+      });
+      const data = await response.json();
+      if (response.ok && data.success) {
+        setCodeSent(true);
+        alert("Verification code sent to your email.");
+      } else {
+        alert(data.error || "Failed to send verification code.");
+      }
+    } catch (e) {
+      alert((e as Error).message || "Failed to send verification code");
+    } finally {
+      setSendingCode(false);
+    }
+  };
 
   if (error || !lab) {
     return <div className="min-h-screen bg-neutral-950 text-red-400 p-8">{error || "Lab not found"}</div>;
@@ -478,8 +519,46 @@ export default function StudentLabComplaint() {
                 type="email"
                 placeholder="Your email"
                 value={studentEmail}
-                onChange={(e) => setStudentEmail(e.target.value)}
+                onChange={(e) => {
+                  setStudentEmail(e.target.value);
+                  setVerificationCode("");
+                  setCodeSent(false);
+                }}
               />
+              {studentEmail.length > 0 && !isApsitStudentEmail && (
+                <p className="text-xs text-red-300">Only @apsit.edu.in email addresses are allowed.</p>
+              )}
+              <button
+                type="button"
+                onClick={handleSendCode}
+                disabled={!isApsitStudentEmail || sendingCode}
+                className={`w-full rounded-lg p-2 text-sm font-semibold border ${
+                  !isApsitStudentEmail || sendingCode
+                    ? "bg-neutral-800 text-gray-400 border-neutral-700 cursor-not-allowed"
+                    : "bg-cyan-900/60 text-white border-cyan-700 hover:bg-cyan-800"
+                }`}
+              >
+                {sendingCode ? "Sending..." : codeSent ? "Resend verification code" : "Send verification code"}
+              </button>
+              {codeSent && (
+                <p className="text-xs text-emerald-300">Code sent. Check your inbox/spam.</p>
+              )}
+
+              <input
+                className={`w-full border rounded-lg p-2 text-white bg-neutral-950 ${
+                  verificationCode.length === 0 || isStudentCodeValid
+                    ? "border-cyan-900"
+                    : "border-red-500"
+                }`}
+                placeholder="6-digit verification code"
+                value={verificationCode}
+                onChange={(e) => setVerificationCode(e.target.value)}
+                inputMode="numeric"
+                maxLength={6}
+              />
+              {verificationCode.length > 0 && !isStudentCodeValid && (
+                <p className="text-xs text-red-300">Enter the 6-digit code.</p>
+              )}
 
               <select
                 className="w-full border border-cyan-900 bg-neutral-950 rounded-lg p-2 text-white"
@@ -531,7 +610,13 @@ export default function StudentLabComplaint() {
 
               <button
                 type="submit"
-                disabled={submitting || !selectedStation || selectedDeviceIds.length === 0}
+                disabled={
+                  submitting ||
+                  !selectedStation ||
+                  selectedDeviceIds.length === 0 ||
+                  !isApsitStudentEmail ||
+                  !isStudentCodeValid
+                }
                 className="w-full bg-cyan-700 text-white rounded-lg p-2 font-semibold hover:bg-cyan-600 disabled:opacity-60"
               >
                 {submitting ? "Submitting..." : "Submit Complaint"}

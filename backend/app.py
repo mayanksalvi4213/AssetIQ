@@ -16,6 +16,7 @@ import uuid
 import requests
 import time
 import threading
+import random
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from dotenv import load_dotenv
@@ -35,6 +36,10 @@ JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY")
 JWT_EXPIRATION_HOURS = int(os.getenv("JWT_EXPIRATION_HOURS", 24))
 LLM_WHISPERER_API_KEY = os.getenv("LLM_WHISPERER_API_KEY")
 FRONTEND_PUBLIC_BASE_URL = os.getenv("FRONTEND_PUBLIC_BASE_URL", "http://localhost:5173").rstrip("/")
+SIGNUP_CODE_TTL_MINUTES = int(os.getenv("SIGNUP_CODE_TTL_MINUTES", 10))
+SIGNUP_CODE_COOLDOWN_SECONDS = int(os.getenv("SIGNUP_CODE_COOLDOWN_SECONDS", 60))
+STUDENT_COMPLAINT_CODE_TTL_MINUTES = int(os.getenv("STUDENT_COMPLAINT_CODE_TTL_MINUTES", 10))
+STUDENT_COMPLAINT_CODE_COOLDOWN_SECONDS = int(os.getenv("STUDENT_COMPLAINT_CODE_COOLDOWN_SECONDS", 60))
 
 # Import models and services
 from models.user import User
@@ -131,6 +136,146 @@ def get_current_user():
         return User.find_by_id(payload['user_id'])
     except:
         return None
+
+
+def _generate_verification_code() -> str:
+    return f"{random.randint(0, 999999):06d}"
+
+
+def _hash_verification_code(code: str) -> str:
+    return bcrypt.hashpw(code.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+
+
+def _send_signup_verification_email(email: str, code: str) -> bool:
+    subject = "AssetIQ signup verification code"
+    html_body = f"""
+        <div style=\"font-family: Arial, sans-serif; line-height: 1.5;\">
+            <h2>Verify your email</h2>
+            <p>Your AssetIQ verification code is:</p>
+            <div style=\"font-size: 24px; font-weight: bold; letter-spacing: 2px;\">{code}</div>
+            <p>This code expires in {SIGNUP_CODE_TTL_MINUTES} minutes.</p>
+            <p>If you did not request this, you can ignore this email.</p>
+        </div>
+    """
+    return _send_email_async(subject, html_body, [email])
+
+
+def _verify_signup_code(email: str, code: str) -> (bool, str):
+    conn = db.get_connection()
+    if not conn:
+        return False, "Database connection failed"
+
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            SELECT id, code_hash, expires_at, attempts, used_at
+            FROM email_verification_codes
+            WHERE email = %s
+              AND used_at IS NULL
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (email,)
+        )
+        row = cursor.fetchone()
+        if not row:
+            return False, "No active verification code found"
+
+        if row["expires_at"] < datetime.utcnow():
+            return False, "Verification code expired"
+
+        if row.get("attempts", 0) >= 5:
+            return False, "Too many failed attempts"
+
+        code_hash = row["code_hash"] or ""
+        if not bcrypt.checkpw(code.encode("utf-8"), code_hash.encode("utf-8")):
+            cursor.execute(
+                "UPDATE email_verification_codes SET attempts = attempts + 1 WHERE id = %s",
+                (row["id"],)
+            )
+            conn.commit()
+            return False, "Invalid verification code"
+
+        cursor.execute(
+            "UPDATE email_verification_codes SET used_at = %s WHERE id = %s",
+            (datetime.utcnow(), row["id"]),
+        )
+        conn.commit()
+        return True, ""
+    except Exception as e:
+        conn.rollback()
+        print(f"Verification code check failed: {e}")
+        return False, "Verification failed"
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def _send_student_complaint_verification_email(email: str, code: str) -> bool:
+    subject = "AssetIQ complaint verification code"
+    html_body = f"""
+        <div style=\"font-family: Arial, sans-serif; line-height: 1.5;\">
+            <h2>Verify your complaint email</h2>
+            <p>Your verification code is:</p>
+            <div style=\"font-size: 24px; font-weight: bold; letter-spacing: 2px;\">{code}</div>
+            <p>This code expires in {STUDENT_COMPLAINT_CODE_TTL_MINUTES} minutes.</p>
+            <p>If you did not request this, you can ignore this email.</p>
+        </div>
+    """
+    return _send_email_async(subject, html_body, [email])
+
+
+def _verify_student_complaint_code(email: str, code: str) -> (bool, str):
+    conn = db.get_connection()
+    if not conn:
+        return False, "Database connection failed"
+
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            SELECT id, code_hash, expires_at, attempts, used_at
+            FROM student_email_verification_codes
+            WHERE email = %s
+              AND used_at IS NULL
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (email,)
+        )
+        row = cursor.fetchone()
+        if not row:
+            return False, "No active verification code found"
+
+        if row["expires_at"] < datetime.utcnow():
+            return False, "Verification code expired"
+
+        if row.get("attempts", 0) >= 5:
+            return False, "Too many failed attempts"
+
+        code_hash = row["code_hash"] or ""
+        if not bcrypt.checkpw(code.encode("utf-8"), code_hash.encode("utf-8")):
+            cursor.execute(
+                "UPDATE student_email_verification_codes SET attempts = attempts + 1 WHERE id = %s",
+                (row["id"],)
+            )
+            conn.commit()
+            return False, "Invalid verification code"
+
+        cursor.execute(
+            "UPDATE student_email_verification_codes SET used_at = %s WHERE id = %s",
+            (datetime.utcnow(), row["id"]),
+        )
+        conn.commit()
+        return True, ""
+    except Exception as e:
+        conn.rollback()
+        print(f"Student verification check failed: {e}")
+        return False, "Verification failed"
+    finally:
+        cursor.close()
+        conn.close()
 
 # ============================================
 # LLM WHISPERER API INTEGRATION
@@ -595,6 +740,74 @@ def save_ocr_result():
 # -----------------------------
 # Authentication Routes
 # -----------------------------
+@app.route("/request_signup_code", methods=["POST"])
+def request_signup_code():
+    data = request.get_json() or {}
+    email = (data.get("email") or "").strip().lower()
+    if not email:
+        return jsonify({"error": "Email is required"}), 400
+    if not email.endswith("@apsit.edu.in"):
+        return jsonify({"error": "Only @apsit.edu.in email addresses are allowed"}), 400
+
+    if User.find_by_email(email):
+        return jsonify({"error": "User with this email already exists"}), 400
+
+    conn = db.get_connection()
+    if not conn:
+        return jsonify({"error": "Database connection failed"}), 500
+
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            SELECT created_at
+            FROM email_verification_codes
+            WHERE email = %s
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (email,)
+        )
+        row = cursor.fetchone()
+        if row:
+            last_created = row["created_at"]
+            seconds_since = (datetime.utcnow() - last_created).total_seconds()
+            if seconds_since < SIGNUP_CODE_COOLDOWN_SECONDS:
+                wait_seconds = int(SIGNUP_CODE_COOLDOWN_SECONDS - seconds_since)
+                return jsonify({"error": f"Please wait {wait_seconds}s before requesting another code"}), 429
+
+        code = _generate_verification_code()
+        code_hash = _hash_verification_code(code)
+        expires_at = datetime.utcnow() + timedelta(minutes=SIGNUP_CODE_TTL_MINUTES)
+
+        cursor.execute(
+            """
+            INSERT INTO email_verification_codes (email, code_hash, expires_at)
+            VALUES (%s, %s, %s)
+            """,
+            (email, code_hash, expires_at)
+        )
+        conn.commit()
+
+        sent = _send_signup_verification_email(email, code)
+        if not sent:
+            return jsonify({"error": "Failed to send verification email"}), 500
+
+        return jsonify({
+            "success": True,
+            "message": "Verification code sent",
+            "expiresInMinutes": SIGNUP_CODE_TTL_MINUTES
+        })
+    except Exception as e:
+        conn.rollback()
+        print(f"Error sending signup code: {e}")
+        traceback.print_exc()
+        return jsonify({"error": "Failed to send verification code"}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+
 @app.route("/signup", methods=["POST"])
 def register():
     data = request.get_json()
@@ -606,6 +819,14 @@ def register():
     if not email.endswith("@apsit.edu.in"):
         return jsonify({"error": "Only @apsit.edu.in email addresses are allowed for registration"}), 400
 
+    verification_code = (data.get("verificationCode") or "").strip()
+    if not verification_code:
+        return jsonify({"error": "Verification code is required"}), 400
+
+    verified, verification_error = _verify_signup_code(email, verification_code)
+    if not verified:
+        return jsonify({"error": verification_error or "Invalid verification code"}), 400
+
     assigned_lab = None
     if data["role"] == "Lab Incharge":
         assigned_lab = data.get("accessScope", {}).get("lab")
@@ -616,7 +837,9 @@ def register():
         email=email,
         password=data["password"],
         role=data["role"],
-        assigned_lab=assigned_lab
+        assigned_lab=assigned_lab,
+        email_verified=True,
+        email_verified_at=datetime.utcnow()
     )
     if isinstance(user, dict) and "error" in user:
         return jsonify(user), 400
@@ -636,6 +859,8 @@ def login():
     user = User.find_by_email(data["email"])
     if not user or not User.verify_password(data["password"], user.password_hash):
         return jsonify({"error": "Invalid credentials"}), 401
+    if not getattr(user, "email_verified", False):
+        return jsonify({"error": "Email address not verified"}), 403
     user.update_last_login()
     token = jwt.encode({
         "user_id": user.id,
@@ -2700,6 +2925,71 @@ def get_public_lab_by_token(lab_token):
 # -----------------------------
 # Public: Student Complaint Submission
 # -----------------------------
+@app.route("/public/request_student_complaint_code", methods=["POST"])
+def request_student_complaint_code():
+    data = request.get_json() or {}
+    email = (data.get("email") or "").strip().lower()
+    if not email:
+        return jsonify({"success": False, "error": "Email is required"}), 400
+    if not email.endswith("@apsit.edu.in"):
+        return jsonify({"success": False, "error": "Only @apsit.edu.in email addresses are allowed"}), 400
+
+    conn = db.get_connection()
+    if not conn:
+        return jsonify({"success": False, "error": "Database connection failed"}), 500
+
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            SELECT created_at
+            FROM student_email_verification_codes
+            WHERE email = %s
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (email,)
+        )
+        row = cursor.fetchone()
+        if row:
+            last_created = row["created_at"]
+            seconds_since = (datetime.utcnow() - last_created).total_seconds()
+            if seconds_since < STUDENT_COMPLAINT_CODE_COOLDOWN_SECONDS:
+                wait_seconds = int(STUDENT_COMPLAINT_CODE_COOLDOWN_SECONDS - seconds_since)
+                return jsonify({"success": False, "error": f"Please wait {wait_seconds}s before requesting another code"}), 429
+
+        code = _generate_verification_code()
+        code_hash = _hash_verification_code(code)
+        expires_at = datetime.utcnow() + timedelta(minutes=STUDENT_COMPLAINT_CODE_TTL_MINUTES)
+
+        cursor.execute(
+            """
+            INSERT INTO student_email_verification_codes (email, code_hash, expires_at)
+            VALUES (%s, %s, %s)
+            """,
+            (email, code_hash, expires_at)
+        )
+        conn.commit()
+
+        sent = _send_student_complaint_verification_email(email, code)
+        if not sent:
+            return jsonify({"success": False, "error": "Failed to send verification email"}), 500
+
+        return jsonify({
+            "success": True,
+            "message": "Verification code sent",
+            "expiresInMinutes": STUDENT_COMPLAINT_CODE_TTL_MINUTES
+        })
+    except Exception as e:
+        conn.rollback()
+        print(f"Error sending student complaint code: {e}")
+        traceback.print_exc()
+        return jsonify({"success": False, "error": "Failed to send verification code"}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+
 @app.route("/public/student_complaint", methods=["POST"])
 def public_student_complaint():
     """
@@ -2712,6 +3002,7 @@ def public_student_complaint():
         device_id = data.get("deviceId")
         student_name = (data.get("studentName") or "").strip()
         student_email = (data.get("studentEmail") or "").strip().lower()
+        verification_code = (data.get("verificationCode") or "").strip()
         title = (data.get("title") or "").strip()
         description = (data.get("description") or "").strip()
         severity = (data.get("severity") or "medium").strip().lower()
@@ -2720,8 +3011,14 @@ def public_student_complaint():
             return jsonify({"success": False, "error": "Missing required fields"}), 400
         if severity not in ["low", "medium", "high", "critical"]:
             return jsonify({"success": False, "error": "Invalid severity"}), 400
-        if "@" not in student_email:
-            return jsonify({"success": False, "error": "Invalid email address"}), 400
+        if not student_email.endswith("@apsit.edu.in"):
+            return jsonify({"success": False, "error": "Only @apsit.edu.in email addresses are allowed"}), 400
+        if not verification_code:
+            return jsonify({"success": False, "error": "Verification code is required"}), 400
+
+        verified, verification_error = _verify_student_complaint_code(student_email, verification_code)
+        if not verified:
+            return jsonify({"success": False, "error": verification_error or "Invalid verification code"}), 400
 
         conn = db.get_connection()
         cursor = conn.cursor()
