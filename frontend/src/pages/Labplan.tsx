@@ -62,6 +62,15 @@ export default function Labplan() {
   const [stationList, setStationList] = useState<any[]>([]);
   const [loadingStationList, setLoadingStationList] = useState(false);
   const [showPrintQR, setShowPrintQR] = useState(false);
+  const [showPrintAllLabsQR, setShowPrintAllLabsQR] = useState(false);
+  const [loadingAllLabsQR, setLoadingAllLabsQR] = useState(false);
+  const [allLabsQrData, setAllLabsQrData] = useState<
+    {
+      labId: string;
+      labName: string;
+      publicUrl: string;
+    }[]
+  >([]);
   const [searchQuery, setSearchQuery] = useState("");
   const [highlightQuery, setHighlightQuery] = useState("");
   const [stationQrModal, setStationQrModal] = useState<{
@@ -373,6 +382,36 @@ export default function Labplan() {
     setShowPrintQR(true);
   };
 
+  const handlePrintAllLabsQRCodes = async () => {
+    try {
+      setLoadingAllLabsQR(true);
+      if (!labs || labs.length === 0) {
+        await fetchLabs();
+      }
+      const labSnapshots = await Promise.all(
+        (labs || []).map(async (lab) => {
+          const response = await fetch(`/api/get_or_create_lab_public_qr/${lab.lab_id}`);
+          const data = await response.json();
+          if (response.ok && data.success && data.publicUrl) {
+            return {
+              labId: lab.lab_id,
+              labName: lab.lab_name,
+              publicUrl: data.publicUrl
+            };
+          }
+          return null;
+        })
+      );
+      setAllLabsQrData(labSnapshots.filter(Boolean) as { labId: string; labName: string; publicUrl: string }[]);
+      setShowPrintAllLabsQR(true);
+    } catch (err) {
+      console.error("Error preparing all labs QR print:", err);
+      alert("Failed to prepare all labs QR codes. Please try again.");
+    } finally {
+      setLoadingAllLabsQR(false);
+    }
+  };
+
   const handleClearHighlight = (e: React.MouseEvent<HTMLDivElement>) => {
     if (!highlightQuery) return;
     const target = e.target as HTMLElement;
@@ -416,6 +455,17 @@ export default function Labplan() {
           >
             Lab Floor Plans
           </h1>
+        </div>
+
+        <div className="mt-4 flex flex-wrap items-center gap-3">
+          <button
+            onClick={handlePrintAllLabsQRCodes}
+            className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition flex items-center gap-2"
+            disabled={loadingAllLabsQR}
+          >
+            {loadingAllLabsQR ? "Preparing..." : "🖨️ Print All Labs QRs"}
+          </button>
+          
         </div>
 
         {loading && (
@@ -1435,6 +1485,116 @@ export default function Labplan() {
                     </div>
                   ))}
                 </div>
+              </div>
+            </div>
+          </>
+        )}
+
+        {/* ✅ Print All Labs QR Codes Modal */}
+        {showPrintAllLabsQR && (
+          <>
+            {/* Screen View */}
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 print:hidden"
+              onClick={() => setShowPrintAllLabsQR(false)}
+            >
+              <motion.div
+                initial={{ scale: 0.9 }}
+                animate={{ scale: 1 }}
+                className="bg-white p-8 rounded-xl shadow-lg w-[90vw] h-[90vh] overflow-y-auto"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="flex items-center justify-between mb-6">
+                  <div>
+                    <h2 className="text-2xl font-bold text-black">All Labs - QR Codes</h2>
+                    <p className="text-gray-600">Preview before printing</p>
+                  </div>
+                  <div className="flex gap-3">
+                    <button
+                      onClick={() => window.print()}
+                      className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition"
+                    >
+                      🖨️ Print
+                    </button>
+                    <button
+                      onClick={() => setShowPrintAllLabsQR(false)}
+                      className="px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white rounded-lg transition"
+                    >
+                      Close
+                    </button>
+                  </div>
+                </div>
+
+                {allLabsQrData.length === 0 ? (
+                  <p className="text-gray-600">No QR codes found for any lab.</p>
+                ) : (
+                  <div className="space-y-10">
+                    {allLabsQrData.map((lab) => (
+                      <div key={lab.labId} className="border-b border-gray-200 pb-8">
+                        <h3 className="text-xl font-bold text-black mb-4">
+                          {lab.labName} ({lab.labId})
+                        </h3>
+                        <div className="flex flex-col items-center gap-3">
+                          <div className="border-2 border-cyan-400 bg-cyan-50 p-4 rounded-lg flex flex-col items-center">
+                            <QRCodeSVG value={lab.publicUrl} size={180} />
+                            <p className="text-xs text-cyan-700 font-semibold mt-2">Student Complaint QR</p>
+                          </div>
+                          <p className="text-xs text-gray-600 break-all text-center max-w-[420px]">
+                            {lab.publicUrl}
+                          </p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </motion.div>
+            </motion.div>
+
+            {/* Print View */}
+            <div className="hidden print:block">
+              <style>
+                {`
+                  @media print {
+                    body * {
+                      visibility: hidden;
+                    }
+                    .print-all-qr-container, .print-all-qr-container * {
+                      visibility: visible;
+                    }
+                    .print-all-qr-container {
+                      position: absolute;
+                      left: 0;
+                      top: 0;
+                      width: 100%;
+                    }
+                    @page {
+                      margin: 0.5in;
+                    }
+                  }
+                `}
+              </style>
+              <div className="print-all-qr-container p-8 bg-white">
+                <h1 className="text-3xl font-bold text-black mb-2">All Labs - QR Codes</h1>
+                <p className="text-gray-700 mb-8">Scan these QR codes to identify each station/device</p>
+
+                {allLabsQrData.map((lab) => (
+                  <div key={lab.labId} className="mb-10">
+                    <h2 className="text-xl font-bold text-black mb-4">
+                      {lab.labName} ({lab.labId})
+                    </h2>
+                    <div className="flex flex-col items-center gap-3">
+                      <div className="border-2 border-cyan-600 p-4 rounded-lg flex flex-col items-center">
+                        <QRCodeSVG value={lab.publicUrl} size={180} />
+                        <p className="text-xs text-gray-700 font-semibold mt-2">Student Complaint QR</p>
+                      </div>
+                      <p className="text-xs text-gray-700 break-all text-center max-w-[420px]">
+                        {lab.publicUrl}
+                      </p>
+                    </div>
+                  </div>
+                ))}
               </div>
             </div>
           </>
