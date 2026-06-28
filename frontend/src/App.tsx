@@ -46,7 +46,7 @@ const App: React.FC = () => {
           <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
           
           {/* Asset Management - All roles */}
-          <Route path="/assets" element={<ProtectedRoute><AllAssets /></ProtectedRoute>} />
+          <Route path="/all-assets" element={<ProtectedRoute><AllAssets /></ProtectedRoute>} />
           <Route path="/ocr" element={<ProtectedRoute><OcrPage /></ProtectedRoute>} />
           
           {/* Lab Management - HOD, Lab Incharge, and Lab Assistant */}

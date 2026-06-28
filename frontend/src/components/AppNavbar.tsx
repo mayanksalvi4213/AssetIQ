@@ -25,7 +25,7 @@ const AppNavbar: React.FC<AppNavbarProps> = ({ rightContent, className }) => {
         <Menu setActive={setActive}>
           <MenuItem setActive={setActive} active={active} item="Asset Management">
             <div className="flex flex-col space-y-2 text-sm p-2">
-              <HoveredLink href="/assets">All Assets</HoveredLink>
+              <HoveredLink href="/all-assets">All Assets</HoveredLink>
               <HoveredLink href="/ocr">Add Assets</HoveredLink>
             </div>
           </MenuItem>
